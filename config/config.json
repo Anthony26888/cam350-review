@@ -1,0 +1,20 @@
+{
+    "windowTitle": "Calibration Wizard",
+    "xTextbox": {
+        "x": 1479,
+        "y": 1019
+    },
+    "yTextbox": {
+        "x": 1562,
+        "y": 1015
+    },
+    "gotoButton": {
+        "x": 0,
+        "y": 0
+    },
+    "delay": 150,
+    "lastFile": "",
+    "lastReviewId": 9,
+    "lastSessionFile": "",
+    "geometry": ""
+}

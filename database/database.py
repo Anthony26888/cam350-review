@@ -1,0 +1,88 @@
+import sqlite3
+import os
+from typing import Optional
+
+
+class Database:
+    _instance: Optional["Database"] = None
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        if db_path is None:
+            db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database")
+            os.makedirs(db_dir, exist_ok=True)
+            db_path = os.path.join(db_dir, "cam350_review.db")
+        self._db_path = db_path
+        self._conn: Optional[sqlite3.Connection] = None
+        self._init_db()
+
+    @staticmethod
+    def instance() -> "Database":
+        if Database._instance is None:
+            Database._instance = Database()
+        return Database._instance
+
+    def _get_connection(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(self._db_path)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+        return self._conn
+
+    def _init_db(self) -> None:
+        conn = self._get_connection()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS review (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                designator TEXT NOT NULL,
+                mpn TEXT DEFAULT '',
+                layer TEXT DEFAULT '',
+                old_x REAL DEFAULT 0.0,
+                old_y REAL DEFAULT 0.0,
+                old_rotation REAL DEFAULT 0.0,
+                new_x REAL,
+                new_y REAL,
+                new_rotation REAL,
+                status TEXT DEFAULT 'Pending',
+                remark TEXT DEFAULT '',
+                review_time TEXT,
+                row_index INTEGER DEFAULT 0
+            )
+            """
+        )
+        conn.commit()
+
+    def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(query, params)
+            conn.commit()
+            return cursor
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database error: {e}")
+
+    def fetchone(self, query: str, params: tuple = ()) -> Optional[sqlite3.Row]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(query, params)
+            return cursor.fetchone()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database error: {e}")
+
+    def fetchall(self, query: str, params: tuple = ()) -> list:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(query, params)
+            return cursor.fetchall()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database error: {e}")
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path
