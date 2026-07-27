@@ -13,6 +13,7 @@ _STATUS_COLORS = {
     "Pending": None,
     "OK": QColor(200, 255, 200),
     "Edited": QColor(255, 200, 200),
+    "Aligned": None,
 }
 
 _COLUMNS = ["", "No", "Designator", "MPN", "Layer", "X", "Y", "Rotation", "Status"]

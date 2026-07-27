@@ -12,8 +12,8 @@ class ReviewRepo:
         cursor = self._db.execute(
             """
             INSERT INTO review (designator, mpn, layer, old_x, old_y, old_rotation,
-                                new_x, new_y, new_rotation, status, remark, review_time, row_index)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                new_x, new_y, new_rotation, status, remark, review_time, datasheet, row_index)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.designator,
@@ -28,6 +28,7 @@ class ReviewRepo:
                 record.status,
                 record.remark,
                 record.review_time,
+                record.datasheet,
                 record.row_index,
             ),
         )
@@ -38,7 +39,7 @@ class ReviewRepo:
             """
             UPDATE review SET mpn=?, layer=?, old_x=?, old_y=?, old_rotation=?,
                               new_x=?, new_y=?, new_rotation=?, status=?, remark=?,
-                              review_time=?
+                              review_time=?, datasheet=?
             WHERE id=?
             """,
             (
@@ -53,6 +54,7 @@ class ReviewRepo:
                 record.status,
                 record.remark,
                 record.review_time,
+                record.datasheet,
                 record.id,
             ),
         )
@@ -112,5 +114,6 @@ class ReviewRepo:
             status=row["status"],
             remark=row["remark"],
             review_time=row["review_time"],
+            datasheet=row["datasheet"],
             row_index=row["row_index"],
         )

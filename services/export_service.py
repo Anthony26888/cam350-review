@@ -31,7 +31,9 @@ class ExportService:
 
         headers = [
             "Designator", "MPN", "Layer", "Old X", "Old Y", "Old Rotation",
-            "New X", "New Y", "New Rotation", "Status", "Remark", "Review Time",
+            "New X", "New Y", "New Rotation",
+            "Aligned X", "Aligned Y", "Aligned Rotation",
+            "Status", "Remark", "Review Time",
         ]
 
         _write_header(sheet, headers)
@@ -43,12 +45,17 @@ class ExportService:
             sheet.cell(row=row_idx, column=4, value=record.old_x)
             sheet.cell(row=row_idx, column=5, value=record.old_y)
             sheet.cell(row=row_idx, column=6, value=record.old_rotation)
-            sheet.cell(row=row_idx, column=7, value=record.new_x if record.new_x is not None else "")
-            sheet.cell(row=row_idx, column=8, value=record.new_y if record.new_y is not None else "")
-            sheet.cell(row=row_idx, column=9, value=record.new_rotation if record.new_rotation is not None else "")
-            sheet.cell(row=row_idx, column=10, value=record.status)
-            sheet.cell(row=row_idx, column=11, value=record.remark)
-            sheet.cell(row=row_idx, column=12, value=record.review_time or "")
+            is_edited = record.status in ("Edited", "OK")
+            is_aligned = record.status in ("Aligned", "OK")
+            sheet.cell(row=row_idx, column=7, value=record.new_x if is_edited else "")
+            sheet.cell(row=row_idx, column=8, value=record.new_y if is_edited else "")
+            sheet.cell(row=row_idx, column=9, value=record.new_rotation if is_edited else "")
+            sheet.cell(row=row_idx, column=10, value=record.new_x if is_aligned else "")
+            sheet.cell(row=row_idx, column=11, value=record.new_y if is_aligned else "")
+            sheet.cell(row=row_idx, column=12, value=record.new_rotation if is_aligned else "")
+            sheet.cell(row=row_idx, column=13, value=record.status)
+            sheet.cell(row=row_idx, column=14, value=record.remark)
+            sheet.cell(row=row_idx, column=15, value=record.review_time or "")
 
             _apply_row_style(sheet, row_idx, len(headers))
 
@@ -68,20 +75,36 @@ class ExportService:
 
         modified = {r.designator: r for r in records if r.has_modifications}
 
+        comp_by_des = {c.designator: c for c in original_data.components if c.designator}
+        has_panel_instance = any(c.panel_instance is not None for c in original_data.components)
+
         workbook = openpyxl.Workbook()
         sheet = workbook.active
         sheet.title = "PickPlace Fixed"
 
-        headers = original_data.headers
+        headers = list(original_data.headers)
+        if has_panel_instance and "Panel_Instance" not in [h.strip() for h in headers]:
+            headers.append("Panel_Instance")
         _write_header(sheet, headers)
 
-        header_lower = [h.lower() for h in headers]
+        panel_col_idx = None
+        if has_panel_instance:
+            for i, h in enumerate(headers):
+                if h.strip() == "Panel_Instance":
+                    panel_col_idx = i
+                    break
 
         for row_idx, raw_row in enumerate(original_data.raw_data, start=2):
             des = str(raw_row.get("Designator", "")).strip()
             record = modified.get(des)
+            comp = comp_by_des.get(des)
 
             for col_idx, header in enumerate(headers):
+                if panel_col_idx is not None and col_idx == panel_col_idx:
+                    value = comp.panel_instance if comp and comp.panel_instance is not None else ""
+                    sheet.cell(row=row_idx, column=col_idx + 1, value=value)
+                    continue
+
                 value = raw_row.get(header, "")
                 if record is not None:
                     hdr_lower = header.lower()

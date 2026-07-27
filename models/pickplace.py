@@ -11,6 +11,7 @@ class PickPlaceComponent:
     y: float = 0.0
     rotation: float = 0.0
     row: int = 0
+    panel_instance: Optional[int] = None
 
 
 @dataclass

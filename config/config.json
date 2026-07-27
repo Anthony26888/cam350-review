@@ -1,20 +1,20 @@
 {
     "windowTitle": "Calibration Wizard",
     "xTextbox": {
-        "x": 1479,
-        "y": 1019
+        "x": 1470,
+        "y": 1020
     },
     "yTextbox": {
-        "x": 1562,
-        "y": 1015
+        "x": 1596,
+        "y": 1019
     },
     "gotoButton": {
         "x": 0,
         "y": 0
     },
     "delay": 150,
-    "lastFile": "",
-    "lastReviewId": 9,
+    "lastFile": "D:/Test/data20/02. MachOngKinh ( VEE-LEA-LENS )/Pick Place/Pick Place for LEN_CONTROL_V2_2021-02-26.xlsx",
+    "lastReviewId": 1,
     "lastSessionFile": "",
-    "geometry": ""
+    "geometry": "01d9d0cb0003000000000000fffffff80000077f0000040700000168000000a600000641000003610000000002000000078000000000000000170000077f00000407"
 }

@@ -47,11 +47,20 @@ class Database:
                 status TEXT DEFAULT 'Pending',
                 remark TEXT DEFAULT '',
                 review_time TEXT,
+                datasheet TEXT DEFAULT '',
                 row_index INTEGER DEFAULT 0
             )
             """
         )
         conn.commit()
+        self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        cursor = conn.execute("PRAGMA table_info(review)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "datasheet" not in columns:
+            conn.execute("ALTER TABLE review ADD COLUMN datasheet TEXT DEFAULT ''")
+            conn.commit()
 
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
         conn = self._get_connection()

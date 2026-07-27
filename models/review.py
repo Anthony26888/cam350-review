@@ -17,6 +17,7 @@ class ReviewRecord:
     status: str = "Pending"
     remark: str = ""
     review_time: Optional[str] = None
+    datasheet: str = ""
     id: int = 0
     row_index: int = 0
 

@@ -15,6 +15,7 @@ class ReviewPanel(QWidget):
     jump_requested = Signal()
     ok_requested = Signal()
     edit_requested = Signal()
+    datasheet_requested = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -54,6 +55,12 @@ class ReviewPanel(QWidget):
         self._lbl_new_rot.setTextInteractionFlags(selectable)
         self._lbl_status = QLabel("-")
         self._lbl_status.setTextInteractionFlags(selectable)
+        self._lbl_datasheet = QLabel("-")
+        self._lbl_datasheet.setTextInteractionFlags(
+            Qt.LinksAccessibleByMouse | Qt.TextSelectableByMouse
+        )
+        self._lbl_datasheet.setOpenExternalLinks(True)
+        self._lbl_datasheet.setTextFormat(Qt.RichText)
         self._lbl_progress = QLabel("-")
         self._lbl_progress.setTextInteractionFlags(selectable)
 
@@ -67,6 +74,7 @@ class ReviewPanel(QWidget):
         info_layout.addRow("New Y:", self._lbl_new_y)
         info_layout.addRow("New Rotation:", self._lbl_new_rot)
         info_layout.addRow("Status:", self._lbl_status)
+        info_layout.addRow("Datasheet:", self._lbl_datasheet)
         info_layout.addRow("Progress:", self._lbl_progress)
 
         self._layout.addWidget(info_group)
@@ -93,6 +101,11 @@ class ReviewPanel(QWidget):
         self._btn_jump.clicked.connect(self.jump_requested.emit)
         nav_layout.addWidget(self._btn_jump)
 
+        self._btn_datasheet = QPushButton("\U0001f4c4 Search Datasheet")
+        self._btn_datasheet.setMinimumHeight(40)
+        self._btn_datasheet.clicked.connect(self._on_datasheet_clicked)
+        nav_layout.addWidget(self._btn_datasheet)
+
         action_layout = QHBoxLayout()
         self._btn_ok = QPushButton("✓ OK (Space)")
         self._btn_ok.setMinimumHeight(40)
@@ -107,6 +120,17 @@ class ReviewPanel(QWidget):
         nav_layout.addLayout(action_layout)
 
         self._layout.addWidget(nav_group)
+
+    def _on_datasheet_clicked(self) -> None:
+        mpn = self._lbl_mpn.text()
+        if mpn and mpn != "-":
+            self.datasheet_requested.emit(mpn)
+
+    def set_datasheet(self, url: str) -> None:
+        if url:
+            self._lbl_datasheet.setText(f'<a href="{url}">View Datasheet</a>')
+        else:
+            self._lbl_datasheet.setText("Not found")
 
     def display_record(self, record: ReviewRecord, index: int, total: int, progress_text: str = "") -> None:
         self._current_index = index
@@ -132,6 +156,12 @@ class ReviewPanel(QWidget):
         self._lbl_new_rot.setStyleSheet(style_red if changed_rot else "")
 
         self._lbl_status.setText(record.status)
+
+        if record.datasheet:
+            self._lbl_datasheet.setText(f'<a href="{record.datasheet}">View Datasheet</a>')
+        else:
+            self._lbl_datasheet.setText("-")
+        self._btn_datasheet.setEnabled(bool(record.mpn))
 
         if progress_text:
             self._lbl_progress.setText(progress_text)

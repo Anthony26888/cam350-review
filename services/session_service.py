@@ -54,6 +54,7 @@ class SessionService:
                 "status": r.status,
                 "remark": r.remark,
                 "review_time": r.review_time,
+                "datasheet": r.datasheet,
                 "row_index": r.row_index,
             })
         return result
@@ -76,6 +77,7 @@ class SessionService:
                 status=item.get("status", "Pending"),
                 remark=item.get("remark", ""),
                 review_time=item.get("review_time"),
+                datasheet=item.get("datasheet", ""),
                 row_index=item.get("row_index", 0),
             ))
         return records
