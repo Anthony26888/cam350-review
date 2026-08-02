@@ -18,6 +18,9 @@ _THIN_BORDER = Border(
 _HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
 
+_DELETED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+_DELETED_FONT = Font(color="9C0006", size=11)
+
 
 class ExportService:
 
@@ -58,6 +61,11 @@ class ExportService:
             sheet.cell(row=row_idx, column=15, value=record.review_time or "")
 
             _apply_row_style(sheet, row_idx, len(headers))
+            if record.status == "Deleted":
+                for col in range(1, len(headers) + 1):
+                    cell = sheet.cell(row=row_idx, column=col)
+                    cell.fill = _DELETED_FILL
+                    cell.font = _DELETED_FONT
 
         _auto_width(sheet, headers)
 
@@ -72,6 +80,8 @@ class ExportService:
         file_path: str,
     ) -> str:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        active_desigs = {r.designator for r in records}
 
         modified = {r.designator: r for r in records if r.has_modifications}
 
@@ -94,8 +104,11 @@ class ExportService:
                     panel_col_idx = i
                     break
 
-        for row_idx, raw_row in enumerate(original_data.raw_data, start=2):
+        row_idx = 2
+        for raw_row in original_data.raw_data:
             des = str(raw_row.get("Designator", "")).strip()
+            if des not in active_desigs:
+                continue
             record = modified.get(des)
             comp = comp_by_des.get(des)
 
@@ -117,6 +130,7 @@ class ExportService:
                 sheet.cell(row=row_idx, column=col_idx + 1, value=value)
 
             _apply_row_style(sheet, row_idx, len(headers))
+            row_idx += 1
 
         _auto_width(sheet, headers)
 

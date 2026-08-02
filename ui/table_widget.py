@@ -3,6 +3,7 @@ from typing import List, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QComboBox,
     QHeaderView, QTableWidget, QTableWidgetItem, QHBoxLayout,
+    QDoubleSpinBox, QLabel, QPushButton,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -11,12 +12,24 @@ from models.review import ReviewRecord
 
 _STATUS_COLORS = {
     "Pending": None,
-    "OK": QColor(200, 255, 200),
-    "Edited": QColor(255, 200, 200),
-    "Aligned": None,
+    "OK": QColor(240, 253, 244),
+    "Edited": QColor(254, 242, 242),
+    "Aligned": QColor(240, 253, 250),
 }
 
-_COLUMNS = ["", "No", "Designator", "MPN", "Layer", "X", "Y", "Rotation", "Status"]
+_STATUS_TEXT_COLORS = {
+    "Pending": None,
+    "OK": QColor(22, 101, 52),
+    "Edited": QColor(234, 88, 12),
+    "Aligned": QColor(59, 130, 246),
+}
+
+_STATUS_COLUMN = 8
+
+_COLUMNS = ["", "No", "Designator", "MPN", "Layer", "X", "Y", "Rotation", "Status", "Remark"]
+
+_RANGE_MIN = -999999.0
+_RANGE_MAX = 999999.0
 
 
 class TableWidget(QWidget):
@@ -32,19 +45,63 @@ class TableWidget(QWidget):
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(3)
 
         filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(4)
 
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText("Search (Ctrl+F)...")
+        self._search_input.setPlaceholderText("Search...")
         self._search_input.textChanged.connect(self._on_search)
 
         self._status_filter = QComboBox()
         self._status_filter.addItems(["All", "Pending", "OK", "Edited"])
         self._status_filter.currentTextChanged.connect(self._on_filter)
+        self._status_filter.setFixedWidth(90)
 
-        filter_layout.addWidget(self._search_input, 3)
-        filter_layout.addWidget(self._status_filter, 1)
+        self._x_min = QDoubleSpinBox()
+        self._x_min.setRange(_RANGE_MIN, _RANGE_MAX)
+        self._x_min.setValue(_RANGE_MIN)
+        self._x_min.setDecimals(1)
+        self._x_min.setFixedWidth(100)
+        self._x_min.editingFinished.connect(self._on_filter)
+
+        self._x_max = QDoubleSpinBox()
+        self._x_max.setRange(_RANGE_MIN, _RANGE_MAX)
+        self._x_max.setValue(_RANGE_MAX)
+        self._x_max.setDecimals(1)
+        self._x_max.setFixedWidth(100)
+        self._x_max.editingFinished.connect(self._on_filter)
+
+        self._y_min = QDoubleSpinBox()
+        self._y_min.setRange(_RANGE_MIN, _RANGE_MAX)
+        self._y_min.setValue(_RANGE_MIN)
+        self._y_min.setDecimals(1)
+        self._y_min.setFixedWidth(100)
+        self._y_min.editingFinished.connect(self._on_filter)
+
+        self._y_max = QDoubleSpinBox()
+        self._y_max.setRange(_RANGE_MIN, _RANGE_MAX)
+        self._y_max.setValue(_RANGE_MAX)
+        self._y_max.setDecimals(1)
+        self._y_max.setFixedWidth(100)
+        self._y_max.editingFinished.connect(self._on_filter)
+
+        filter_layout.addWidget(self._search_input, 1)
+        filter_layout.addWidget(self._status_filter)
+        filter_layout.addWidget(QLabel("X:"))
+        filter_layout.addWidget(self._x_min)
+        filter_layout.addWidget(QLabel("~"))
+        filter_layout.addWidget(self._x_max)
+        filter_layout.addWidget(QLabel("Y:"))
+        filter_layout.addWidget(self._y_min)
+        filter_layout.addWidget(QLabel("~"))
+        filter_layout.addWidget(self._y_max)
+        self._btn_clear = QPushButton("✕")
+        self._btn_clear.setFixedWidth(24)
+        self._btn_clear.setToolTip("Clear all filters")
+        self._btn_clear.clicked.connect(self._clear_filters)
+        filter_layout.addWidget(self._btn_clear)
         self._layout.addLayout(filter_layout)
 
         self._table = QTableWidget()
@@ -57,10 +114,6 @@ class TableWidget(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self._table.setStyleSheet(
-            "QTableWidget::item:selected { background-color: #d5d5d5; color: black; }"
-            "QTableWidget::item:hover { background-color: #e8e8e8; }"
-        )
         self._table.cellClicked.connect(self._on_click)
         self._table.cellDoubleClicked.connect(self._on_double_click)
         self._table.itemChanged.connect(self._on_item_changed)
@@ -76,6 +129,12 @@ class TableWidget(QWidget):
     def _apply_filters(self) -> None:
         search_text = self._search_input.text().strip().lower()
         status_filter = self._status_filter.currentText()
+        x_min = self._x_min.value()
+        x_max = self._x_max.value()
+        y_min = self._y_min.value()
+        y_max = self._y_max.value()
+        has_x_filter = x_min <= x_max and (x_min != _RANGE_MIN or x_max != _RANGE_MAX)
+        has_y_filter = y_min <= y_max and (y_min != _RANGE_MIN or y_max != _RANGE_MAX)
 
         self._filtered = []
         for i, rec in enumerate(self._records):
@@ -89,6 +148,12 @@ class TableWidget(QWidget):
                 ]
                 if not any(search_text in f for f in fields):
                     continue
+            rx = rec.new_x if rec.new_x is not None else rec.old_x
+            ry = rec.new_y if rec.new_y is not None else rec.old_y
+            if has_x_filter and not (x_min <= rx <= x_max):
+                continue
+            if has_y_filter and not (y_min <= ry <= y_max):
+                continue
             self._filtered.append(i)
 
         self._refresh_table()
@@ -132,12 +197,17 @@ class TableWidget(QWidget):
             self._display_y(rec),
             self._display_rotation(rec),
             rec.status,
+            rec.remark,
         ]
 
         for col, val in enumerate(values):
             item = QTableWidgetItem(val)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             item.setData(Qt.UserRole, idx)
+            if col + 1 == _STATUS_COLUMN:
+                text_color = _STATUS_TEXT_COLORS.get(rec.status)
+                if text_color:
+                    item.setForeground(text_color)
             self._table.setItem(row, col + 1, item)
 
         color = _STATUS_COLORS.get(rec.status)
@@ -163,6 +233,15 @@ class TableWidget(QWidget):
     def get_checked_indices(self) -> List[int]:
         return sorted(self._checked_set)
 
+    def clear_checked(self) -> None:
+        self._checked_set.clear()
+        self._table.blockSignals(True)
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.Unchecked)
+        self._table.blockSignals(False)
+
     def update_record_row(self, record_index: int) -> None:
         for row, idx in enumerate(self._filtered):
             if idx == record_index:
@@ -175,7 +254,10 @@ class TableWidget(QWidget):
                 item = QTableWidgetItem(status)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 item.setData(Qt.UserRole, idx)
-                self._table.setItem(row, 8, item)
+                text_color = _STATUS_TEXT_COLORS.get(status)
+                if text_color:
+                    item.setForeground(text_color)
+                self._table.setItem(row, _STATUS_COLUMN, item)
                 color = _STATUS_COLORS.get(status)
                 if color:
                     for col in range(len(_COLUMNS)):
@@ -183,6 +265,15 @@ class TableWidget(QWidget):
                         if cell:
                             cell.setBackground(color)
                 break
+
+    def _clear_filters(self) -> None:
+        self._search_input.clear()
+        self._status_filter.setCurrentIndex(0)
+        self._x_min.setValue(_RANGE_MIN)
+        self._x_max.setValue(_RANGE_MAX)
+        self._y_min.setValue(_RANGE_MIN)
+        self._y_max.setValue(_RANGE_MAX)
+        self._apply_filters()
 
     def _on_search(self) -> None:
         self._apply_filters()

@@ -2,7 +2,7 @@ from typing import Optional, List
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QFormLayout, QFrame, QSizePolicy,
+    QGroupBox, QFormLayout, QFrame, QSizePolicy, QStyle,
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -35,7 +35,7 @@ class ReviewPanel(QWidget):
 
         selectable = Qt.TextSelectableByMouse
         self._lbl_designator = QLabel("-")
-        self._lbl_designator.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self._lbl_designator.setObjectName("title")
         self._lbl_designator.setTextInteractionFlags(selectable)
         self._lbl_mpn = QLabel("-")
         self._lbl_mpn.setTextInteractionFlags(selectable)
@@ -53,6 +53,8 @@ class ReviewPanel(QWidget):
         self._lbl_new_y.setTextInteractionFlags(selectable)
         self._lbl_new_rot = QLabel("")
         self._lbl_new_rot.setTextInteractionFlags(selectable)
+        for lbl in (self._lbl_new_x, self._lbl_new_y, self._lbl_new_rot):
+            lbl.setObjectName("newval")
         self._lbl_status = QLabel("-")
         self._lbl_status.setTextInteractionFlags(selectable)
         self._lbl_datasheet = QLabel("-")
@@ -61,6 +63,9 @@ class ReviewPanel(QWidget):
         )
         self._lbl_datasheet.setOpenExternalLinks(True)
         self._lbl_datasheet.setTextFormat(Qt.RichText)
+        self._lbl_remark = QLabel("-")
+        self._lbl_remark.setWordWrap(True)
+        self._lbl_remark.setTextInteractionFlags(selectable)
         self._lbl_progress = QLabel("-")
         self._lbl_progress.setTextInteractionFlags(selectable)
 
@@ -75,6 +80,7 @@ class ReviewPanel(QWidget):
         info_layout.addRow("New Rotation:", self._lbl_new_rot)
         info_layout.addRow("Status:", self._lbl_status)
         info_layout.addRow("Datasheet:", self._lbl_datasheet)
+        info_layout.addRow("Remark:", self._lbl_remark)
         info_layout.addRow("Progress:", self._lbl_progress)
 
         self._layout.addWidget(info_group)
@@ -84,11 +90,13 @@ class ReviewPanel(QWidget):
         nav_layout = QVBoxLayout(nav_group)
 
         btn_layout = QHBoxLayout()
-        self._btn_prev = QPushButton("◀ Previous")
+        self._btn_prev = QPushButton("Previous")
+        self._btn_prev.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
         self._btn_prev.setMinimumHeight(40)
         self._btn_prev.clicked.connect(self.previous_requested.emit)
 
-        self._btn_next = QPushButton("Next ▶")
+        self._btn_next = QPushButton("Next")
+        self._btn_next.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
         self._btn_next.setMinimumHeight(40)
         self._btn_next.clicked.connect(self.next_requested.emit)
 
@@ -96,22 +104,27 @@ class ReviewPanel(QWidget):
         btn_layout.addWidget(self._btn_next)
         nav_layout.addLayout(btn_layout)
 
-        self._btn_jump = QPushButton("🔍 Jump CAM350")
+        self._btn_jump = QPushButton("Jump CAM350")
+        self._btn_jump.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
         self._btn_jump.setMinimumHeight(40)
         self._btn_jump.clicked.connect(self.jump_requested.emit)
         nav_layout.addWidget(self._btn_jump)
 
-        self._btn_datasheet = QPushButton("\U0001f4c4 Search Datasheet")
+        self._btn_datasheet = QPushButton("Search Datasheet")
+        self._btn_datasheet.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton))
         self._btn_datasheet.setMinimumHeight(40)
         self._btn_datasheet.clicked.connect(self._on_datasheet_clicked)
         nav_layout.addWidget(self._btn_datasheet)
 
         action_layout = QHBoxLayout()
-        self._btn_ok = QPushButton("✓ OK (Space)")
+        self._btn_ok = QPushButton("OK (Space)")
+        self._btn_ok.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self._btn_ok.setMinimumHeight(40)
+        self._btn_ok.setObjectName("success")
         self._btn_ok.clicked.connect(self.ok_requested.emit)
 
-        self._btn_edit = QPushButton("✎ Edit (Ctrl+E)")
+        self._btn_edit = QPushButton("Edit (Ctrl+E)")
+        self._btn_edit.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView))
         self._btn_edit.setMinimumHeight(40)
         self._btn_edit.clicked.connect(self.edit_requested.emit)
 
@@ -127,10 +140,13 @@ class ReviewPanel(QWidget):
             self.datasheet_requested.emit(mpn)
 
     def set_datasheet(self, url: str) -> None:
-        if url:
+        if url and url != "Searching...":
             self._lbl_datasheet.setText(f'<a href="{url}">View Datasheet</a>')
         else:
-            self._lbl_datasheet.setText("Not found")
+            self._lbl_datasheet.setText(url if url else "Not found")
+
+    def set_datasheet_searching(self, searching: bool) -> None:
+        self._btn_datasheet.setEnabled(not searching)
 
     def display_record(self, record: ReviewRecord, index: int, total: int, progress_text: str = "") -> None:
         self._current_index = index
@@ -147,15 +163,13 @@ class ReviewPanel(QWidget):
         changed_y = record.new_y is not None and record.new_y != record.old_y
         changed_rot = record.new_rotation is not None and record.new_rotation != record.old_rotation
 
-        style_red = "color: #cc0000; font-weight: bold;"
         self._lbl_new_x.setText(_fmt(record.new_x) if changed_x else "")
         self._lbl_new_y.setText(_fmt(record.new_y) if changed_y else "")
         self._lbl_new_rot.setText(_fmt(record.new_rotation) if changed_rot else "")
-        self._lbl_new_x.setStyleSheet(style_red if changed_x else "")
-        self._lbl_new_y.setStyleSheet(style_red if changed_y else "")
-        self._lbl_new_rot.setStyleSheet(style_red if changed_rot else "")
 
         self._lbl_status.setText(record.status)
+
+        self._lbl_remark.setText(record.remark if record.remark else "-")
 
         if record.datasheet:
             self._lbl_datasheet.setText(f'<a href="{record.datasheet}">View Datasheet</a>')

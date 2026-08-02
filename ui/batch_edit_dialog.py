@@ -1,4 +1,4 @@
-﻿from typing import Optional
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QFormLayout, QDoubleSpinBox,
@@ -27,12 +27,16 @@ class BatchEditDialog(QDialog):
         self._offset_x.setEnabled(False)
         self._apply_x.toggled.connect(self._offset_x.setEnabled)
 
+        self._negative_x = QCheckBox("Make new X negative")
+
         self._apply_y = QCheckBox("Apply Y offset")
         self._offset_y = QDoubleSpinBox()
         self._offset_y.setRange(-999999.0, 999999.0)
         self._offset_y.setDecimals(4)
         self._offset_y.setEnabled(False)
         self._apply_y.toggled.connect(self._offset_y.setEnabled)
+
+        self._negative_y = QCheckBox("Make new Y negative")
 
         self._apply_rotation = QCheckBox("Apply Rotation offset")
         self._offset_rotation = QDoubleSpinBox()
@@ -46,12 +50,14 @@ class BatchEditDialog(QDialog):
         self._remark.setPlaceholderText("Enter remark (applied to all selected)...")
 
         form.addRow(self._apply_x, self._offset_x)
+        form.addRow("", self._negative_x)
         form.addRow(self._apply_y, self._offset_y)
+        form.addRow("", self._negative_y)
         form.addRow(self._apply_rotation, self._offset_rotation)
         form.addRow("Remark:", self._remark)
         layout.addWidget(group)
 
-        info = QLabel("New value = original value + offset")
+        info = QLabel("New value = current value + offset\nMake new X/Y negative flips the sign of the resulting coordinate")
         info.setStyleSheet("color: #666; font-style: italic;")
         layout.addWidget(info)
 
@@ -77,8 +83,16 @@ class BatchEditDialog(QDialog):
         return self._offset_x.value()
 
     @property
+    def is_negative_x(self) -> bool:
+        return self._negative_x.isChecked()
+
+    @property
     def offset_y(self) -> float:
         return self._offset_y.value()
+
+    @property
+    def is_negative_y(self) -> bool:
+        return self._negative_y.isChecked()
 
     @property
     def offset_rotation(self) -> float:

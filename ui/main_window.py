@@ -1,21 +1,22 @@
 import os
 import json
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QMessageBox, QFileDialog, QStatusBar,
     QLabel, QSplitter, QMenuBar, QMenu, QToolBar,
-    QApplication,
+    QApplication, QDialog, QProgressDialog, QStyle,
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtCore import Qt, QTimer, QThread, Signal
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 
 from config.config_manager import ConfigManager
 from database.review_repo import ReviewRepo
+from license.info import license_summary
 from models.review import ReviewRecord
-from models.pickplace import PickPlaceData
+from models.pickplace import PickPlaceData, PickPlaceComponent
 from services.pickplace_reader import PickPlaceReader
 from services.cam350_controller import Cam350Controller
 from services.export_service import ExportService
@@ -28,7 +29,43 @@ from ui.batch_edit_dialog import BatchEditDialog
 from ui.settings_dialog import SettingsDialog
 from ui.calibration_wizard import CalibrationWizard
 from ui.origin_align_wizard import OriginAlignWizard
+from utils.path_utils import resource_path
 from ui.jump_popup import JumpPopup
+
+
+class DatasheetWorker(QThread):
+    finished_search = Signal(str, str)
+    error = Signal(str)
+
+    def __init__(self, mpn: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._mpn = mpn
+
+    def run(self) -> None:
+        try:
+            url = DatasheetService.search(self._mpn)
+            self.finished_search.emit(self._mpn, url)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class ExportWorker(QThread):
+    finished_ok = Signal(str)
+    finished_err = Signal(str)
+
+    def __init__(
+        self, func: Any, args: tuple, parent: Optional[QWidget] = None
+    ) -> None:
+        super().__init__(parent)
+        self._func = func
+        self._args = args
+
+    def run(self) -> None:
+        try:
+            path = self._func(*self._args)
+            self.finished_ok.emit(path)
+        except Exception as e:
+            self.finished_err.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -47,8 +84,15 @@ class MainWindow(QMainWindow):
         self._session_file: Optional[str] = None
         self._jump_popup: Optional[JumpPopup] = None
 
+        self._undo_stack: List[List[Dict[str, Any]]] = []
+        self._redo_stack: List[List[Dict[str, Any]]] = []
+        self._undo_action: Optional[QAction] = None
+        self._redo_action: Optional[QAction] = None
+        self._datasheet_worker: Optional[DatasheetWorker] = None
+        self._export_worker: Optional[ExportWorker] = None
+
         self.setWindowTitle("CAM350 Review Assistant")
-        self.setWindowIcon(QIcon("assets/icon.ico"))
+        self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
         self.setMinimumSize(1200, 700)
 
         self._build_menus()
@@ -104,6 +148,19 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        edit_menu = menubar.addMenu("&Edit")
+        self._undo_action = QAction("Undo", self)
+        self._undo_action.setShortcut(QKeySequence.Undo)
+        self._undo_action.triggered.connect(self._undo)
+        self._undo_action.setEnabled(False)
+        edit_menu.addAction(self._undo_action)
+
+        self._redo_action = QAction("Redo", self)
+        self._redo_action.setShortcut(QKeySequence("Ctrl+Shift+Z"))
+        self._redo_action.triggered.connect(self._redo)
+        self._redo_action.setEnabled(False)
+        edit_menu.addAction(self._redo_action)
+
         tools_menu = menubar.addMenu("&Tools")
         align_action = QAction("Align PickPlace Origin...", self)
         align_action.triggered.connect(self._align_origin)
@@ -119,6 +176,11 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         tools_menu.addAction(settings_action)
 
+        help_menu = menubar.addMenu("&Help")
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
@@ -127,53 +189,71 @@ class MainWindow(QMainWindow):
 
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
-        toolbar.setStyleSheet("QToolBar { spacing: 2px; }")
 
-        btn_new = QPushButton(" 📄 New")
+        def _std_button(text: str, sp) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setIcon(self.style().standardIcon(sp))
+            return btn
+
+        btn_new = _std_button("New", QStyle.StandardPixmap.SP_FileIcon)
         btn_new.clicked.connect(self._new_session)
 
-        btn_open_session = QPushButton(" 📂 Open Session")
+        btn_open_session = _std_button("Open Session", QStyle.StandardPixmap.SP_DirOpenIcon)
         btn_open_session.clicked.connect(self._open_session)
 
-        btn_save = QPushButton(" 💾 Save")
+        btn_save = _std_button("Save", QStyle.StandardPixmap.SP_DialogSaveButton)
         btn_save.clicked.connect(self._save_session)
 
-        self._btn_open = QPushButton(" 📋 Open Excel")
+        self._btn_open = _std_button("Open Excel", QStyle.StandardPixmap.SP_DialogOpenButton)
         self._btn_open.clicked.connect(self._open_file)
 
-        self._btn_align = QPushButton(" 🔧 Align Origin")
+        self._btn_align = _std_button("Align Origin", QStyle.StandardPixmap.SP_BrowserReload)
         self._btn_align.clicked.connect(self._align_origin)
         self._btn_align.setEnabled(False)
 
-        self._btn_export_report = QPushButton(" 📊 Export Report")
+        self._btn_export_report = _std_button(
+            "Export Report", QStyle.StandardPixmap.SP_FileDialogDetailedView
+        )
         self._btn_export_report.clicked.connect(self._export_report)
         self._btn_export_report.setEnabled(False)
 
-        self._btn_export_fixed = QPushButton(" 📝 Export Fixed")
+        self._btn_export_fixed = _std_button(
+            "Export Fixed", QStyle.StandardPixmap.SP_FileDialogContentsView
+        )
         self._btn_export_fixed.clicked.connect(self._export_fixed)
         self._btn_export_fixed.setEnabled(False)
 
-        self._btn_batch_edit = QPushButton(" ✏ Batch Edit")
+        self._btn_batch_edit = _std_button(
+            "Batch Edit", QStyle.StandardPixmap.SP_FileDialogInfoView
+        )
         self._btn_batch_edit.clicked.connect(self._batch_edit)
         self._btn_batch_edit.setEnabled(False)
 
-        self._btn_delete = QPushButton(" 🗑 Delete")
+        self._btn_ok_checked = _std_button(
+            "OK Checked", QStyle.StandardPixmap.SP_DialogApplyButton
+        )
+        self._btn_ok_checked.clicked.connect(self._mark_checked_ok)
+        self._btn_ok_checked.setObjectName("success")
+        self._btn_ok_checked.setEnabled(False)
+
+        self._btn_delete = _std_button("Delete", QStyle.StandardPixmap.SP_TrashIcon)
         self._btn_delete.clicked.connect(self._delete_selected)
+        self._btn_delete.setObjectName("danger")
         self._btn_delete.setEnabled(False)
 
-        self._btn_settings = QPushButton(" ⚙ Settings")
+        self._btn_settings = _std_button("Settings", QStyle.StandardPixmap.SP_ComputerIcon)
         self._btn_settings.clicked.connect(self._open_settings)
 
-        self._lbl_total = QLabel(" Σ: 0")
-        self._lbl_ok = QLabel(" ✓: 0")
-        self._lbl_edit = QLabel(" ✎: 0")
-        self._lbl_pending = QLabel(" ⏳: 0")
-        self._lbl_align = QLabel(" ↻: 0")
-        self._lbl_total.setStyleSheet("color: #2196F3; font-weight: bold; padding: 0 4px;")
-        self._lbl_ok.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 0 4px;")
-        self._lbl_edit.setStyleSheet("color: #FF9800; font-weight: bold; padding: 0 4px;")
-        self._lbl_pending.setStyleSheet("color: #9E9E9E; font-weight: bold; padding: 0 4px;")
-        self._lbl_align.setStyleSheet("color: #9C27B0; font-weight: bold; padding: 0 4px;")
+        self._lbl_total = QLabel("Total: 0")
+        self._lbl_ok = QLabel("OK: 0")
+        self._lbl_edit = QLabel("Edit: 0")
+        self._lbl_pending = QLabel("Pending: 0")
+        self._lbl_align = QLabel("Aligned: 0")
+        self._lbl_total.setObjectName("stat_total")
+        self._lbl_ok.setObjectName("stat_ok")
+        self._lbl_edit.setObjectName("stat_edit")
+        self._lbl_pending.setObjectName("stat_pending")
+        self._lbl_align.setObjectName("stat_align")
 
         toolbar.addWidget(btn_new)
         toolbar.addWidget(btn_open_session)
@@ -186,17 +266,18 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._btn_export_fixed)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_batch_edit)
+        toolbar.addWidget(self._btn_ok_checked)
         toolbar.addWidget(self._btn_delete)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_settings)
         toolbar.addSeparator()
         sep = QLabel("|")
-        sep.setStyleSheet("color: #ccc; padding: 0 2px;")
+        sep.setObjectName("stat_sep")
         toolbar.addWidget(sep)
         toolbar.addWidget(self._lbl_total)
+        toolbar.addWidget(self._lbl_pending)
         toolbar.addWidget(self._lbl_ok)
         toolbar.addWidget(self._lbl_edit)
-        toolbar.addWidget(self._lbl_pending)
         toolbar.addWidget(self._lbl_align)
 
         self.addToolBar(toolbar)
@@ -256,23 +337,30 @@ class MainWindow(QMainWindow):
                     for r in records:
                         r.id = self._repo.insert(r)
                     self._records = self._repo.get_all()
+                    self._records = [r for r in self._records if r.status != "Deleted"]
                     self._session_file = last_session
                     self._table_widget.set_records(self._records)
                     self._review_panel.set_record_list(self._records)
-                    self._btn_export_report.setEnabled(True)
-                    self._btn_export_fixed.setEnabled(True)
-                    self._btn_batch_edit.setEnabled(True)
-                    self._btn_delete.setEnabled(True)
-                    self._btn_align.setEnabled(True)
 
                     if session.source_file and os.path.exists(session.source_file):
                         try:
                             self._pickplace_data = self._reader.read(session.source_file)
                         except (FileNotFoundError, ValueError):
-                            pass
+                            self._pickplace_data = None
 
-                    target = min(session.current_index, len(self._records) - 1)
-                    self._select_and_display(target)
+                    if self._pickplace_data is None and records:
+                        self._pickplace_data = self._build_pickplace_data_from_records(records)
+
+                    self._btn_export_report.setEnabled(True)
+                    self._btn_export_fixed.setEnabled(self._pickplace_data is not None)
+                    self._btn_batch_edit.setEnabled(True)
+                    self._btn_ok_checked.setEnabled(True)
+                    self._btn_delete.setEnabled(True)
+                    self._btn_align.setEnabled(True)
+
+                    if self._records:
+                        target = min(session.current_index, len(self._records) - 1)
+                        self._select_and_display(target)
                     self._update_progress()
                     self._status_label.setText(f"Restored session: {os.path.basename(last_session)}")
                     return
@@ -292,10 +380,44 @@ class MainWindow(QMainWindow):
         self._btn_export_report.setEnabled(False)
         self._btn_export_fixed.setEnabled(False)
         self._btn_batch_edit.setEnabled(False)
+        self._btn_ok_checked.setEnabled(False)
         self._btn_delete.setEnabled(False)
         self._btn_align.setEnabled(False)
         self._update_progress()
         self._status_label.setText("Ready")
+
+    @staticmethod
+    def _build_pickplace_data_from_records(records: List[ReviewRecord]) -> PickPlaceData:
+        components = []
+        raw_data = []
+        seen = set()
+        for r in records:
+            if r.designator in seen:
+                continue
+            seen.add(r.designator)
+            comp = PickPlaceComponent(
+                designator=r.designator,
+                mpn=r.mpn,
+                layer=r.layer,
+                x=r.old_x,
+                y=r.old_y,
+                rotation=r.old_rotation,
+                row=r.row_index,
+            )
+            components.append(comp)
+            raw_data.append({
+                "Designator": r.designator,
+                "MPN": r.mpn,
+                "Layer": r.layer,
+                "X": r.old_x,
+                "Y": r.old_y,
+                "Rotation": r.old_rotation,
+            })
+        return PickPlaceData(
+            headers=["Designator", "MPN", "Layer", "X", "Y", "Rotation"],
+            components=components,
+            raw_data=raw_data,
+        )
 
     def _new_session(self) -> None:
         if self._records:
@@ -336,6 +458,7 @@ class MainWindow(QMainWindow):
             r.id = self._repo.insert(r)
 
         self._records = self._repo.get_all()
+        self._records = [r for r in self._records if r.status != "Deleted"]
         self._session_file = file_path
         self._pickplace_data = None
 
@@ -345,16 +468,21 @@ class MainWindow(QMainWindow):
             except (FileNotFoundError, ValueError):
                 self._pickplace_data = None
 
+        if self._pickplace_data is None and records:
+            self._pickplace_data = self._build_pickplace_data_from_records(records)
+
         self._table_widget.set_records(self._records)
         self._review_panel.set_record_list(self._records)
         self._btn_export_report.setEnabled(True)
-        self._btn_export_fixed.setEnabled(True)
+        self._btn_export_fixed.setEnabled(self._pickplace_data is not None)
         self._btn_batch_edit.setEnabled(True)
+        self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
         self._btn_align.setEnabled(True)
 
-        target = min(session.current_index, len(self._records) - 1)
-        self._select_and_display(target)
+        if self._records:
+            target = min(session.current_index, len(self._records) - 1)
+            self._select_and_display(target)
 
         self._update_progress()
         self._status_label.setText(f"Loaded session: {os.path.basename(file_path)}")
@@ -374,13 +502,15 @@ class MainWindow(QMainWindow):
         if not file_path.endswith(".cam350review"):
             file_path += ".cam350review"
 
+        deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
         source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
         self._session_service.save(
-            file_path, self._records,
+            file_path, self._records + deleted_records,
             source_file=source_file,
             current_index=max(self._current_index, 0),
         )
         self._session_file = file_path
+        self._config_mgr.update(lastSessionFile=file_path)
         self._status_label.setText(f"Session saved: {os.path.basename(file_path)}")
 
     def _save_session(self) -> None:
@@ -389,12 +519,14 @@ class MainWindow(QMainWindow):
             return
 
         if self._session_file:
+            deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
             source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
             self._session_service.save(
-                self._session_file, self._records,
+                self._session_file, self._records + deleted_records,
                 source_file=source_file,
                 current_index=max(self._current_index, 0),
             )
+            self._config_mgr.update(lastSessionFile=self._session_file)
             self._status_label.setText(f"Session saved: {os.path.basename(self._session_file)}")
         else:
             self._save_session_as()
@@ -436,6 +568,7 @@ class MainWindow(QMainWindow):
         self._btn_export_report.setEnabled(True)
         self._btn_export_fixed.setEnabled(True)
         self._btn_batch_edit.setEnabled(True)
+        self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
         self._btn_align.setEnabled(True)
 
@@ -509,6 +642,7 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self._records):
             return
         record = self._records[index]
+        self._push_undo()
         record.new_x = new_x
         record.new_y = new_y
         record.new_rotation = new_rot
@@ -535,6 +669,7 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.Yes:
             return
+        self._push_undo()
         self._repo.delete_by_id(record.id)
         self._records.pop(index)
         self._table_widget.set_records(self._records)
@@ -559,6 +694,7 @@ class MainWindow(QMainWindow):
         if self._current_index < 0 or self._current_index >= len(self._records):
             return
         record = self._records[self._current_index]
+        self._push_undo()
         record.status = "OK"
         record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._repo.update(record)
@@ -573,8 +709,10 @@ class MainWindow(QMainWindow):
         if self._current_index < 0 or self._current_index >= len(self._records):
             return
         record = self._records[self._current_index]
+        before = self._record_snapshot()
         dialog = EditDialog(record, self)
         if dialog.exec():
+            self._push_undo(before)
             record.status = "Edited"
             record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._repo.update(record)
@@ -587,26 +725,27 @@ class MainWindow(QMainWindow):
 
     def _update_progress(self) -> None:
         if not self._records:
-            self._lbl_total.setText(" Σ: 0")
-            self._lbl_ok.setText(" ✓: 0")
-            self._lbl_edit.setText(" ✎: 0")
-            self._lbl_pending.setText(" ⏳: 0")
-            self._lbl_align.setText(" ↻: 0")
+            self._lbl_total.setText("Total: 0")
+            self._lbl_ok.setText("OK: 0")
+            self._lbl_edit.setText("Edit: 0")
+            self._lbl_pending.setText("Pending: 0")
+            self._lbl_align.setText("Aligned: 0")
             return
         total = len(self._records)
         ok_count = sum(1 for r in self._records if r.status == "OK")
         edit_count = sum(1 for r in self._records if r.status == "Edited")
         pending_count = sum(1 for r in self._records if r.status == "Pending")
         align_count = sum(1 for r in self._records if r.status == "Aligned")
-        self._lbl_total.setText(f" Σ: {total}")
-        self._lbl_ok.setText(f" ✓: {ok_count}")
-        self._lbl_edit.setText(f" ✎: {edit_count}")
-        self._lbl_pending.setText(f" ⏳: {pending_count}")
-        self._lbl_align.setText(f" ↻: {align_count}")
+        self._lbl_total.setText(f"Total: {total}")
+        self._lbl_pending.setText(f"Pending: {pending_count}")
+        self._lbl_ok.setText(f"OK: {ok_count}")
+        self._lbl_edit.setText(f"Edit: {edit_count}")
+        self._lbl_align.setText(f"Aligned: {align_count}")
 
 
     def _export_report(self) -> None:
-        if not self._records:
+        all_records = self._repo.get_all()
+        if not all_records:
             QMessageBox.warning(self, "Warning", "No data to export.")
             return
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -617,11 +756,14 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        try:
-            file_path = self._exporter.export_report(self._records, file_path)
-            QMessageBox.information(self, "Success", f"Report exported:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Export Error", str(e))
+        self._set_exporting(True)
+        worker = ExportWorker(
+            self._exporter.export_report, (all_records, file_path), self
+        )
+        worker.finished_ok.connect(self._on_export_done)
+        worker.finished_err.connect(self._on_export_error)
+        self._export_worker = worker
+        worker.start()
 
     def _export_fixed(self) -> None:
         if not self._records or self._pickplace_data is None:
@@ -635,18 +777,48 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        try:
-            file_path = self._exporter.export_pickplace_fixed(
-                self._records, self._pickplace_data, file_path
-            )
-            QMessageBox.information(self, "Success", f"Fixed file exported:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Export Error", str(e))
+        self._set_exporting(True)
+        worker = ExportWorker(
+            self._exporter.export_pickplace_fixed,
+            (self._records, self._pickplace_data, file_path), self
+        )
+        worker.finished_ok.connect(self._on_export_done)
+        worker.finished_err.connect(self._on_export_error)
+        self._export_worker = worker
+        worker.start()
+
+    def _set_exporting(self, exporting: bool) -> None:
+        self._btn_export_report.setEnabled(not exporting)
+        self._btn_export_fixed.setEnabled(not exporting)
+        if exporting:
+            self._status_label.setText("Exporting...")
+
+    def _on_export_done(self, file_path: str) -> None:
+        self._set_exporting(False)
+        self._status_label.setText("Export complete")
+        QMessageBox.information(self, "Success", f"File exported:\n{file_path}")
+
+    def _on_export_error(self, message: str) -> None:
+        self._set_exporting(False)
+        self._status_label.setText("Export failed")
+        QMessageBox.critical(self, "Export Error", message)
 
     def _search_datasheet(self, mpn: str) -> None:
+        if not mpn:
+            return
+        if self._datasheet_worker and self._datasheet_worker.isRunning():
+            return
         self._status_label.setText(f"Searching datasheet for {mpn}...")
-        QApplication.processEvents()
-        url = DatasheetService.search(mpn)
+        self._review_panel.set_datasheet("Searching...")
+        self._review_panel.set_datasheet_searching(True)
+        worker = DatasheetWorker(mpn, self)
+        worker.finished_search.connect(self._on_datasheet_finished)
+        worker.error.connect(self._on_datasheet_error)
+        self._datasheet_worker = worker
+        worker.start()
+
+    def _on_datasheet_finished(self, mpn: str, url: str) -> None:
+        self._review_panel.set_datasheet_searching(False)
         record = self._records[self._current_index] if 0 <= self._current_index < len(self._records) else None
         if url:
             if record:
@@ -658,6 +830,11 @@ class MainWindow(QMainWindow):
             self._review_panel.set_datasheet("")
             self._status_label.setText(f"No datasheet found for {mpn}")
 
+    def _on_datasheet_error(self, message: str) -> None:
+        self._review_panel.set_datasheet_searching(False)
+        self._review_panel.set_datasheet("")
+        self._status_label.setText(f"Datasheet search error: {message}")
+
     def _batch_edit(self) -> None:
         indices = self._table_widget.get_checked_indices()
         if not indices:
@@ -666,23 +843,104 @@ class MainWindow(QMainWindow):
         dialog = BatchEditDialog(self)
         if not dialog.exec():
             return
+
+        summary = []
+        if dialog.is_apply_x:
+            summary.append(f"X offset: {dialog.offset_x}")
+        if dialog.is_apply_y:
+            summary.append(f"Y offset: {dialog.offset_y}")
+        if dialog.is_apply_rotation:
+            summary.append(f"Rotation offset: {dialog.offset_rotation}")
+        if dialog.is_negative_x:
+            summary.append("Make new X negative")
+        if dialog.is_negative_y:
+            summary.append("Make new Y negative")
+        if dialog.remark:
+            summary.append(f"Remark: {dialog.remark}")
+        if not summary:
+            return
+        reply = QMessageBox.question(
+            self, "Confirm Batch Edit",
+            f"Apply the following to {len(indices)} selected records?\n\n- " + "\n- ".join(summary),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for idx in indices:
+        self._push_undo()
+        progress = QProgressDialog(
+            "Applying batch edit...", "Cancel", 0, len(indices), self
+        )
+        progress.setWindowTitle("Batch Edit")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        for count, idx in enumerate(indices, start=1):
+            if progress.wasCanceled():
+                break
             record = self._records[idx]
             if dialog.is_apply_x:
-                record.new_x = record.old_x + dialog.offset_x
+                base_x = record.new_x if record.new_x is not None else record.old_x
+                record.new_x = round(base_x + dialog.offset_x, 4)
             if dialog.is_apply_y:
-                record.new_y = record.old_y + dialog.offset_y
+                base_y = record.new_y if record.new_y is not None else record.old_y
+                record.new_y = round(base_y + dialog.offset_y, 4)
             if dialog.is_apply_rotation:
-                record.new_rotation = record.old_rotation + dialog.offset_rotation
+                base_r = record.new_rotation if record.new_rotation is not None else record.old_rotation
+                record.new_rotation = round(base_r + dialog.offset_rotation, 4)
+            if dialog.is_negative_x:
+                base_x = record.new_x if record.new_x is not None else record.old_x
+                record.new_x = round(-base_x, 4)
+            if dialog.is_negative_y:
+                base_y = record.new_y if record.new_y is not None else record.old_y
+                record.new_y = round(-base_y, 4)
             if dialog.remark:
                 record.remark = dialog.remark
             record.status = "Edited"
             record.review_time = timestamp
             self._repo.update(record)
             self._table_widget.update_record_row(idx)
+            progress.setValue(count)
+            QApplication.processEvents()
+        progress.close()
         self._update_progress()
         self._status_label.setText(f"Batch edited {len(indices)} records")
+
+    def _mark_checked_ok(self) -> None:
+        indices = self._table_widget.get_checked_indices()
+        if not indices:
+            QMessageBox.warning(self, "Warning", "No records selected.")
+            return
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._push_undo()
+        progress = QProgressDialog(
+            "Marking records as OK...", "Cancel", 0, len(indices), self
+        )
+        progress.setWindowTitle("Mark OK")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        for count, idx in enumerate(indices, start=1):
+            if progress.wasCanceled():
+                break
+            record = self._records[idx]
+            record.status = "OK"
+            if record.new_x is None:
+                record.new_x = record.old_x
+            if record.new_y is None:
+                record.new_y = record.old_y
+            if record.new_rotation is None:
+                record.new_rotation = record.old_rotation
+            record.review_time = timestamp
+            self._repo.update(record)
+            self._table_widget.update_record_row(idx)
+            progress.setValue(count)
+            QApplication.processEvents()
+        progress.close()
+        self._table_widget.clear_checked()
+        self._update_progress()
+        self._status_label.setText(f"Marked OK: {len(indices)} records")
 
     def _delete_selected(self) -> None:
         indices = self._table_widget.get_checked_indices()
@@ -696,19 +954,67 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.Yes:
             return
+        self._push_undo()
         for idx in sorted(indices, reverse=True):
             record = self._records[idx]
-            self._repo.delete_by_id(record.id)
+            record.status = "Deleted"
+            self._repo.update(record)
             self._records.pop(idx)
         self._table_widget.set_records(self._records)
         self._review_panel.set_record_list(self._records)
         self._update_progress()
         if not self._records:
-            self._clear_all()
+            self._current_index = -1
+            self._session_file = None
+            self._review_panel.set_record_list([])
+            self._btn_export_report.setEnabled(True)
+            self._btn_export_fixed.setEnabled(False)
+            self._btn_batch_edit.setEnabled(False)
+            self._btn_ok_checked.setEnabled(False)
+            self._btn_delete.setEnabled(False)
+            self._btn_align.setEnabled(False)
+            self._status_label.setText("All records deleted")
         else:
             new_index = min(self._current_index, len(self._records) - 1)
             self._select_and_display(new_index)
-        self._status_label.setText(f"Deleted {len(indices)} records")
+            self._status_label.setText(f"Deleted {len(indices)} records")
+
+    def _show_about(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About CAM350 Review Assistant")
+        dlg.setFixedSize(420, 350)
+        layout = QVBoxLayout(dlg)
+
+        logo = QLabel()
+        pixmap = QPixmap(resource_path("assets/icon.ico"))
+        if not pixmap.isNull():
+            logo.setPixmap(pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo.setAlignment(Qt.AlignCenter)
+            layout.addWidget(logo)
+
+        title = QLabel("<h2 style='text-align:center;'>CAM350 Review Assistant</h2>")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        info = QLabel(
+            "<p><b>Version:</b> 1.2.0</p>"
+            "<p><b>License:</b> " + license_summary().replace("|", "<br>") + "</p>"
+            "<p><b>Description:</b> A tool for reviewing and editing PickPlace data, "
+            "aligning component origins, and exporting fixed position files for CAM350.</p>"
+            "<hr>"
+            "<p><b>Created by:</b> Nguyễn Hải Đăng</p>"
+            "<p><b>Phone:</b> +84908799042</p>"
+            "<p><b>Email:</b> <a href='mailto:haidang34821@gmail.com'>haidang34821@gmail.com</a></p>"
+        )
+        info.setOpenExternalLinks(True)
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        layout.addWidget(btn_close, alignment=Qt.AlignCenter)
+
+        dlg.exec()
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self)
@@ -723,10 +1029,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Vui lòng mở file PickPlace trước.")
             return
 
+        self._push_undo()
         wizard = OriginAlignWizard(
             self._pickplace_data, self._records, self._apply_align_record, self
         )
         wizard.exec()
+        self._update_progress()
+        self._review_panel.set_record_list(self._records)
+        if self._current_index >= 0 and self._current_index < len(self._records):
+            self._review_panel.display_record(
+                self._records[self._current_index],
+                self._current_index, len(self._records),
+            )
 
     def _apply_align_record(
         self, designator: str, new_x: Optional[float],
@@ -754,6 +1068,56 @@ class MainWindow(QMainWindow):
                 return r
         return None
 
+    def _record_snapshot(self) -> List[Dict[str, Any]]:
+        return SessionService.records_to_list(self._records)
+
+    def _push_undo(self, before: Optional[List[Dict[str, Any]]] = None) -> None:
+        self._undo_stack.append(before if before is not None else self._record_snapshot())
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._update_undo_actions()
+
+    def _restore_records(self, snap: List[Dict[str, Any]]) -> None:
+        records = SessionService.list_to_records(snap)
+        self._repo.delete_all()
+        for r in records:
+            r.id = self._repo.insert(r)
+        self._records = self._repo.get_all()
+        self._table_widget.set_records(self._records)
+        self._review_panel.set_record_list(self._records)
+        if self._records:
+            target = min(self._current_index, len(self._records) - 1)
+            self._select_and_display(target)
+        else:
+            self._current_index = -1
+            self._review_panel.set_record_list([])
+        self._update_progress()
+
+    def _update_undo_actions(self) -> None:
+        if self._undo_action:
+            self._undo_action.setEnabled(bool(self._undo_stack))
+        if self._redo_action:
+            self._redo_action.setEnabled(bool(self._redo_stack))
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._record_snapshot())
+        snap = self._undo_stack.pop()
+        self._restore_records(snap)
+        self._update_undo_actions()
+        self._status_label.setText("Undo: restored previous state")
+
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._record_snapshot())
+        snap = self._redo_stack.pop()
+        self._restore_records(snap)
+        self._update_undo_actions()
+        self._status_label.setText("Redo: restored next state")
+
     def _focus_search(self) -> None:
         self._table_widget._search_input.setFocus()
 
@@ -772,6 +1136,9 @@ class MainWindow(QMainWindow):
                     return
                 if reply == QMessageBox.Yes:
                     self._save_session()
+                    cfg = self._config_mgr.config
+                    cfg.lastSessionFile = self._session_file or ""
+                    self._config_mgr.save()
                 elif reply == QMessageBox.No:
                     self._repo.delete_all()
 
@@ -780,7 +1147,6 @@ class MainWindow(QMainWindow):
             cfg = self._config_mgr.config
             geo = self.saveGeometry()
             cfg.geometry = bytes(geo).hex()
-            cfg.lastSessionFile = ""
             self._config_mgr.save()
         except Exception:
             pass

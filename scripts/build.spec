@@ -15,6 +15,8 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(project_dir / "config" / "config.json"), "config"),
+        (str(project_dir / "assets" / "icon.ico"), "assets"),
+        (str(project_dir / "assets" / "rotation-guide.png"), "assets"),
     ],
     hiddenimports=[
         "openpyxl",
@@ -29,6 +31,14 @@ a = Analysis(
         "json",
         "numpy",
         "scipy.spatial",
+        "cryptography",
+        "cryptography.hazmat.primitives.asymmetric.ed25519",
+        "license.fingerprint",
+        "license.verify",
+        "license.state",
+        "license.gate",
+        "license.info",
+        "license.activation_dialog",
     ],
     hookspath=[],
     hooksconfig={},

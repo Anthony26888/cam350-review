@@ -1,6 +1,9 @@
 import sqlite3
 import os
+import shutil
 from typing import Optional
+
+from utils.path_utils import user_data_dir
 
 
 class Database:
@@ -8,12 +11,26 @@ class Database:
 
     def __init__(self, db_path: Optional[str] = None) -> None:
         if db_path is None:
-            db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database")
-            os.makedirs(db_dir, exist_ok=True)
+            db_dir = user_data_dir()
             db_path = os.path.join(db_dir, "cam350_review.db")
+            self._migrate_legacy(db_path)
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
+
+    @staticmethod
+    def _migrate_legacy(new_path: str) -> None:
+        if os.path.exists(new_path):
+            return
+        legacy = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database", "cam350_review.db"
+        )
+        if os.path.exists(legacy):
+            try:
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                shutil.copyfile(legacy, new_path)
+            except IOError:
+                pass
 
     @staticmethod
     def instance() -> "Database":

@@ -26,6 +26,7 @@ class AppConfig:
     lastReviewId: int = 0
     lastSessionFile: str = ""
     geometry: str = ""
+    licenseKey: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class AppConfig:
             "lastReviewId": self.lastReviewId,
             "lastSessionFile": self.lastSessionFile,
             "geometry": self.geometry,
+            "licenseKey": self.licenseKey,
         }
 
     @staticmethod
@@ -52,4 +54,5 @@ class AppConfig:
             lastReviewId=data.get("lastReviewId", 0),
             lastSessionFile=data.get("lastSessionFile", ""),
             geometry=data.get("geometry", ""),
+            licenseKey=data.get("licenseKey", ""),
         )

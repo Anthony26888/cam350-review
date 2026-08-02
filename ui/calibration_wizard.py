@@ -10,7 +10,7 @@ import pyautogui
 import win32gui
 
 from config.config_manager import ConfigManager
-from models.config import AppConfig, Point
+from models.config import Point
 
 
 class CalibrationWizard(QWidget):
@@ -207,12 +207,11 @@ class CalibrationWizard(QWidget):
 
     def _save_and_close(self) -> None:
         self._window_title = self._txt_window_title.text().strip()
-        config = AppConfig(
+        self._config_mgr.update(
             windowTitle=self._window_title,
             xTextbox=self._positions[0],
             yTextbox=self._positions[1],
             delay=self._delay_spin.value(),
         )
-        self._config_mgr.config = config
         QMessageBox.information(self, "Success", "Calibration saved successfully.")
         self.close()

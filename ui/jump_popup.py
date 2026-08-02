@@ -3,13 +3,39 @@ from typing import List, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFormLayout, QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
-    QLineEdit, QDoubleSpinBox, QTextEdit,
+    QLineEdit, QDoubleSpinBox, QTextEdit, QScrollArea, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QColor, QIcon, QPixmap, QResizeEvent
 
 from models.review import ReviewRecord
+from utils.path_utils import resource_path
 
+
+class _FitWidthLabel(QLabel):
+    def __init__(self, pixmap: QPixmap, tooltip: str, parent=None):
+        super().__init__(parent)
+        self._source = pixmap
+        self.setToolTip(tooltip)
+        self.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMaximumHeight(240)
+        self._update_pixmap()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_pixmap()
+
+    def _update_pixmap(self) -> None:
+        width = self.width()
+        if width <= 0 or self._source.isNull():
+            return
+        max_h = self.maximumHeight()
+        self.setPixmap(
+            self._source.scaled(
+                width, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        )
 
 class JumpPopup(QWidget):
     jump_requested = Signal(int)
@@ -24,79 +50,52 @@ class JumpPopup(QWidget):
         self._current_index: int = 0
 
         self.setWindowTitle("Component Info")
-        self.setWindowIcon(QIcon("assets/icon.ico"))
+        self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint | Qt.CustomizeWindowHint)
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(520)
 
         self.setStyleSheet("""
-            QWidget {
-                background-color: #f5f5f5;
-            }
             QLabel#title {
-                font-size: 14px;
                 font-weight: bold;
-                color: #1565C0;
+                color: #0D9488;
                 padding: 4px;
             }
             QLabel#field {
                 font-weight: bold;
-                color: #333;
+                color: #0F172A;
             }
             QLabel#value {
-                color: #555;
-            }
-            QPushButton {
-                min-height: 28px;
-                padding: 4px 12px;
+                color: #334155;
             }
             QPushButton#jump {
-                background-color: #1565C0;
+                background-color: #0D9488;
                 color: white;
                 font-weight: bold;
             }
             QPushButton#jump:hover {
-                background-color: #1976D2;
+                background-color: #0F766E;
             }
             QPushButton#ok {
-                background-color: #4CAF50;
+                background-color: #16A34A;
                 color: white;
             }
             QPushButton#ok:hover {
-                background-color: #66BB6A;
+                background-color: #15803D;
             }
             QPushButton#save {
-                background-color: #FF9800;
+                background-color: #F59E0B;
                 color: white;
             }
             QPushButton#save:hover {
-                background-color: #FFA726;
+                background-color: #D97706;
             }
             QPushButton#nav {
-                background-color: #e0e0e0;
+                background-color: #FFFFFF;
+                border: 1px solid #E2E8F0;
                 font-weight: bold;
             }
             QPushButton#nav:hover {
-                background-color: #bdbdbd;
-            }
-            QTableWidget {
-                background-color: white;
-                alternate-background-color: #fafafa;
-                border: 1px solid #ddd;
-            }
-            QTableWidget::item:selected {
-                background-color: #bbdefb;
-                color: black;
-            }
-            QHeaderView::section {
-                background-color: #e3e3e3;
-                padding: 2px 6px;
-                border: 1px solid #ccc;
-            }
-            QDoubleSpinBox, QTextEdit {
-                background-color: white;
-                border: 1px solid #ccc;
-                border-radius: 2px;
-                padding: 2px 4px;
+                background-color: #F1F5F9;
             }
         """)
 
@@ -163,12 +162,12 @@ class JumpPopup(QWidget):
         self._spin_new_x = QDoubleSpinBox()
         self._spin_new_x.setRange(-999999.0, 999999.0)
         self._spin_new_x.setDecimals(4)
-        self._spin_new_x.setStyleSheet("color: #D32F2F; font-weight: bold;")
+        self._spin_new_x.setStyleSheet("color: #0D9488; font-weight: bold;")
 
         self._spin_new_y = QDoubleSpinBox()
         self._spin_new_y.setRange(-999999.0, 999999.0)
         self._spin_new_y.setDecimals(4)
-        self._spin_new_y.setStyleSheet("color: #D32F2F; font-weight: bold;")
+        self._spin_new_y.setStyleSheet("color: #0D9488; font-weight: bold;")
 
         new_xy_layout = QHBoxLayout()
         new_xy_layout.setSpacing(2)
@@ -185,11 +184,19 @@ class JumpPopup(QWidget):
         self._spin_new_rot.setRange(-999999.0, 999999.0)
         self._spin_new_rot.setDecimals(4)
         self._spin_new_rot.setSuffix("°")
-        self._spin_new_rot.setStyleSheet("color: #D32F2F; font-weight: bold;")
+        self._spin_new_rot.setStyleSheet("color: #0D9488; font-weight: bold;")
 
         lbl_new_rot_title = QLabel("New Rot:")
         lbl_new_rot_title.setObjectName("field")
         form.addRow(lbl_new_rot_title, self._spin_new_rot)
+
+        # Rotation reference image
+        rot_guide_box = QVBoxLayout()
+        rot_guide_caption = QLabel("Rotation Guide")
+        rot_guide_caption.setObjectName("field")
+        rot_guide_box.addWidget(rot_guide_caption)
+        rot_guide_box.addWidget(self._rotation_image("rotation-guide.png", "Rotation guide"))
+        form.addRow(rot_guide_box)
 
         self._remark = QTextEdit()
         self._remark.setMaximumHeight(60)
@@ -212,9 +219,6 @@ class JumpPopup(QWidget):
         layout.addWidget(line2)
 
         # Action buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(4)
-
         self._btn_jump = QPushButton("Jump to CAM350")
         self._btn_jump.setObjectName("jump")
         self._btn_jump.clicked.connect(lambda: self.jump_requested.emit(self._current_index))
@@ -228,14 +232,19 @@ class JumpPopup(QWidget):
         self._btn_save.clicked.connect(self._on_save)
 
         self._btn_delete = QPushButton("Delete")
-        self._btn_delete.setStyleSheet("background-color: #D32F2F; color: white;")
+        self._btn_delete.setStyleSheet("background-color: #DC2626; color: white;")
         self._btn_delete.clicked.connect(lambda: self.delete_requested.emit(self._current_index))
 
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(4)
         btn_layout.addWidget(self._btn_jump)
-        btn_layout.addStretch()
         btn_layout.addWidget(self._btn_ok)
-        btn_layout.addWidget(self._btn_save)
-        btn_layout.addWidget(self._btn_delete)
+
+        split_layout = QHBoxLayout()
+        split_layout.setSpacing(4)
+        split_layout.addWidget(self._btn_save, 1)
+        split_layout.addWidget(self._btn_delete, 1)
+        btn_layout.addLayout(split_layout)
 
         layout.addLayout(btn_layout)
 
@@ -262,6 +271,16 @@ class JumpPopup(QWidget):
         self._mini_table.setAlternatingRowColors(True)
         self._mini_table.cellDoubleClicked.connect(self._on_table_click)
         layout.addWidget(self._mini_table, 1)
+
+    def _rotation_image(self, filename: str, tooltip: str) -> QLabel:
+        pixmap = QPixmap(resource_path(f"assets/{filename}"))
+        if pixmap.isNull():
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setToolTip(tooltip)
+            label.setText(tooltip)
+            return label
+        return _FitWidthLabel(pixmap, tooltip)
 
     def set_records(self, records: List[ReviewRecord], current_index: int) -> None:
         self._records = records
@@ -418,3 +437,7 @@ class JumpPopup(QWidget):
         self.raise_()
         self.adjustSize()
         self.setMinimumWidth(self.width())
+        screen = self.screen().availableGeometry() if self.screen() else None
+        if screen:
+            self.resize(min(self.width(), screen.width()), min(self.height(), screen.height()))
+            self.move(screen.center() - self.rect().center())
