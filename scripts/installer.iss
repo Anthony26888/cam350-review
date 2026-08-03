@@ -2,7 +2,7 @@
 ; Download Inno Setup: https://jrsoftware.org/isdl.php
 
 #define MyAppName "CAM350 Review Assistant"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "CAM350 Review"
 #define MyAppExeName "CAM350_Review.exe"
 

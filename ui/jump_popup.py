@@ -55,6 +55,34 @@ class JumpPopup(QWidget):
         self.setMinimumWidth(520)
 
         self.setStyleSheet("""
+            QWidget {
+                background-color: #F8FAFC;
+            }
+            QDoubleSpinBox, QTextEdit, QLineEdit {
+                background-color: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                padding: 4px 8px;
+            }
+            QTableWidget {
+                background-color: #FFFFFF;
+                alternate-background-color: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                gridline-color: #E2E8F0;
+            }
+            QTableWidget::item:selected {
+                background-color: #99F6E4;
+                color: #0F172A;
+            }
+            QHeaderView::section {
+                background-color: #F1F5F9;
+                color: #334155;
+                font-weight: bold;
+                padding: 4px 6px;
+                border: none;
+                border-bottom: 1px solid #E2E8F0;
+                border-right: 1px solid #E2E8F0;
+            }
             QLabel#title {
                 font-weight: bold;
                 color: #0D9488;
@@ -162,12 +190,12 @@ class JumpPopup(QWidget):
         self._spin_new_x = QDoubleSpinBox()
         self._spin_new_x.setRange(-999999.0, 999999.0)
         self._spin_new_x.setDecimals(4)
-        self._spin_new_x.setStyleSheet("color: #0D9488; font-weight: bold;")
+        self._spin_new_x.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
         self._spin_new_y = QDoubleSpinBox()
         self._spin_new_y.setRange(-999999.0, 999999.0)
         self._spin_new_y.setDecimals(4)
-        self._spin_new_y.setStyleSheet("color: #0D9488; font-weight: bold;")
+        self._spin_new_y.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
         new_xy_layout = QHBoxLayout()
         new_xy_layout.setSpacing(2)
@@ -184,7 +212,7 @@ class JumpPopup(QWidget):
         self._spin_new_rot.setRange(-999999.0, 999999.0)
         self._spin_new_rot.setDecimals(4)
         self._spin_new_rot.setSuffix("°")
-        self._spin_new_rot.setStyleSheet("color: #0D9488; font-weight: bold;")
+        self._spin_new_rot.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
         lbl_new_rot_title = QLabel("New Rot:")
         lbl_new_rot_title.setObjectName("field")

@@ -4,7 +4,7 @@ A desktop tool for reviewing and correcting PickPlace data used with **CAM350**.
 
 - Built with **Python 3 + PySide6 (Qt)** and **openpyxl**
 - Targets **Windows** (uses `win32gui`/`pyautogui` to drive CAM350)
-- Current version: **1.2.0**
+- Current version: **2.0.0**
 
 ---
 
@@ -61,7 +61,7 @@ A desktop tool for reviewing and correcting PickPlace data used with **CAM350**.
 ## Installation
 
 ### From the installer (recommended)
-Build or download the setup file (`CAM350_Review_Setup_1.2.0.exe`) and run it.
+Build or download the setup file (`CAM350_Review_Setup_2.0.0.exe`) and run it.
 It installs to `%ProgramFiles%\CAM350 Review Assistant` and creates a desktop shortcut.
 
 ### From source
@@ -154,7 +154,7 @@ python -m PyInstaller scripts/build.spec --noconfirm
 # 2. Build the setup program (Inno Setup 7)
 "C:\Program Files\Inno Setup 7\ISCC.exe" scripts/installer.iss
 ```
-Output: `dist\installer\CAM350_Review_Setup_1.2.0.exe`
+Output: `dist\installer\CAM350_Review_Setup_2.0.0.exe`
 
 ---
 
