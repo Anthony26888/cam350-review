@@ -7,11 +7,16 @@ from PySide6.QtWidgets import (
     QFormLayout, QRadioButton, QButtonGroup, QCheckBox,
     QTextEdit, QWidget, QApplication,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+
+MACRO_SWITCH_DELAY_S = 5
 
 from config.config_manager import ConfigManager
+from database.pcb_info_repo import PcbInfoRepo
+from models.pcb_info import PcbInfo
 from models.pickplace import PickPlaceData, PickPlaceComponent
 from models.review import ReviewRecord
+from services.cam350_controller import Cam350Controller
 from services.gerber.gerber_parser import parse_flashes
 from services.gerber.panel_detector import detect_panel, PanelInfo
 from services.gerber.origin_aligner import AlignResult, align_instance
@@ -71,7 +76,7 @@ class AlignWorker(QThread):
             all_paste_pts = (gtp_pts or []) + (gbp_pts or [])
             paste_pts = all_paste_pts if all_paste_pts else None
 
-            align_results: Dict[int, AlignResult] = {}
+            align_results = {}
 
             total_instances = panel_info.count
             for i, instance in enumerate(panel_info.instances):
@@ -148,20 +153,31 @@ class OriginAlignWizard(QDialog):
         self._records = records
         self._apply_callback = apply_callback
         self._config_mgr = ConfigManager.instance()
+        self._cam350 = Cam350Controller()
 
-        self._gko_path: Optional[str] = None
-        self._gtp_path: Optional[str] = None
-        self._gbp_path: Optional[str] = None
-        self._panel_info: Optional[PanelInfo] = None
-        self._origin_mode: str = 'panel'
-        self._rotation_angle: int = 0
-        self._chosen_rotation_angle: int = 0
-        self._mil_to_mm: bool = False
-        self._chosen_mil_to_mm: bool = False
-        self._detect_rotation: bool = False
-        self._align_results: Dict[int, AlignResult] = {}
-        self._transforms: List[ComponentTransform] = []
-        self._worker_done: bool = False
+        self._gko_path = None
+        self._gtp_path = None
+        self._gbp_path = None
+        self._gto_path = None
+        self._gbo_path = None
+        self._panel_info = None
+        self._origin_mode = 'panel'
+        self._rotation_angle = 0
+        self._chosen_rotation_angle = 0
+        self._mil_to_mm = False
+        self._chosen_mil_to_mm = False
+        self._detect_rotation = False
+        self._align_results = {}
+        self._transforms = []
+        self._worker_done = False
+        self._macro_x = None
+        self._macro_y = None
+        self._macro_layer = 'top'
+        self._macro_running = False
+        self._macro_countdown = 0
+        self._macro_timer = QTimer(self)
+
+        self._macro_timer.timeout.connect(self._tick_macro_countdown)
 
         self.setWindowTitle("Align PickPlace Origin")
         self.setMinimumSize(650, 500)
@@ -217,7 +233,7 @@ class OriginAlignWizard(QDialog):
         btn_layout.addWidget(self._btn_next)
         layout.addLayout(btn_layout)
 
-        self._step_index: int = 0
+        self._step_index = 0
 
     def _clear_content(self) -> None:
         while self._content_area.count():
@@ -226,6 +242,7 @@ class OriginAlignWizard(QDialog):
                 item.widget().deleteLater()
 
     def _show_step(self, step: int) -> None:
+        self._macro_timer.stop()
         self._clear_content()
         self._step_index = step
         self._result_text.setVisible(False)
@@ -237,6 +254,7 @@ class OriginAlignWizard(QDialog):
             self._step_panel_check,
             self._step_options,
             self._step_run,
+            self._step_macro,
             self._step_result,
         ]
 
@@ -248,7 +266,7 @@ class OriginAlignWizard(QDialog):
         self._btn_cancel.setVisible(step < len(steps) - 1)
 
     def _step_files(self) -> None:
-        self._lbl_title.setText("Step 1/5: Chọn file Gerber")
+        self._lbl_title.setText("Step 1/6: Chọn file Gerber")
 
         group = QGroupBox("Gerber Files")
         form = QFormLayout(group)
@@ -280,9 +298,28 @@ class OriginAlignWizard(QDialog):
         gbp_layout.addWidget(btn_gbp)
         form.addRow("GBP (Bottom Paste):", gbp_layout)
 
+        gto_layout = QHBoxLayout()
+        self._lbl_gto = QLabel("(không bắt buộc)")
+        self._lbl_gto.setStyleSheet("color: #888;")
+        btn_gto = QPushButton("Browse...")
+        btn_gto.clicked.connect(self._browse_gto)
+        gto_layout.addWidget(self._lbl_gto, 1)
+        gto_layout.addWidget(btn_gto)
+        form.addRow("GTO (Top Overlay / Silkscreen):", gto_layout)
+
+        gbo_layout = QHBoxLayout()
+        self._lbl_gbo = QLabel("(không bắt buộc)")
+        self._lbl_gbo.setStyleSheet("color: #888;")
+        btn_gbo = QPushButton("Browse...")
+        btn_gbo.clicked.connect(self._browse_gbo)
+        gbo_layout.addWidget(self._lbl_gbo, 1)
+        gbo_layout.addWidget(btn_gbo)
+        form.addRow("GBO (Bottom Overlay / Silkscreen):", gbo_layout)
+
         info = QLabel(
             "* GKO là bắt buộc (Gerber Outline).\n"
-            "GTP/GBP giúp dò offset chính xác hơn (khuyến nghị)."
+            "GTP/GBP giúp dò offset chính xác hơn (khuyến nghị).\n"
+            "GTO/GBO (tên/designator trên board) chỉ dùng để hiển thị trong Gerber View."
         )
         info.setStyleSheet("color: #666; font-style: italic; margin-top: 8px;")
 
@@ -290,7 +327,7 @@ class OriginAlignWizard(QDialog):
         self._content_area.addWidget(info)
 
     def _step_panel_check(self) -> None:
-        self._lbl_title.setText("Step 2/5: Kết quả phát hiện Panel")
+        self._lbl_title.setText("Step 2/6: Kết quả phát hiện Panel")
 
         panel_info = self._panel_info
         if not panel_info:
@@ -339,7 +376,7 @@ class OriginAlignWizard(QDialog):
             self._content_area.addWidget(info)
 
     def _step_options(self) -> None:
-        self._lbl_title.setText("Step 3/5: Tuỳ chọn xoay và đơn vị")
+        self._lbl_title.setText("Step 3/6: Tuỳ chọn xoay và đơn vị")
 
         panel_info = self._panel_info
         if not panel_info:
@@ -349,7 +386,7 @@ class OriginAlignWizard(QDialog):
         rot_layout = QVBoxLayout(rot_group)
 
         self._rot_group = QButtonGroup(self)
-        angles = [(0, "0° (không xoay) — mặc định"), (90, "90°"), (180, "180°"), (270, "270°")]
+        angles = [(0, "0° (không xoay) — mặc định"), (90, "90°")]
         self._rb_rot = {}
         for val, label in angles:
             rb = QRadioButton(label)
@@ -372,7 +409,7 @@ class OriginAlignWizard(QDialog):
         self._content_area.addWidget(unit_group)
 
     def _step_run(self) -> None:
-        self._lbl_title.setText("Step 4/5: Đang tính toán offset...")
+        self._lbl_title.setText("Step 4/6: Đang tính toán offset...")
 
         self._progress_bar.setVisible(True)
         self._lbl_progress.setVisible(True)
@@ -404,6 +441,7 @@ class OriginAlignWizard(QDialog):
         self._lbl_progress.setText(message)
         if pct >= 0:
             self._progress_bar.setValue(pct)
+            return
 
     def _on_worker_finished(
         self,
@@ -419,7 +457,7 @@ class OriginAlignWizard(QDialog):
         self._origin_mode = origin_mode
         self._rotation_angle = rotation_angle
 
-        self._lbl_title.setText("Step 4/5: Đang cập nhật dữ liệu...")
+        self._lbl_title.setText("Step 4/6: Đang cập nhật dữ liệu...")
 
         total = len(transforms)
         self._progress_bar.setMaximum(total)
@@ -449,15 +487,152 @@ class OriginAlignWizard(QDialog):
 
         self._worker_done = True
         self._btn_next.setEnabled(True)
-        self._btn_next.setText("Xem kết quả ▶")
+        self._btn_next.setText("Next ▶")
         self._btn_back.setEnabled(True)
         self._btn_cancel.setEnabled(True)
 
-    def _on_xem_ket_qua(self) -> None:
-        self._show_step(4)
+    def _step_macro(self) -> None:
+        self._lbl_title.setText("Step 5/6: Lấy Panel Origin từ CAM350 (Macro)")
+
+        layer_group = QGroupBox("Layer")
+        layer_layout = QVBoxLayout(layer_group)
+
+        self._rb_layer_top = QRadioButton("Top layer (mặc định)")
+        self._rb_layer_top.setChecked(True)
+        self._rb_layer_bottom = QRadioButton("Bottom layer")
+
+        self._layer_group = QButtonGroup(self)
+        self._layer_group.addButton(self._rb_layer_top)
+        self._layer_group.addButton(self._rb_layer_bottom)
+
+        layer_layout.addWidget(self._rb_layer_top)
+        layer_layout.addWidget(self._rb_layer_bottom)
+        self._content_area.addWidget(layer_group)
+
+        group = QGroupBox("Macro")
+        layout = QVBoxLayout(group)
+
+        info = QLabel(
+            "Nhấn nút bên dưới để chạy macro trên CAM350:\n"
+            "1. Sau khi bấm Run Macro, app đợi 5 giây — hãy chuyển sang cửa sổ CAM350 trong lúc đó\n"
+            "2. Nếu Step 2 chọn xoay 90°: chương trình bấm Ctrl+Alt+R để xoay board 90° trước\n"
+            "3. Top layer: Ctrl+Alt+X (hiện marker Space Origin) → jump tới Panel Origin (từ Step 2)\n"
+            "4. Bottom layer: Ctrl+Alt+B (xem Bottom) → Ctrl+Alt+X → jump tới tọa độ biến đổi tương ứng\n"
+            "5. Xác nhận thông báo hiện lên bằng phím Enter\n"
+            "\n"
+            "Lưu ý: CAM350 phải đang hiển thị đơn vị mm để tọa độ jump chính xác."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #666; padding: 4px 0;")
+        layout.addWidget(info)
+
+        self._btn_run_macro = QPushButton("Run Macro ▶")
+        self._btn_run_macro.setMinimumHeight(36)
+        self._btn_run_macro.setStyleSheet("background-color: #0D9488; color: white; font-weight: bold;")
+        self._btn_run_macro.clicked.connect(self._run_macro)
+        layout.addWidget(self._btn_run_macro)
+
+        self._lbl_macro_status = QLabel("Chưa chạy.")
+        self._lbl_macro_status.setWordWrap(True)
+        self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;")
+        layout.addWidget(self._lbl_macro_status)
+
+        self._content_area.addWidget(group)
+
+        cfg = self._config_mgr.config
+        if (not cfg.xTextbox.x) or (not cfg.yTextbox.x):
+            self._btn_run_macro.setEnabled(False)
+            self._lbl_macro_status.setText("CAM350 chưa được calibrate. Vui lòng chạy Calibration Wizard trước.")
+            self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: #fff0f0; padding: 8px; border: 1px solid #ccc;")
+            return
+        else:
+            if self._macro_x is None:
+                return
+            if self._macro_y is None:
+                return
+            layer_label = "Top" if self._macro_layer == "top" else "Bottom"
+            self._lbl_macro_status.setText(f"Đã lấy Panel Origin ({layer_label}): X = {self._macro_x:.4f}, Y = {self._macro_y:.4f}")
+            return
+
+    def _run_macro(self) -> None:
+        if self._macro_running:
+            return
+        self._macro_running = True
+        self._btn_run_macro.setEnabled(False)
+        self._btn_next.setEnabled(False)
+        self._btn_back.setEnabled(False)
+        self._btn_cancel.setEnabled(False)
+
+        self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;")
+
+        self._macro_countdown = MACRO_SWITCH_DELAY_S
+        self._lbl_macro_status.setText(f"Vui lòng chuyển sang cửa sổ CAM350 trong {self._macro_countdown} giây...")
+        QApplication.processEvents()
+        self._macro_timer.start(1000)
+
+    def _tick_macro_countdown(self) -> None:
+        self._macro_countdown -= 1
+        if self._macro_countdown <= 0:
+            self._macro_timer.stop()
+            self._execute_macro()
+            return
+        self._lbl_macro_status.setText(f"Vui lòng chuyển sang cửa sổ CAM350 trong {self._macro_countdown} giây...")
+
+    def _execute_macro(self) -> None:
+        self._lbl_macro_status.setText("Đang chạy macro trên CAM350...")
+        QApplication.processEvents()
+
+        layer = "bottom" if self._rb_layer_bottom.isChecked() else "top"
+        error = None
+        ox = oy = None
+        angle_deg = int(self._chosen_rotation_angle or self._rotation_angle or 0)
+        try:
+            pox, poy = self._panel_info.panel_origin
+            pw = self._panel_info.panel_w
+            ph = self._panel_info.panel_h
+            if angle_deg == 90:
+                if layer == "bottom":
+                    ox, oy = pox, poy
+                else:
+                    ox, oy = pox, ph + poy
+            else:
+                if layer == "bottom":
+                    ox, oy = pox + pw, poy
+                else:
+                    ox, oy = pox, poy
+        except (AttributeError, TypeError):
+            error = "Chưa có dữ liệu Panel Origin từ Step 2."
+
+        self._lbl_macro_status.setText(f"Đang chạy macro trên CAM350... (layer={layer}, angle={angle_deg}°, jump=({ox}, {oy}))")
+        QApplication.processEvents()
+
+        if error is None:
+            try:
+                self._cam350.run_origin_macro(ox, oy, layer=layer, angle_deg=angle_deg)
+            except RuntimeError as e:
+                error = str(e)
+            except Exception as e:
+                error = str(e)
+
+        self._macro_running = False
+        self._btn_run_macro.setEnabled(True)
+        self._btn_next.setEnabled(True)
+        self._btn_back.setEnabled(True)
+        self._btn_cancel.setEnabled(True)
+
+        if error is not None:
+            self._lbl_macro_status.setText(f"Macro thất bại: {error}")
+            self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: #fff0f0; padding: 8px; border: 1px solid #ccc;")
+            return
+
+        self._macro_layer = layer
+        self._macro_x = ox
+        self._macro_y = oy
+        layer_label = "Top" if layer == "top" else "Bottom"
+        self._lbl_macro_status.setText(f"Đã lấy Panel Origin ({layer_label}): X = {ox:.4f}, Y = {oy:.4f}")
 
     def _step_result(self) -> None:
-        self._lbl_title.setText("Step 5/5: Kết quả Alignment")
+        self._lbl_title.setText("Step 6/6: Kết quả Alignment")
 
         self._result_text.setVisible(True)
 
@@ -517,25 +692,44 @@ class OriginAlignWizard(QDialog):
         self._result_text.setText("\n".join(lines))
 
     def _browse_gko(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GKO", "", "Gerber Files (*.gko *.GKO);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GKO", "", "Gerber Files (*.gko *.GKO *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gko_path = path
             self._lbl_gko.setText(os.path.basename(path))
             self._lbl_gko.setStyleSheet("color: #000;")
+            self._config_mgr.update(gerberGko=path)
 
     def _browse_gtp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GTP", "", "Gerber Files (*.gtp *.GTP);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GTP", "", "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gtp_path = path
             self._lbl_gtp.setText(os.path.basename(path))
             self._lbl_gtp.setStyleSheet("color: #000;")
+            self._config_mgr.update(gerberGtp=path)
 
     def _browse_gbp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GBP", "", "Gerber Files (*.gbp *.GBP);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GBP", "", "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gbp_path = path
             self._lbl_gbp.setText(os.path.basename(path))
             self._lbl_gbp.setStyleSheet("color: #000;")
+            self._config_mgr.update(gerberGbp=path)
+
+    def _browse_gto(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GTO", "", "Gerber Files (*.gto *.GTO *.gbr *.GBR);;All Files (*.*)")
+        if path:
+            self._gto_path = path
+            self._lbl_gto.setText(os.path.basename(path))
+            self._lbl_gto.setStyleSheet("color: #000;")
+            self._config_mgr.update(gerberGto=path)
+
+    def _browse_gbo(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GBO", "", "Gerber Files (*.gbo *.GBO *.gbr *.GBR);;All Files (*.*)")
+        if path:
+            self._gbo_path = path
+            self._lbl_gbo.setText(os.path.basename(path))
+            self._lbl_gbo.setStyleSheet("color: #000;")
+            self._config_mgr.update(gerberGbo=path)
 
     def _on_next(self) -> None:
         if self._step_index == 0:
@@ -549,27 +743,47 @@ class OriginAlignWizard(QDialog):
                 QMessageBox.critical(self, "Error", f"Không thể đọc GKO: {e}")
                 return
             self._show_step(1)
-
+            return
         elif self._step_index == 1:
             self._show_step(2)
-
+            return
         elif self._step_index == 2:
             self._chosen_rotation_angle = self._rot_group.checkedId() if self._rot_group else 0
             self._chosen_mil_to_mm = self._rb_unit_mil.isChecked()
             self._show_step(3)
-
+            return
         elif self._step_index == 3:
             if self._worker_done:
                 self._show_step(4)
+                return
             else:
                 self._step_run()
-
+                return
         elif self._step_index == 4:
+            self._show_step(5)
+            return
+        elif self._step_index == 5:
+            self._save_panel_to_pcb_info()
             self.accept()
+            return
+        return
+
+    def _save_panel_to_pcb_info(self) -> None:
+        if self._panel_info is None:
+            return
+        pcb = PcbInfoRepo().load()
+        pcb.board_width = float(self._panel_info.panel_w)
+        pcb.board_height = float(self._panel_info.panel_h)
+        pcb.working_area_width = pcb.board_width
+        try:
+            PcbInfoRepo().save(pcb)
+        except RuntimeError:
+            return
 
     def _on_back(self) -> None:
         if self._step_index > 0:
             self._show_step(self._step_index - 1)
+            return
 
     def get_results(self) -> tuple:
         return self._transforms, self._panel_info

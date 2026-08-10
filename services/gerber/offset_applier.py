@@ -72,8 +72,8 @@ def step6_rotate(
 
     if layer_norm in ("top", "toplayer"):
         if angle_deg == 90:
-            x2 = board_h - y
-            y2 = x
+            x2 = x
+            y2 = -(board_h - y)
             r2 = (r_orig + 90) % 360
         elif angle_deg == 180:
             x2 = board_w - x

@@ -56,6 +56,66 @@ def _parse_coord(value: str, decimals: int, int_places: int) -> float:
     return sign * float(f"{int_part}.{frac_part}")
 
 
+def parse_segments(path: str) -> List[Tuple[float, float, float, float]]:
+    """Reconstruct draw segments (D01) from a Gerber file.
+
+    D02 (move) updates the current position without drawing. D01 draws a
+    segment from the previous position to the current one. Coordinates are
+    returned in mm.
+    """
+    prev_x = prev_y = 0.0
+    cx = cy = 0.0
+    unit_inch = True
+    int_places = 4
+    decimals = 4
+
+    segments: List[Tuple[float, float, float, float]] = []
+
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            if line.startswith('%MOIN*%'):
+                unit_inch = True
+                continue
+            if line.startswith('%MOMM*%'):
+                unit_inch = False
+                continue
+
+            m_fs = re.match(r'%FSLAX(\d)(\d)Y(\d)(\d)\*%', line)
+            if m_fs:
+                int_places = int(m_fs.group(1))
+                decimals = int(m_fs.group(2))
+                continue
+
+            if line.startswith('%'):
+                continue
+
+            m_cmd = re.match(r'(X(-?\d+))?(Y(-?\d+))?D0?(\d)\*?$', line)
+            if not m_cmd:
+                continue
+
+            has_x = m_cmd.group(2) is not None
+            has_y = m_cmd.group(4) is not None
+            if has_x:
+                cx = _parse_coord(m_cmd.group(2), decimals, int_places)
+            if has_y:
+                cy = _parse_coord(m_cmd.group(4), decimals, int_places)
+
+            code = m_cmd.group(5)
+            scale = 25.4 if unit_inch else 1.0
+            if code == '1':
+                segments.append(
+                    (prev_x * scale, prev_y * scale, cx * scale, cy * scale)
+                )
+
+            if code in ('1', '2'):
+                prev_x, prev_y = cx, cy
+    return segments
+
+
 def parse_gerber_points(
     path: str,
     codes: Tuple[str, ...] = ('1', '2'),

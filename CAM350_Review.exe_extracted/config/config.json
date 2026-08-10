@@ -1,0 +1,20 @@
+{
+    "windowTitle": "Calibration Wizard",
+    "xTextbox": {
+        "x": 854,
+        "y": 381
+    },
+    "yTextbox": {
+        "x": 1346,
+        "y": 386
+    },
+    "gotoButton": {
+        "x": 0,
+        "y": 0
+    },
+    "delay": 150,
+    "lastFile": "D:/Test/data11/Pick Place/pickplace.xlsx",
+    "lastReviewId": 1,
+    "lastSessionFile": "",
+    "geometry": "01d9d0cb0003000000000000fffffff80000077f0000040700000168000000a600000641000003610000000002000000078000000000000000170000077f00000407"
+}

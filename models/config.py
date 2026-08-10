@@ -27,6 +27,11 @@ class AppConfig:
     lastSessionFile: str = ""
     geometry: str = ""
     licenseKey: str = ""
+    gerberGko: str = ""
+    gerberGtp: str = ""
+    gerberGbp: str = ""
+    gerberGto: str = ""
+    gerberGbo: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -40,6 +45,11 @@ class AppConfig:
             "lastSessionFile": self.lastSessionFile,
             "geometry": self.geometry,
             "licenseKey": self.licenseKey,
+            "gerberGko": self.gerberGko,
+            "gerberGtp": self.gerberGtp,
+            "gerberGbp": self.gerberGbp,
+            "gerberGto": self.gerberGto,
+            "gerberGbo": self.gerberGbo,
         }
 
     @staticmethod
@@ -55,4 +65,9 @@ class AppConfig:
             lastSessionFile=data.get("lastSessionFile", ""),
             geometry=data.get("geometry", ""),
             licenseKey=data.get("licenseKey", ""),
+            gerberGko=data.get("gerberGko", ""),
+            gerberGtp=data.get("gerberGtp", ""),
+            gerberGbp=data.get("gerberGbp", ""),
+            gerberGto=data.get("gerberGto", ""),
+            gerberGbo=data.get("gerberGbo", ""),
         )

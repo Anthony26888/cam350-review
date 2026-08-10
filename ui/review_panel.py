@@ -193,6 +193,26 @@ class ReviewPanel(QWidget):
     def set_record_list(self, records: List[ReviewRecord]) -> None:
         self._record_list = records
 
+    def clear_record(self) -> None:
+        self._current_index = -1
+        self._total = 0
+        self._lbl_designator.setText("-")
+        self._lbl_mpn.setText("-")
+        self._lbl_layer.setText("-")
+        self._lbl_old_x.setText("-")
+        self._lbl_old_y.setText("-")
+        self._lbl_old_rot.setText("-")
+        self._lbl_new_x.setText("")
+        self._lbl_new_y.setText("")
+        self._lbl_new_rot.setText("")
+        self._lbl_status.setText("-")
+        self._lbl_remark.setText("-")
+        self._lbl_datasheet.setText("-")
+        self._lbl_progress.setText("-")
+        self._btn_datasheet.setEnabled(False)
+        self._btn_prev.setEnabled(False)
+        self._btn_next.setEnabled(False)
+
     def _get_records(self) -> List[ReviewRecord]:
         return getattr(self, "_record_list", [])
 

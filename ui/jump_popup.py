@@ -52,7 +52,7 @@ class JumpPopup(QWidget):
         self.setWindowTitle("Component Info")
         self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint | Qt.CustomizeWindowHint)
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(360)
 
         self.setStyleSheet("""
             QWidget {
@@ -190,11 +190,13 @@ class JumpPopup(QWidget):
         self._spin_new_x = QDoubleSpinBox()
         self._spin_new_x.setRange(-999999.0, 999999.0)
         self._spin_new_x.setDecimals(4)
+        self._spin_new_x.setMinimumWidth(100)
         self._spin_new_x.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
         self._spin_new_y = QDoubleSpinBox()
         self._spin_new_y.setRange(-999999.0, 999999.0)
         self._spin_new_y.setDecimals(4)
+        self._spin_new_y.setMinimumWidth(100)
         self._spin_new_y.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
         new_xy_layout = QHBoxLayout()
@@ -212,6 +214,7 @@ class JumpPopup(QWidget):
         self._spin_new_rot.setRange(-999999.0, 999999.0)
         self._spin_new_rot.setDecimals(4)
         self._spin_new_rot.setSuffix("°")
+        self._spin_new_rot.setMinimumWidth(100)
         self._spin_new_rot.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
         lbl_new_rot_title = QLabel("New Rot:")
@@ -464,8 +467,8 @@ class JumpPopup(QWidget):
         self.show()
         self.raise_()
         self.adjustSize()
-        self.setMinimumWidth(self.width())
+        self.setMinimumWidth(360)
         screen = self.screen().availableGeometry() if self.screen() else None
         if screen:
-            self.resize(min(self.width(), screen.width()), min(self.height(), screen.height()))
+            self.resize(min(360, screen.width()), min(self.height(), screen.height()))
             self.move(screen.center() - self.rect().center())

@@ -3,9 +3,9 @@ from typing import List, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QComboBox,
     QHeaderView, QTableWidget, QTableWidgetItem, QHBoxLayout,
-    QDoubleSpinBox, QLabel, QPushButton,
+    QDoubleSpinBox, QLabel, QPushButton, QStyle,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QColor
 
 from models.review import ReviewRecord
@@ -97,7 +97,9 @@ class TableWidget(QWidget):
         filter_layout.addWidget(self._y_min)
         filter_layout.addWidget(QLabel("~"))
         filter_layout.addWidget(self._y_max)
-        self._btn_clear = QPushButton("✕")
+        self._btn_clear = QPushButton()
+        self._btn_clear.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_LineEditClearButton))
+        self._btn_clear.setIconSize(QSize(14, 14))
         self._btn_clear.setFixedWidth(24)
         self._btn_clear.setToolTip("Clear all filters")
         self._btn_clear.clicked.connect(self._clear_filters)

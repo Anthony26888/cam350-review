@@ -1,3 +1,4 @@
+import math
 import os
 import json
 from datetime import datetime
@@ -9,8 +10,10 @@ from PySide6.QtWidgets import (
     QLabel, QSplitter, QMenuBar, QMenu, QToolBar,
     QApplication, QDialog, QProgressDialog, QStyle,
 )
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
-from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
+from PySide6.QtGui import (
+    QAction, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen,
+)
 
 from config.config_manager import ConfigManager
 from database.review_repo import ReviewRepo
@@ -29,8 +32,88 @@ from ui.batch_edit_dialog import BatchEditDialog
 from ui.settings_dialog import SettingsDialog
 from ui.calibration_wizard import CalibrationWizard
 from ui.origin_align_wizard import OriginAlignWizard
+from ui.gerber_viewer import GerberViewer
 from utils.path_utils import resource_path
 from ui.jump_popup import JumpPopup
+
+
+def _paint_icon(draw, size: int = 26) -> QIcon:
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(QPen(QColor("#334155"), 1.6))
+    p.setBrush(Qt.NoBrush)
+    draw(p, size)
+    p.end()
+    return QIcon(pm)
+
+
+def _board_icon() -> QIcon:
+    def _d(p, s):
+        p.drawRoundedRect(1.5, 1.5, s - 3, s - 3, 2.0, 2.0)
+        p.setPen(QPen(QColor("#0EA5E9"), 1.2))
+        p.drawLine(s * 0.3, s * 0.42, s * 0.7, s * 0.42)
+        p.drawLine(s * 0.5, s * 0.42, s * 0.5, s * 0.72)
+        p.setBrush(QColor("#0EA5E9"))
+        p.setPen(Qt.NoPen)
+        for x, y in ((s * 0.42, s * 0.36), (s * 0.58, s * 0.62)):
+            p.drawRect(x, y, s * 0.15, s * 0.12)
+    return _paint_icon(_d)
+
+
+def _doc_icon() -> QIcon:
+    def _d(p, s):
+        p.drawRect(2.5, 1.5, s - 7, s - 3)
+        for y in (s * 0.3, s * 0.5, s * 0.7):
+            p.drawLine(s * 0.2, y, s * 0.62, y)
+    return _paint_icon(_d)
+
+
+def _grid_icon() -> QIcon:
+    def _d(p, s):
+        p.drawRect(1.5, 1.5, s - 3, s - 3)
+        for i in range(1, 4):
+            y = 1.5 + i * (s - 3) / 4.0
+            x = 1.5 + i * (s - 3) / 4.0
+            p.drawLine(1.5, y, s - 1.5, y)
+            p.drawLine(x, 1.5, x, s - 1.5)
+    return _paint_icon(_d)
+
+
+def _chip_icon() -> QIcon:
+    def _d(p, s):
+        p.drawRect(s * 0.25, s * 0.25, s * 0.5, s * 0.5)
+        for i in range(3):
+            t = s * (0.3 + i * 0.2)
+            p.drawLine(s * 0.1, t, s * 0.25, t)
+            p.drawLine(s * 0.75, t, s * 0.9, t)
+            p.drawLine(t, s * 0.1, t, s * 0.25)
+            p.drawLine(t, s * 0.75, t, s * 0.9)
+    return _paint_icon(_d)
+
+
+def _gear_icon() -> QIcon:
+    def _d(p, s):
+        c = s / 2.0
+        for i in range(8):
+            a = math.radians(i * 45.0)
+            dx, dy = math.cos(a), math.sin(a)
+            p.drawLine(c + dx * 4.5, c + dy * 4.5, c + dx * 9.0, c + dy * 9.0)
+        p.drawEllipse(2.5, 2.5, s - 5, s - 5)
+        p.drawEllipse(c - 2.2, c - 2.2, 4.4, 4.4)
+    return _paint_icon(_d)
+
+
+def _export_icon() -> QIcon:
+    def _d(p, s):
+        p.drawRect(2.0, 1.5, s - 9, s - 7)
+        for y in (s * 0.28, s * 0.46):
+            p.drawLine(s * 0.2, y, s * 0.55, y)
+        p.drawLine(s * 0.62, s * 0.5, s - 2.0, s * 0.5)
+        p.drawLine(s - 2.5, s * 0.36, s - 0.5, s * 0.5)
+        p.drawLine(s - 2.5, s * 0.64, s - 0.5, s * 0.5)
+    return _paint_icon(_d)
 
 
 class DatasheetWorker(QThread):
@@ -79,9 +162,12 @@ class MainWindow(QMainWindow):
 
         self._records: List[ReviewRecord] = []
         self._pickplace_data: Optional[PickPlaceData] = None
+        self._gerber_viewer: Optional[QWidget] = None
+        self._gerber_view_settings: Dict[str, Any] = {}
         self._current_index: int = -1
         self._session_service = SessionService()
         self._session_file: Optional[str] = None
+        self._dirty = False
         self._jump_popup: Optional[JumpPopup] = None
 
         self._undo_stack: List[List[Dict[str, Any]]] = []
@@ -102,7 +188,7 @@ class MainWindow(QMainWindow):
         self._restore_state()
 
     def _build_menus(self) -> None:
-        menubar = self.menuBar()
+        menubar = self._menubar = QMenuBar()
 
         file_menu = menubar.addMenu("&File")
 
@@ -166,6 +252,17 @@ class MainWindow(QMainWindow):
         align_action.triggered.connect(self._align_origin)
         tools_menu.addAction(align_action)
 
+        gerber_check_action = QAction("Gerber View...", self)
+        gerber_check_action.triggered.connect(self._open_gerber_check)
+        tools_menu.addAction(gerber_check_action)
+        self._gerber_check_action = gerber_check_action
+
+        tools_menu.addSeparator()
+
+        pcb_info_action = QAction("PCB Info...", self)
+        pcb_info_action.triggered.connect(self._open_pcb_info)
+        tools_menu.addAction(pcb_info_action)
+
         tools_menu.addSeparator()
 
         calibrate_action = QAction("Calibration Wizard", self)
@@ -189,59 +286,62 @@ class MainWindow(QMainWindow):
 
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(24, 24))
 
-        def _std_button(text: str, sp) -> QPushButton:
-            btn = QPushButton(text)
-            btn.setIcon(self.style().standardIcon(sp))
+        def _std_button(tip: str, icon) -> QPushButton:
+            btn = QPushButton()
+            btn.setToolTip(tip)
+            btn.setIcon(icon)
+            btn.setFixedSize(34, 30)
             return btn
 
-        btn_new = _std_button("New", QStyle.StandardPixmap.SP_FileIcon)
+        spi = self.style().standardIcon
+        btn_new = _std_button("New Session (Ctrl+N)", spi(QStyle.StandardPixmap.SP_FileIcon))
         btn_new.clicked.connect(self._new_session)
 
-        btn_open_session = _std_button("Open Session", QStyle.StandardPixmap.SP_DirOpenIcon)
+        btn_open_session = _std_button("Open Session (Ctrl+O)", spi(QStyle.StandardPixmap.SP_DialogOpenButton))
         btn_open_session.clicked.connect(self._open_session)
 
-        btn_save = _std_button("Save", QStyle.StandardPixmap.SP_DialogSaveButton)
+        btn_save = _std_button("Save Session (Ctrl+S)", spi(QStyle.StandardPixmap.SP_DialogSaveButton))
         btn_save.clicked.connect(self._save_session)
 
-        self._btn_open = _std_button("Open Excel", QStyle.StandardPixmap.SP_DialogOpenButton)
+        self._btn_open = _std_button("Open PickPlace Excel", _grid_icon())
         self._btn_open.clicked.connect(self._open_file)
 
-        self._btn_align = _std_button("Align Origin", QStyle.StandardPixmap.SP_BrowserReload)
+        self._btn_align = _std_button("Align PickPlace Origin", spi(QStyle.StandardPixmap.SP_BrowserReload))
         self._btn_align.clicked.connect(self._align_origin)
         self._btn_align.setEnabled(False)
 
-        self._btn_export_report = _std_button(
-            "Export Report", QStyle.StandardPixmap.SP_FileDialogDetailedView
-        )
+        self._btn_gerber_check = _std_button("Gerber View", _board_icon())
+        self._btn_gerber_check.clicked.connect(self._open_gerber_check)
+        self._btn_gerber_check.setEnabled(False)
+
+        self._btn_export_report = _std_button("Export Review Report", _doc_icon())
         self._btn_export_report.clicked.connect(self._export_report)
         self._btn_export_report.setEnabled(False)
 
-        self._btn_export_fixed = _std_button(
-            "Export Fixed", QStyle.StandardPixmap.SP_FileDialogContentsView
-        )
+        self._btn_export_fixed = _std_button("Export PickPlace Fixed", _export_icon())
         self._btn_export_fixed.clicked.connect(self._export_fixed)
         self._btn_export_fixed.setEnabled(False)
 
-        self._btn_batch_edit = _std_button(
-            "Batch Edit", QStyle.StandardPixmap.SP_FileDialogInfoView
-        )
+        self._btn_batch_edit = _std_button("Batch Edit", spi(QStyle.StandardPixmap.SP_FileDialogInfoView))
         self._btn_batch_edit.clicked.connect(self._batch_edit)
         self._btn_batch_edit.setEnabled(False)
 
-        self._btn_ok_checked = _std_button(
-            "OK Checked", QStyle.StandardPixmap.SP_DialogApplyButton
-        )
+        self._btn_pcb_info = _std_button("PCB Info", _chip_icon())
+        self._btn_pcb_info.clicked.connect(self._open_pcb_info)
+
+        self._btn_ok_checked = _std_button("OK Checked", spi(QStyle.StandardPixmap.SP_DialogApplyButton))
         self._btn_ok_checked.clicked.connect(self._mark_checked_ok)
         self._btn_ok_checked.setObjectName("success")
         self._btn_ok_checked.setEnabled(False)
 
-        self._btn_delete = _std_button("Delete", QStyle.StandardPixmap.SP_TrashIcon)
+        self._btn_delete = _std_button("Delete Selected", spi(QStyle.StandardPixmap.SP_TrashIcon))
         self._btn_delete.clicked.connect(self._delete_selected)
         self._btn_delete.setObjectName("danger")
         self._btn_delete.setEnabled(False)
 
-        self._btn_settings = _std_button("Settings", QStyle.StandardPixmap.SP_ComputerIcon)
+        self._btn_settings = _std_button("Settings", _gear_icon())
         self._btn_settings.clicked.connect(self._open_settings)
 
         self._lbl_total = QLabel("Total: 0")
@@ -261,26 +361,32 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_open)
         toolbar.addWidget(self._btn_align)
+        toolbar.addWidget(self._btn_gerber_check)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_export_report)
         toolbar.addWidget(self._btn_export_fixed)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_batch_edit)
+        toolbar.addWidget(self._btn_pcb_info)
         toolbar.addWidget(self._btn_ok_checked)
         toolbar.addWidget(self._btn_delete)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_settings)
-        toolbar.addSeparator()
-        sep = QLabel("|")
-        sep.setObjectName("stat_sep")
-        toolbar.addWidget(sep)
-        toolbar.addWidget(self._lbl_total)
-        toolbar.addWidget(self._lbl_pending)
-        toolbar.addWidget(self._lbl_ok)
-        toolbar.addWidget(self._lbl_edit)
-        toolbar.addWidget(self._lbl_align)
 
         self.addToolBar(toolbar)
+
+        stats_widget = QWidget(self)
+        self._stats_widget = stats_widget
+        stats_layout = QHBoxLayout(stats_widget)
+        stats_layout.setContentsMargins(8, 0, 8, 0)
+        stats_layout.setSpacing(8)
+        stats_layout.addWidget(self._lbl_total)
+        stats_layout.addWidget(self._lbl_pending)
+        stats_layout.addWidget(self._lbl_ok)
+        stats_layout.addWidget(self._lbl_edit)
+        stats_layout.addWidget(self._lbl_align)
+        self._menubar.setCornerWidget(stats_widget, Qt.TopRightCorner)
+        self.setMenuBar(self._menubar)
 
         splitter = QSplitter(Qt.Horizontal)
 
@@ -327,64 +433,91 @@ class MainWindow(QMainWindow):
             except (ValueError, AttributeError):
                 pass
 
-        last_session = cfg.lastSessionFile
-        if last_session and os.path.exists(last_session):
-            try:
-                session = self._session_service.load(last_session)
-                if session.records:
-                    records = self._session_service.list_to_records(session.records)
-                    self._repo.delete_all()
-                    for r in records:
-                        r.id = self._repo.insert(r)
-                    self._records = self._repo.get_all()
-                    self._records = [r for r in self._records if r.status != "Deleted"]
-                    self._session_file = last_session
-                    self._table_widget.set_records(self._records)
-                    self._review_panel.set_record_list(self._records)
-
-                    if session.source_file and os.path.exists(session.source_file):
-                        try:
-                            self._pickplace_data = self._reader.read(session.source_file)
-                        except (FileNotFoundError, ValueError):
-                            self._pickplace_data = None
-
-                    if self._pickplace_data is None and records:
-                        self._pickplace_data = self._build_pickplace_data_from_records(records)
-
-                    self._btn_export_report.setEnabled(True)
-                    self._btn_export_fixed.setEnabled(self._pickplace_data is not None)
-                    self._btn_batch_edit.setEnabled(True)
-                    self._btn_ok_checked.setEnabled(True)
-                    self._btn_delete.setEnabled(True)
-                    self._btn_align.setEnabled(True)
-
-                    if self._records:
-                        target = min(session.current_index, len(self._records) - 1)
-                        self._select_and_display(target)
-                    self._update_progress()
-                    self._status_label.setText(f"Restored session: {os.path.basename(last_session)}")
-                    return
-            except (FileNotFoundError, json.JSONDecodeError):
-                pass
-
         self._status_label.setText("No session to restore. Open a PickPlace file or load a session.")
 
     def _clear_all(self) -> None:
+        self._dirty = False
         self._repo.delete_all()
         self._records = []
         self._pickplace_data = None
+        self._gerber_viewer = None
         self._current_index = -1
         self._session_file = None
         self._table_widget.set_records([])
         self._review_panel.set_record_list([])
+        self._review_panel.clear_record()
         self._btn_export_report.setEnabled(False)
         self._btn_export_fixed.setEnabled(False)
         self._btn_batch_edit.setEnabled(False)
         self._btn_ok_checked.setEnabled(False)
         self._btn_delete.setEnabled(False)
         self._btn_align.setEnabled(False)
+        self._update_gerber_view_button()
         self._update_progress()
         self._status_label.setText("Ready")
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            PcbInfoRepo().clear()
+        except RuntimeError:
+            pass
+
+    @staticmethod
+    def _current_pcb_info_dict() -> Optional[dict]:
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            pcb = PcbInfoRepo().load()
+        except RuntimeError:
+            return None
+        if not pcb.has_data():
+            return None
+        return pcb.to_dict()
+
+    def _update_gerber_view_button(self) -> None:
+        enabled = bool(self._records)
+        self._btn_gerber_check.setEnabled(enabled)
+        self._gerber_check_action.setEnabled(enabled)
+
+    @staticmethod
+    def _restore_pcb_info(session) -> None:
+        from database.pcb_info_repo import PcbInfoRepo
+        from models.pcb_info import PcbInfo
+        repo = PcbInfoRepo()
+        if session.pcb_info:
+            try:
+                repo.save(PcbInfo.from_dict(session.pcb_info))
+                return
+            except RuntimeError:
+                pass
+        try:
+            repo.clear()
+        except RuntimeError:
+            pass
+
+    def _restore_session_gerber(self, session) -> None:
+        paths = {
+            "gerberGko": getattr(session, "gerberGko", ""),
+            "gerberGtp": getattr(session, "gerberGtp", ""),
+            "gerberGbp": getattr(session, "gerberGbp", ""),
+            "gerberGto": getattr(session, "gerberGto", ""),
+            "gerberGbo": getattr(session, "gerberGbo", ""),
+        }
+        paths = {k: v for k, v in paths.items() if v}
+        if paths:
+            self._config_mgr.update(**paths)
+        else:
+            self._config_mgr.update(
+                gerberGko="", gerberGtp="", gerberGbp="",
+                gerberGto="", gerberGbo="",
+            )
+
+    def _existing_gerber_paths(self) -> Dict[str, str]:
+        cfg = self._config_mgr.config
+        out = {}
+        for key in ("gerberGko", "gerberGtp", "gerberGbp", "gerberGto", "gerberGbo"):
+            val = getattr(cfg, key, "")
+            if val and os.path.exists(val):
+                out[key] = val
+        return out
 
     @staticmethod
     def _build_pickplace_data_from_records(records: List[ReviewRecord]) -> PickPlaceData:
@@ -420,7 +553,7 @@ class MainWindow(QMainWindow):
         )
 
     def _new_session(self) -> None:
-        if self._records:
+        if self._dirty and self._records:
             reply = QMessageBox.question(
                 self, "New Session",
                 "Current session not saved. Discard?",
@@ -461,6 +594,9 @@ class MainWindow(QMainWindow):
         self._records = [r for r in self._records if r.status != "Deleted"]
         self._session_file = file_path
         self._pickplace_data = None
+        self._restore_pcb_info(session)
+        self._restore_session_gerber(session)
+        self._gerber_view_settings = dict(session.gerber_view or {})
 
         if session.source_file:
             try:
@@ -479,12 +615,14 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
         self._btn_align.setEnabled(True)
+        self._update_gerber_view_button()
 
         if self._records:
             target = min(session.current_index, len(self._records) - 1)
             self._select_and_display(target)
 
         self._update_progress()
+        self._dirty = False
         self._status_label.setText(f"Loaded session: {os.path.basename(file_path)}")
 
     def _save_session_as(self) -> None:
@@ -504,13 +642,22 @@ class MainWindow(QMainWindow):
 
         deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
         source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
+        gerber = self._existing_gerber_paths()
         self._session_service.save(
             file_path, self._records + deleted_records,
             source_file=source_file,
             current_index=max(self._current_index, 0),
+            pcb_info=self._current_pcb_info_dict(),
+            gerberGko=gerber.get("gerberGko", ""),
+            gerberGtp=gerber.get("gerberGtp", ""),
+            gerberGbp=gerber.get("gerberGbp", ""),
+            gerberGto=gerber.get("gerberGto", ""),
+            gerberGbo=gerber.get("gerberGbo", ""),
+            gerber_view=self._current_gerber_view_settings(),
         )
         self._session_file = file_path
         self._config_mgr.update(lastSessionFile=file_path)
+        self._dirty = False
         self._status_label.setText(f"Session saved: {os.path.basename(file_path)}")
 
     def _save_session(self) -> None:
@@ -521,12 +668,21 @@ class MainWindow(QMainWindow):
         if self._session_file:
             deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
             source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
+            gerber = self._existing_gerber_paths()
             self._session_service.save(
                 self._session_file, self._records + deleted_records,
                 source_file=source_file,
                 current_index=max(self._current_index, 0),
+                pcb_info=self._current_pcb_info_dict(),
+                gerberGko=gerber.get("gerberGko", ""),
+                gerberGtp=gerber.get("gerberGtp", ""),
+                gerberGbp=gerber.get("gerberGbp", ""),
+                gerberGto=gerber.get("gerberGto", ""),
+                gerberGbo=gerber.get("gerberGbo", ""),
+                gerber_view=self._current_gerber_view_settings(),
             )
             self._config_mgr.update(lastSessionFile=self._session_file)
+            self._dirty = False
             self._status_label.setText(f"Session saved: {os.path.basename(self._session_file)}")
         else:
             self._save_session_as()
@@ -563,6 +719,7 @@ class MainWindow(QMainWindow):
             record.id = self._repo.insert(record)
             self._records.append(record)
 
+        self._dirty = True
         self._table_widget.set_records(self._records)
         self._review_panel.set_record_list(self._records)
         self._btn_export_report.setEnabled(True)
@@ -571,6 +728,7 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
         self._btn_align.setEnabled(True)
+        self._update_gerber_view_button()
 
         if self._records:
             self._select_and_display(0)
@@ -770,17 +928,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No data to export. Load a file first.")
             return
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"PickPlace_Fixed_{timestamp}.xlsx"
+        default_name = f"PickPlace_Fixed_{timestamp}.csv"
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Export PickPlace Fixed", default_name,
-            "Excel Files (*.xlsx);;All Files (*.*)"
+            "CSV Files (*.csv);;All Files (*.*)"
         )
         if not file_path:
             return
         self._set_exporting(True)
+        from database.pcb_info_repo import PcbInfoRepo
+        pcb_info = PcbInfoRepo().load()
         worker = ExportWorker(
             self._exporter.export_pickplace_fixed,
-            (self._records, self._pickplace_data, file_path), self
+            (self._records, self._pickplace_data, file_path, pcb_info), self
         )
         worker.finished_ok.connect(self._on_export_done)
         worker.finished_err.connect(self._on_export_error)
@@ -823,6 +983,7 @@ class MainWindow(QMainWindow):
         if url:
             if record:
                 record.datasheet = url
+                self._dirty = True
                 self._repo.update(record)
             self._review_panel.set_datasheet(url)
             self._status_label.setText(f"Datasheet found for {mpn}")
@@ -973,6 +1134,7 @@ class MainWindow(QMainWindow):
             self._btn_ok_checked.setEnabled(False)
             self._btn_delete.setEnabled(False)
             self._btn_align.setEnabled(False)
+            self._update_gerber_view_button()
             self._status_label.setText("All records deleted")
         else:
             new_index = min(self._current_index, len(self._records) - 1)
@@ -997,7 +1159,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         info = QLabel(
-            "<p><b>Version:</b> 2.0.0</p>"
+            "<p><b>Version:</b> 2.1.0</p>"
             "<p><b>License:</b> " + license_summary().replace("|", "<br>") + "</p>"
             "<p><b>Description:</b> A tool for reviewing and editing PickPlace data, "
             "aligning component origins, and exporting fixed position files for CAM350.</p>"
@@ -1020,6 +1182,11 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self)
         dialog.exec()
 
+    def _open_pcb_info(self) -> None:
+        from ui.pcb_info_dialog import PcbInfoDialog
+        dialog = PcbInfoDialog(self)
+        dialog.exec()
+
     def _open_calibration(self) -> None:
         wizard = CalibrationWizard(self)
         wizard.show()
@@ -1035,12 +1202,86 @@ class MainWindow(QMainWindow):
         )
         wizard.exec()
         self._update_progress()
+        self._update_gerber_view_button()
         self._review_panel.set_record_list(self._records)
         if self._current_index >= 0 and self._current_index < len(self._records):
             self._review_panel.display_record(
                 self._records[self._current_index],
                 self._current_index, len(self._records),
             )
+
+    def _open_gerber_check(self) -> None:
+        if not self._records:
+            QMessageBox.warning(self, "Warning", "Không có dữ liệu. Mở PickPlace hoặc session trước.")
+            return
+
+        cfg = self._config_mgr.config
+        gko = cfg.gerberGko if os.path.exists(cfg.gerberGko) else ""
+        gtp = cfg.gerberGtp if os.path.exists(cfg.gerberGtp) else ""
+        gbp = cfg.gerberGbp if os.path.exists(cfg.gerberGbp) else ""
+        gto = cfg.gerberGto if os.path.exists(cfg.gerberGto) else ""
+        gbo = cfg.gerberGbo if os.path.exists(cfg.gerberGbo) else ""
+
+        if not gko:
+            gko, _ = QFileDialog.getOpenFileName(
+                self, "Chọn file GKO (Outline)", "",
+                "Gerber Files (*.gko *.GKO *.gbr *.GBR);;All Files (*.*)"
+            )
+            if not gko:
+                return
+            self._config_mgr.update(gerberGko=gko)
+        if not gtp:
+            gtp, _ = QFileDialog.getOpenFileName(
+                self, "Chọn file GTP (Top Paste — tùy chọn)", "",
+                "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)"
+            )
+            self._config_mgr.update(gerberGtp=gtp)
+        if not gbp:
+            gbp, _ = QFileDialog.getOpenFileName(
+                self, "Chọn file GBP (Bottom Paste — tùy chọn)", "",
+                "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)"
+            )
+            self._config_mgr.update(gerberGbp=gbp)
+        if not gto:
+            gto, _ = QFileDialog.getOpenFileName(
+                self, "Chọn file GTO (Silkscreen — tùy chọn)", "",
+                "Gerber Files (*.gto *.GTO *.gbr *.GBR);;All Files (*.*)"
+            )
+            self._config_mgr.update(gerberGto=gto)
+        if not gbo:
+            gbo, _ = QFileDialog.getOpenFileName(
+                self, "Chọn file GBO (Bottom Silkscreen — tùy chọn)", "",
+                "Gerber Files (*.gbo *.GBO *.gbr *.GBR);;All Files (*.*)"
+            )
+            self._config_mgr.update(gerberGbo=gbo)
+
+        viewer = GerberViewer(
+            self._records, gko, gtp, gbp, gto, gbo,
+            display_settings=self._gerber_view_settings,
+        )
+        viewer.settings_saved.connect(self._on_gerber_view_settings_saved)
+        frame = self.frameGeometry()
+        view_frame = viewer.frameGeometry()
+        view_frame.moveCenter(frame.center())
+        viewer.move(view_frame.topLeft())
+        self._gerber_viewer = viewer
+        viewer.destroyed.connect(self._on_gerber_viewer_closed)
+        viewer.show()
+
+    def _on_gerber_viewer_closed(self, *_args: Any) -> None:
+        if self._gerber_viewer is not None:
+            self._gerber_viewer = None
+
+    def _current_gerber_view_settings(self) -> Dict[str, Any]:
+        viewer = getattr(self, "_gerber_viewer", None)
+        if viewer is not None and hasattr(viewer, "display_settings"):
+            return viewer.display_settings()
+        return dict(self._gerber_view_settings)
+
+    def _on_gerber_view_settings_saved(self, settings: dict) -> None:
+        self._gerber_view_settings = dict(settings or {})
+        if self._session_file and self._records:
+            self._save_session()
 
     def _apply_align_record(
         self, designator: str, new_x: Optional[float],
@@ -1072,6 +1313,7 @@ class MainWindow(QMainWindow):
         return SessionService.records_to_list(self._records)
 
     def _push_undo(self, before: Optional[List[Dict[str, Any]]] = None) -> None:
+        self._dirty = True
         self._undo_stack.append(before if before is not None else self._record_snapshot())
         if len(self._undo_stack) > 50:
             self._undo_stack.pop(0)
@@ -1103,6 +1345,7 @@ class MainWindow(QMainWindow):
     def _undo(self) -> None:
         if not self._undo_stack:
             return
+        self._dirty = True
         self._redo_stack.append(self._record_snapshot())
         snap = self._undo_stack.pop()
         self._restore_records(snap)
@@ -1112,6 +1355,7 @@ class MainWindow(QMainWindow):
     def _redo(self) -> None:
         if not self._redo_stack:
             return
+        self._dirty = True
         self._undo_stack.append(self._record_snapshot())
         snap = self._redo_stack.pop()
         self._restore_records(snap)
@@ -1123,7 +1367,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         try:
-            if self._records:
+            if self._dirty and self._records:
                 reply = QMessageBox.question(
                     self, "Save Session",
                     "Save current session before closing?\n"
@@ -1141,6 +1385,9 @@ class MainWindow(QMainWindow):
                     self._config_mgr.save()
                 elif reply == QMessageBox.No:
                     self._repo.delete_all()
+                    cfg = self._config_mgr.config
+                    cfg.lastSessionFile = ""
+                    self._config_mgr.save()
 
                 self._clear_all()
 
@@ -1149,5 +1396,11 @@ class MainWindow(QMainWindow):
             cfg.geometry = bytes(geo).hex()
             self._config_mgr.save()
         except Exception:
+            pass
+
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            PcbInfoRepo().clear()
+        except RuntimeError:
             pass
         super().closeEvent(event)

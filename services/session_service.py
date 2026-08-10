@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 from models.review import ReviewRecord
 
 
-SESSION_VERSION = 1
+SESSION_VERSION = 3
 
 
 class SessionData:
@@ -15,6 +15,13 @@ class SessionData:
         self.source_file: str = ""
         self.current_index: int = 0
         self.records: List[Dict[str, Any]] = []
+        self.pcb_info: Optional[Dict[str, Any]] = None
+        self.gerberGko: str = ""
+        self.gerberGtp: str = ""
+        self.gerberGbp: str = ""
+        self.gerberGto: str = ""
+        self.gerberGbo: str = ""
+        self.gerber_view: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -22,6 +29,13 @@ class SessionData:
             "source_file": self.source_file,
             "current_index": self.current_index,
             "records": self.records,
+            "pcb_info": self.pcb_info,
+            "gerberGko": self.gerberGko,
+            "gerberGtp": self.gerberGtp,
+            "gerberGbp": self.gerberGbp,
+            "gerberGto": self.gerberGto,
+            "gerberGbo": self.gerberGbo,
+            "gerber_view": self.gerber_view,
         }
 
     @staticmethod
@@ -31,6 +45,13 @@ class SessionData:
         obj.source_file = data.get("source_file", "")
         obj.current_index = data.get("current_index", 0)
         obj.records = data.get("records", [])
+        obj.pcb_info = data.get("pcb_info")
+        obj.gerberGko = data.get("gerberGko", "")
+        obj.gerberGtp = data.get("gerberGtp", "")
+        obj.gerberGbp = data.get("gerberGbp", "")
+        obj.gerberGto = data.get("gerberGto", "")
+        obj.gerberGbo = data.get("gerberGbo", "")
+        obj.gerber_view = data.get("gerber_view") or None
         return obj
 
 
@@ -88,11 +109,25 @@ class SessionService:
         records: List[ReviewRecord],
         source_file: str = "",
         current_index: int = 0,
+        pcb_info: Optional[Dict[str, Any]] = None,
+        gerberGko: str = "",
+        gerberGtp: str = "",
+        gerberGbp: str = "",
+        gerberGto: str = "",
+        gerberGbo: str = "",
+        gerber_view: Optional[Dict[str, Any]] = None,
     ) -> None:
         data = SessionData()
         data.source_file = source_file
         data.current_index = current_index
         data.records = SessionService.records_to_list(records)
+        data.pcb_info = pcb_info
+        data.gerberGko = gerberGko
+        data.gerberGtp = gerberGtp
+        data.gerberGbp = gerberGbp
+        data.gerberGto = gerberGto
+        data.gerberGbo = gerberGbo
+        data.gerber_view = gerber_view
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, indent=2, ensure_ascii=False)

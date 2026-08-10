@@ -33,8 +33,8 @@ def test_step6_rotate_top_90():
     comp = ComponentTransform("C1", "Top", 10, 20, 0)
     step4_apply_offset(comp, 0, 0, 0)
     step6_rotate(comp, board_w=100, board_h=50, angle_deg=90)
-    assert comp.new_x == 50 - 20
-    assert comp.new_y == 10
+    assert comp.new_x == 10
+    assert comp.new_y == -(50 - 20)
     assert comp.new_rotation == 90
 
 

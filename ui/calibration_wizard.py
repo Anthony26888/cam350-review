@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QSpinBox, QFormLayout, QGroupBox, QLineEdit,
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QColor, QPalette
 import pyautogui
 import win32gui
 
@@ -25,6 +25,11 @@ class CalibrationWizard(QWidget):
         self.setWindowTitle("Calibration Wizard")
         self.setMinimumWidth(520)
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint)
+
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(QPalette.Window, QColor("#F8FAFC"))
+        self.setPalette(palette)
 
         self._build_ui()
         self._show_step(0)

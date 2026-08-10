@@ -1,9 +1,11 @@
+import csv
 import os
-from typing import List
+from typing import List, Optional
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
+from models.pcb_info import PcbInfo
 from models.review import ReviewRecord
 from models.pickplace import PickPlaceData
 
@@ -78,6 +80,7 @@ class ExportService:
         records: List[ReviewRecord],
         original_data: PickPlaceData,
         file_path: str,
+        pcb_info: Optional[PcbInfo] = None,
     ) -> str:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
@@ -88,14 +91,9 @@ class ExportService:
         comp_by_des = {c.designator: c for c in original_data.components if c.designator}
         has_panel_instance = any(c.panel_instance is not None for c in original_data.components)
 
-        workbook = openpyxl.Workbook()
-        sheet = workbook.active
-        sheet.title = "PickPlace Fixed"
-
-        headers = list(original_data.headers)
+        headers = [h for h in original_data.headers if h.strip().lower() != "layer"]
         if has_panel_instance and "Panel_Instance" not in [h.strip() for h in headers]:
             headers.append("Panel_Instance")
-        _write_header(sheet, headers)
 
         panel_col_idx = None
         if has_panel_instance:
@@ -104,44 +102,42 @@ class ExportService:
                     panel_col_idx = i
                     break
 
-        row_idx = 2
-        for raw_row in original_data.raw_data:
-            des = str(raw_row.get("Designator", "")).strip()
-            if des not in active_desigs:
-                continue
-            record = modified.get(des)
-            comp = comp_by_des.get(des)
+        with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
 
-            for col_idx, header in enumerate(headers):
-                if panel_col_idx is not None and col_idx == panel_col_idx:
-                    value = comp.panel_instance if comp and comp.panel_instance is not None else ""
-                    sheet.cell(row=row_idx, column=col_idx + 1, value=value)
+            if pcb_info is not None and pcb_info.has_data():
+                writer.writerow(pcb_info.to_row())
+
+            for raw_row in original_data.raw_data:
+                des = str(raw_row.get("Designator", "")).strip()
+                if des not in active_desigs:
                     continue
+                record = modified.get(des)
+                comp = comp_by_des.get(des)
 
-                value = raw_row.get(header, "")
-                if record is not None:
-                    hdr_lower = header.lower()
-                    if hdr_lower == "x" and record.new_x is not None:
-                        value = record.new_x
-                    elif hdr_lower == "y" and record.new_y is not None:
-                        value = record.new_y
-                    elif hdr_lower == "rotation" and record.new_rotation is not None:
-                        value = record.new_rotation
-                sheet.cell(row=row_idx, column=col_idx + 1, value=value)
+                values = []
+                for col_idx, header in enumerate(headers):
+                    if panel_col_idx is not None and col_idx == panel_col_idx:
+                        value = comp.panel_instance if comp and comp.panel_instance is not None else ""
+                    else:
+                        value = raw_row.get(header, "")
+                        if record is not None:
+                            hdr_lower = header.lower()
+                            if hdr_lower == "x" and record.new_x is not None:
+                                value = record.new_x
+                            elif hdr_lower == "y" and record.new_y is not None:
+                                value = record.new_y
+                            elif hdr_lower == "rotation" and record.new_rotation is not None:
+                                value = record.new_rotation
+                    values.append(value)
+                writer.writerow(values)
 
-            _apply_row_style(sheet, row_idx, len(headers))
-            row_idx += 1
-
-        _auto_width(sheet, headers)
-
-        workbook.save(file_path)
-        workbook.close()
         return file_path
 
 
-def _write_header(sheet, headers: List[str]) -> None:
+def _write_header(sheet, headers: List[str], row: int = 1) -> None:
     for col_idx, header in enumerate(headers, start=1):
-        cell = sheet.cell(row=1, column=col_idx, value=header)
+        cell = sheet.cell(row=row, column=col_idx, value=header)
         cell.font = _HEADER_FONT
         cell.fill = _HEADER_FILL
         cell.alignment = Alignment(horizontal="center", vertical="center")

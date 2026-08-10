@@ -78,6 +78,25 @@ class Database:
         if "datasheet" not in columns:
             conn.execute("ALTER TABLE review ADD COLUMN datasheet TEXT DEFAULT ''")
             conn.commit()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pcb_info (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                board_width REAL DEFAULT 0,
+                board_height REAL DEFAULT 0,
+                working_area_width REAL DEFAULT 0,
+                position_working REAL DEFAULT 0,
+                x_boc1 REAL DEFAULT 0,
+                y_boc1 REAL DEFAULT 0,
+                x_boc2 REAL DEFAULT 0,
+                y_boc2 REAL DEFAULT 0,
+                x_boc3 REAL DEFAULT 0,
+                y_boc3 REAL DEFAULT 0,
+                thickness REAL DEFAULT 1.6
+            )
+            """
+        )
+        conn.commit()
 
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
         conn = self._get_connection()

@@ -41,11 +41,107 @@ def test_save_and_load(tmp_path):
     record = _make_record()
     SessionService.save(str(path), [record], source_file="src.xlsx", current_index=2)
     loaded = SessionService.load(str(path))
-    assert loaded.version == 1
+    assert loaded.version == 3
     assert loaded.source_file == "src.xlsx"
     assert loaded.current_index == 2
     assert len(loaded.records) == 1
     assert loaded.records[0]["designator"] == "C1"
+    assert loaded.pcb_info is None
+
+
+def test_save_and_load_gerber_paths(tmp_path):
+    path = tmp_path / "session_gerber.cam350review"
+    record = _make_record()
+    SessionService.save(
+        str(path), [record], source_file="src.xlsx",
+        gerberGko=r"D:\gerber\b.GKO",
+        gerberGtp=r"D:\gerber\b.GTP",
+        gerberGbp=r"D:\gerber\b.GBP",
+        gerberGto=r"D:\gerber\b.GTO",
+        gerberGbo=r"D:\gerber\b.GBO",
+    )
+    loaded = SessionService.load(str(path))
+    assert loaded.version == 3
+    assert loaded.gerberGko == r"D:\gerber\b.GKO"
+    assert loaded.gerberGtp == r"D:\gerber\b.GTP"
+    assert loaded.gerberGbp == r"D:\gerber\b.GBP"
+    assert loaded.gerberGto == r"D:\gerber\b.GTO"
+    assert loaded.gerberGbo == r"D:\gerber\b.GBO"
+
+
+def test_save_gerber_defaults_empty(tmp_path):
+    path = tmp_path / "session_default.cam350review"
+    record = _make_record()
+    SessionService.save(str(path), [record])
+    loaded = SessionService.load(str(path))
+    assert loaded.gerberGko == ""
+    assert loaded.gerberGbo == ""
+
+
+def test_save_and_load_with_pcb_info(tmp_path):
+    path = tmp_path / "session_pcb.cam350review"
+    record = _make_record()
+    pcb_info = {
+        "board_width": 120.5,
+        "board_height": 90.0,
+        "working_area_width": 120.5,
+        "position_working": 0.0,
+        "x_boc1": 10.0, "y_boc1": 20.0,
+        "x_boc2": 30.0, "y_boc2": 40.0,
+        "x_boc3": 50.0, "y_boc3": 60.0,
+        "thickness": 1.6,
+    }
+    SessionService.save(str(path), [record], source_file="src.xlsx", pcb_info=pcb_info)
+    loaded = SessionService.load(str(path))
+    assert loaded.pcb_info == pcb_info
+    assert loaded.pcb_info["board_width"] == 120.5
+
+
+def test_save_and_load_gerber_view(tmp_path):
+    path = tmp_path / "session_view.cam350review"
+    record = _make_record()
+    gerber_view = {
+        "layer": 1,
+        "rotation": 180,
+        "flip": True,
+        "offset_x": 1.25,
+        "offset_y": -0.5,
+        "outline": False,
+        "paste": True,
+        "silk": True,
+        "pickplace": False,
+        "crosshair": True,
+        "invert_rot": True,
+    }
+    SessionService.save(str(path), [record], source_file="src.xlsx", gerber_view=gerber_view)
+    loaded = SessionService.load(str(path))
+    assert loaded.gerber_view == gerber_view
+    assert loaded.gerber_view["rotation"] == 180
+    assert loaded.gerber_view["offset_y"] == -0.5
+
+
+def test_save_gerber_view_defaults_none(tmp_path):
+    path = tmp_path / "session_view_empty.cam350review"
+    record = _make_record()
+    SessionService.save(str(path), [record])
+    loaded = SessionService.load(str(path))
+    assert loaded.gerber_view is None
+
+
+def test_load_legacy_version(tmp_path):
+    import json
+    path = tmp_path / "legacy.cam350review"
+    data = {
+        "version": 1,
+        "source_file": "old.xlsx",
+        "current_index": 0,
+        "records": [],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    loaded = SessionService.load(str(path))
+    assert loaded.version == 1
+    assert loaded.pcb_info is None
 
 
 def test_load_missing_file(tmp_path):
