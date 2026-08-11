@@ -5,3 +5,4 @@ pywin32>=306
 numpy>=1.26.0
 scipy>=1.11.0
 cryptography>=42.0.0
+gerbonara>=1.6.3

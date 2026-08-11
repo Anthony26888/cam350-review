@@ -1159,7 +1159,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         info = QLabel(
-            "<p><b>Version:</b> 2.1.0</p>"
+            "<p><b>Version:</b> 2.1.1</p>"
             "<p><b>License:</b> " + license_summary().replace("|", "<br>") + "</p>"
             "<p><b>Description:</b> A tool for reviewing and editing PickPlace data, "
             "aligning component origins, and exporting fixed position files for CAM350.</p>"

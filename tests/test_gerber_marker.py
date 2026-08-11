@@ -154,3 +154,25 @@ def test_overlay_selected_still_visible_when_unselected_hidden():
     overlay = MarkerOverlayItem([(0.0, 0.0, 0.0, 3.0)], show_unselected=False)
     overlay.set_selected(0)
     assert _overlay_green_pix(overlay) > 0
+
+
+def test_overlay_arrow_visible_on_small_pad_low_zoom():
+    # small pad (half 0.4mm) rendered at a low zoom (0.3 px/mm, like fit view
+    # on a large board): the old proportional arrow was sub-pixel and
+    # invisible; the pixel floor must keep the rotation arrow visible
+    overlay = MarkerOverlayItem([(0.0, 0.0, 45.0, 0.4)])
+    span = 200
+    img = QImage(span, span, QImage.Format_ARGB32)
+    img.fill(0)
+    p = QPainter(img)
+    p.translate(span / 2.0, span / 2.0)
+    p.scale(0.3, 0.3)
+    overlay.paint(p, None)
+    p.end()
+    count = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.red() > 150 and c.green() < 100:
+                count += 1
+    assert count > 20, f"arrow invisible on small pad at low zoom (px={count})"

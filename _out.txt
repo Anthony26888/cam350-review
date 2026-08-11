@@ -1,0 +1,6 @@
+origin=(-48.2204, -3.3076) w=89.220 h=80.072
+gtp=704 gbp=2 comps=271 bbox x[-45.5684..38.6588] y[-1.4986..73.279]
+WIZARD combined: off=(0.0000,0.0000) m=249 resid=0.0000
+CORRECT top-only: off=(0.0000,0.0000) m=249 resid=0.0000
+NO-PASTE bbox: off=(-0.1558,0.8382)
+COMP C83 TopLayer orig_x=7.9502 -> new_x=56.1706

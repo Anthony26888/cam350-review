@@ -2,6 +2,7 @@ import pytest
 
 from services.gerber.offset_applier import (
     ComponentTransform,
+    apply_all_transforms,
     rotate_point,
     step4_apply_offset,
     step6_rotate,
@@ -55,3 +56,86 @@ def test_step7_mirror_bottom_only():
     step4_apply_offset(top_comp, 0, 0, 0)
     step7_mirror_bottom(top_comp, ref_width=100)
     assert top_comp.new_x == 10
+
+
+def test_step6_rotate_bottom_90_identity():
+    comp = ComponentTransform("C1", "Bottom", 10, 20, 30)
+    step4_apply_offset(comp, 0, 0, 0)
+    step6_rotate(comp, board_w=100, board_h=50, angle_deg=90)
+    assert comp.new_x == 10
+    assert comp.new_y == 20
+    assert comp.new_rotation == 30
+
+
+def test_step6_rotate_top_90_formula():
+    comp = ComponentTransform("C1", "Top", 10, 20, 30)
+    step4_apply_offset(comp, 0, 0, 0)
+    step6_rotate(comp, board_w=100, board_h=50, angle_deg=90)
+    assert comp.new_x == 10
+    assert comp.new_y == -(50 - 20)
+    assert comp.new_rotation == 120
+
+
+class _Inst:
+    def __init__(self, w, h):
+        self.w = w
+        self.h = h
+        self.origin = (0.0, 0.0)
+        self.k = 0
+
+
+class _Result:
+    offset_x = 0.0
+    offset_y = 0.0
+    rotation_angle = 0.0
+
+
+class _Panel:
+    def __init__(self, w, h):
+        self.panel_w = w
+        self.panel_h = h
+        self.panel_origin = (0.0, 0.0)
+        self.kind = "single"
+        self.is_panel = False
+        self.instances = [_Inst(0.0, 0.0)]
+
+
+def test_apply_all_transforms_bottom_90_ticked_keeps_xy():
+    panel = _Panel(100.0, 50.0)
+    panel.instances = [_Inst(100.0, 50.0)]
+    comp = ComponentTransform("C1", "Bottom", 10, 20, 30)
+    apply_all_transforms(
+        [comp], panel, {0: _Result()},
+        origin_mode="panel", rotation_angle=90,
+        rot_layers={"top": True, "bottom": True},
+    )
+    assert comp.new_x == 10
+    assert comp.new_y == 20
+
+
+def test_apply_all_transforms_bottom_90_unticked_keeps_mirror():
+    panel = _Panel(100.0, 50.0)
+    panel.instances = [_Inst(100.0, 50.0)]
+    comp = ComponentTransform("C1", "Bottom", 10, 20, 30)
+    apply_all_transforms(
+        [comp], panel, {0: _Result()},
+        origin_mode="panel", rotation_angle=90,
+        rot_layers={"top": True, "bottom": False},
+    )
+    assert comp.new_x == 50 - 10
+    assert comp.new_y == 20
+
+
+def test_apply_all_transforms_rotation_skipped_for_unticked_layer():
+    panel = _Panel(100.0, 50.0)
+    panel.instances = [_Inst(100.0, 50.0)]
+    comp = ComponentTransform("C1", "Top", 10, 20, 30)
+    apply_all_transforms(
+        [comp], panel, {0: _Result()},
+        origin_mode="panel", rotation_angle=90,
+        rot_layers={"top": False, "bottom": False},
+    )
+    # no 90° rotation, offset is identity -> coords unchanged for top
+    assert comp.new_x == 10
+    assert comp.new_y == 20
+    assert comp.new_rotation == 30

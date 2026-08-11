@@ -13,6 +13,20 @@ class LineShape:
     x2: float = 0.0
     y2: float = 0.0
     width: float = 0.1
+    negative: bool = False
+
+
+@dataclass
+class ArcShape:
+    x1: float = 0.0
+    y1: float = 0.0
+    x2: float = 0.0
+    y2: float = 0.0
+    cx: float = 0.0  # absolute center
+    cy: float = 0.0  # absolute center
+    clockwise: bool = True
+    width: float = 0.1
+    negative: bool = False
 
 
 @dataclass
@@ -25,6 +39,7 @@ class FlashShape:
     rot: float = 0.0
     pts: Optional[List[Tuple[float, float]]] = None
     macro: Optional["ApertureMacro"] = None
+    negative: bool = False
 
 
 @dataclass
@@ -37,6 +52,7 @@ class ApertureMacro:
 @dataclass
 class RenderData:
     lines: List[LineShape] = field(default_factory=list)
+    arcs: List[ArcShape] = field(default_factory=list)
     flashes: List[FlashShape] = field(default_factory=list)
 
     def bbox(self) -> Tuple[float, float, float, float]:
@@ -45,6 +61,10 @@ class RenderData:
         for ln in self.lines:
             xs += [ln.x1, ln.x2]
             ys += [ln.y1, ln.y2]
+        for ar in self.arcs:
+            for sx, sy in _sample_arc(ar.x1, ar.y1, ar.x2, ar.y2, ar.cx, ar.cy, ar.clockwise, 12):
+                xs.append(sx)
+                ys.append(sy)
         for f in self.flashes:
             xs.append(f.cx)
             ys.append(f.cy)
@@ -65,6 +85,27 @@ def _polygon_verts(diameter: float, n: int, rotation: float) -> List[Tuple[float
     for i in range(n):
         a = theta0 + 2.0 * math.pi * i / n
         pts.append((r * math.cos(a), r * math.sin(a)))
+    return pts
+
+
+def _sample_arc(
+    x1: float, y1: float, x2: float, y2: float,
+    cx: float, cy: float, clockwise: bool, steps: int,
+) -> List[Tuple[float, float]]:
+    """Sample an arc (absolute center) into `steps` points."""
+    radius = math.hypot(x1 - cx, y1 - cy)
+    if radius <= 1e-9:
+        return [(x1, y1), (x2, y2)]
+    start_ang = math.atan2(y1 - cy, x1 - cx)
+    end_ang = math.atan2(y2 - cy, x2 - cx)
+    if clockwise:
+        sweep = -((start_ang - end_ang) % (2.0 * math.pi))
+    else:
+        sweep = (end_ang - start_ang) % (2.0 * math.pi)
+    pts: List[Tuple[float, float]] = []
+    for k in range(steps + 1):
+        a = start_ang + sweep * k / steps
+        pts.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
     return pts
 
 

@@ -21,7 +21,7 @@ from services.gerber.gerber_parser import parse_flashes
 from services.gerber.panel_detector import detect_panel, PanelInfo
 from services.gerber.origin_aligner import AlignResult, align_instance
 from services.gerber.offset_applier import (
-    ComponentTransform, apply_all_transforms, round_coord,
+    ComponentTransform, apply_all_transforms, round_coord, _layer_frame,
 )
 
 
@@ -39,6 +39,7 @@ class AlignWorker(QThread):
         rotation_angle: int = 0,
         mil_to_mm: bool = False,
         detect_rotation: bool = False,
+        rot_layers: Optional[dict] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -50,6 +51,7 @@ class AlignWorker(QThread):
         self._rotation_angle = rotation_angle
         self._mil_to_mm = mil_to_mm
         self._detect_rotation = detect_rotation
+        self._rot_layers = rot_layers if rot_layers is not None else {"top": True, "bottom": False}
 
     def run(self) -> None:
         try:
@@ -73,10 +75,11 @@ class AlignWorker(QThread):
 
             self.progress.emit("Tính toán offset cho từng instance...", 30)
 
-            all_paste_pts = (gtp_pts or []) + (gbp_pts or [])
-            paste_pts = all_paste_pts if all_paste_pts else None
-
             align_results = {}
+
+            comps = self._pickplace.components
+            top_comps = [c for c in comps if _layer_frame(c.layer) == "top"]
+            bot_comps = [c for c in comps if _layer_frame(c.layer) == "bottom"]
 
             total_instances = panel_info.count
             for i, instance in enumerate(panel_info.instances):
@@ -85,21 +88,39 @@ class AlignWorker(QThread):
                     f"Instance {i + 1}/{total_instances}: {instance.sub_name or 'board'}...", pct
                 )
 
-                comps = self._pickplace.components
-                all_xs = [c.x * scale for c in comps]
-                all_ys = [c.y * scale for c in comps]
+                layer_results = {}
 
-                result = align_instance(
-                    instance, all_xs, all_ys,
-                    gtp_pts=paste_pts,
-                    layer="top",
-                    is_panel=panel_info.is_panel,
-                    dy_mm=panel_info.dy_mm,
-                    board_h=instance.h,
-                    detect_rotation=self._detect_rotation,
-                )
-                result.n_total = len(comps)
-                align_results[i] = result
+                if top_comps:
+                    top_xs = [c.x * scale for c in top_comps]
+                    top_ys = [c.y * scale for c in top_comps]
+                    res_top = align_instance(
+                        instance, top_xs, top_ys,
+                        gtp_pts=gtp_pts,
+                        layer="top",
+                        is_panel=panel_info.is_panel,
+                        dy_mm=panel_info.dy_mm,
+                        board_h=instance.h,
+                        detect_rotation=self._detect_rotation,
+                    )
+                    res_top.n_total = len(top_comps)
+                    layer_results["top"] = res_top
+
+                if bot_comps:
+                    bot_xs = [c.x * scale for c in bot_comps]
+                    bot_ys = [c.y * scale for c in bot_comps]
+                    res_bot = align_instance(
+                        instance, bot_xs, bot_ys,
+                        gbp_pts=gbp_pts,
+                        layer="bottom",
+                        is_panel=panel_info.is_panel,
+                        dy_mm=panel_info.dy_mm,
+                        board_h=instance.h,
+                        detect_rotation=self._detect_rotation,
+                    )
+                    res_bot.n_total = len(bot_comps)
+                    layer_results["bottom"] = res_bot
+
+                align_results[i] = layer_results
 
             self.progress.emit("Tạo transforms...", 80)
 
@@ -131,6 +152,7 @@ class AlignWorker(QThread):
                 transforms, panel_info, align_results,
                 origin_mode=self._origin_mode,
                 rotation_angle=self._rotation_angle,
+                rot_layers=self._rot_layers,
             )
 
             self.progress.emit("Hoàn tất tính toán.", 100)
@@ -164,6 +186,7 @@ class OriginAlignWizard(QDialog):
         self._origin_mode = 'panel'
         self._rotation_angle = 0
         self._chosen_rotation_angle = 0
+        self._chosen_rot_layers = {"top": True, "bottom": False}
         self._mil_to_mm = False
         self._chosen_mil_to_mm = False
         self._detect_rotation = False
@@ -397,6 +420,23 @@ class OriginAlignWizard(QDialog):
             rot_layout.addWidget(rb)
         self._content_area.addWidget(rot_group)
 
+        self._rot_layer_group = QGroupBox("Chọn layer áp dụng công thức xoay 90°")
+        layer_layout = QVBoxLayout(self._rot_layer_group)
+        self._chk_rot_top = QCheckBox("Top layer — công thức 90°: (x, -(H-y))")
+        self._chk_rot_top.setChecked(True)
+        self._chk_rot_bottom = QCheckBox("Bottom layer — công thức 90°: (x, y)")
+        self._chk_rot_bottom.setChecked(False)
+        layer_layout.addWidget(self._chk_rot_top)
+        layer_layout.addWidget(self._chk_rot_bottom)
+        self._content_area.addWidget(self._rot_layer_group)
+
+        def _toggle_rot_layers(checked: bool) -> None:
+            self._rot_layer_group.setVisible(checked)
+            self._rot_layer_group.setEnabled(checked)
+
+        self._rb_rot[90].toggled.connect(_toggle_rot_layers)
+        _toggle_rot_layers(self._rb_rot[90].isChecked())
+
         unit_group = QGroupBox("Đơn vị toạ độ PickPlace")
         unit_layout = QVBoxLayout(unit_group)
 
@@ -432,6 +472,7 @@ class OriginAlignWizard(QDialog):
             rotation_angle=self._rotation_angle,
             mil_to_mm=self._mil_to_mm,
             detect_rotation=self._detect_rotation,
+            rot_layers=self._chosen_rot_layers,
         )
         self._worker.progress.connect(self._on_worker_progress)
         self._worker.finished.connect(self._on_worker_finished)
@@ -665,20 +706,27 @@ class OriginAlignWizard(QDialog):
 
         pox, poy = self._panel_info.panel_origin
         for k in sorted(self._align_results.keys()):
-            r = self._align_results[k]
-            if r.n_total > 0:
-                inst = self._panel_info.instances[k]
-                ox = inst.origin[0] - pox
-                oy = inst.origin[1] - poy
-                lines.append(f"Instance {k}:")
-                lines.append(f"  Board Width:  {inst.w:.4f} mm ({inst.w * _mm_to_mil:.2f} mil)")
-                lines.append(f"  Board Height: {inst.h:.4f} mm ({inst.h * _mm_to_mil:.2f} mil)")
-                lines.append(f"  Board Origin: ({ox:.4f}, {oy:.4f}) mm  ({ox * _mm_to_mil:.2f}, {oy * _mm_to_mil:.2f}) mil")
-                lines.append(f"  Offset X: {r.offset_x:.4f} mm")
-                lines.append(f"  Offset Y: {r.offset_y:.4f} mm")
-                lines.append(f"  Offset Rotation: {r.rotation_angle:.0f}°")
-                lines.append(f"  Matched: {r.n_matched}/{r.n_total}, Residual: {r.median_residual:.6f} mm")
-                lines.append(f"")
+            results = self._align_results[k]
+            if isinstance(results, dict):
+                results = {lk: rr for lk, rr in results.items() if rr.n_total > 0}
+            else:
+                results = {None: results} if results.n_total > 0 else {}
+            if not results:
+                continue
+            inst = self._panel_info.instances[k]
+            ox = inst.origin[0] - pox
+            oy = inst.origin[1] - poy
+            lines.append(f"Instance {k}:")
+            lines.append(f"  Board Width:  {inst.w:.4f} mm ({inst.w * _mm_to_mil:.2f} mil)")
+            lines.append(f"  Board Height: {inst.h:.4f} mm ({inst.h * _mm_to_mil:.2f} mil)")
+            lines.append(f"  Board Origin: ({ox:.4f}, {oy:.4f}) mm  ({ox * _mm_to_mil:.2f}, {oy * _mm_to_mil:.2f}) mil")
+            for lk, r in results.items():
+                layer_label = "Top" if lk == "top" else ("Bottom" if lk == "bottom" else "Gộp")
+                lines.append(f"  [{layer_label}] Offset X: {r.offset_x:.4f} mm")
+                lines.append(f"  [{layer_label}] Offset Y: {r.offset_y:.4f} mm")
+                lines.append(f"  [{layer_label}] Offset Rotation: {r.rotation_angle:.0f}°")
+                lines.append(f"  [{layer_label}] Matched: {r.n_matched}/{r.n_total}, Residual: {r.median_residual:.6f} mm")
+            lines.append(f"")
 
         total_unmodified = sum(
             1 for tf in self._transforms
@@ -750,6 +798,9 @@ class OriginAlignWizard(QDialog):
         elif self._step_index == 2:
             self._chosen_rotation_angle = self._rot_group.checkedId() if self._rot_group else 0
             self._chosen_mil_to_mm = self._rb_unit_mil.isChecked()
+            if getattr(self, "_chk_rot_top", None) is not None:
+                self._chosen_rot_layers["top"] = self._chk_rot_top.isChecked()
+                self._chosen_rot_layers["bottom"] = self._chk_rot_bottom.isChecked()
             self._show_step(3)
             return
         elif self._step_index == 3:

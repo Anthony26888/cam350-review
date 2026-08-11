@@ -1,5 +1,10 @@
 import math
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+
+def _layer_frame(layer: str) -> str:
+    l = layer.strip().lower()
+    return "bottom" if l in ("bottom", "bottomlayer") else "top"
 
 
 class ComponentTransform:
@@ -87,9 +92,9 @@ def step6_rotate(
             return
     elif layer_norm in ("bottom", "bottomlayer"):
         if angle_deg == 90:
-            x2 = -y
-            y2 = board_w + x
-            r2 = (r_orig - 90) % 360
+            x2 = x
+            y2 = y
+            r2 = r_orig
         elif angle_deg == 180:
             x2 = board_w - x
             y2 = board_h - y
@@ -130,10 +135,19 @@ def apply_all_transforms(
     align_results: dict,
     origin_mode: str = 'panel',
     rotation_angle: int = 0,
+    rot_layers: Optional[Dict[str, bool]] = None,
 ) -> None:
+    if rot_layers is None:
+        rot_layers = {"top": True, "bottom": False}
+
     for comp in components:
         k = comp.instance_k or 0
         result = align_results.get(k)
+        if result is None:
+            continue
+        if isinstance(result, dict):
+            result = result.get(_layer_frame(comp.layer)) or result.get("top")
+
         if result is None:
             continue
 
@@ -150,23 +164,29 @@ def apply_all_transforms(
                 comp, panel_info.panel_origin[0], panel_info.panel_origin[1]
             )
 
-        # STEP 6: Apply panel/board rotation
+        # STEP 6: Apply panel/board rotation (only for layers enabled in rot_layers)
         if rotation_angle != 0:
-            if origin_mode == 'panel':
-                w = panel_info.panel_w
-                h = panel_info.panel_h
-            else:
-                w = instance.w
-                h = instance.h
-            step6_rotate(comp, w, h, rotation_angle)
+            if rot_layers.get(_layer_frame(comp.layer), False):
+                if origin_mode == 'panel':
+                    w = panel_info.panel_w
+                    h = panel_info.panel_h
+                else:
+                    w = instance.w
+                    h = instance.h
+                step6_rotate(comp, w, h, rotation_angle)
 
         # STEP 7: Mirror Bottom
-        swap_wh = rotation_angle in (90, 270)
-        if origin_mode == 'panel':
-            ref_w = panel_info.panel_h if swap_wh else panel_info.panel_w
-        else:
-            ref_w = instance.h if swap_wh else instance.w
-        step7_mirror_bottom(comp, ref_w)
+        skip_mirror = False
+        if rotation_angle in (90, 270) and _layer_frame(comp.layer) == "bottom":
+            if rot_layers.get("bottom", False):
+                skip_mirror = True
+        if not skip_mirror:
+            swap_wh = rotation_angle in (90, 270)
+            if origin_mode == 'panel':
+                ref_w = panel_info.panel_h if swap_wh else panel_info.panel_w
+            else:
+                ref_w = instance.h if swap_wh else instance.w
+            step7_mirror_bottom(comp, ref_w)
 
 
 def round_coord(value: float, decimals: int = 4) -> float:

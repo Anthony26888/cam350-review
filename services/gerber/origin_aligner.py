@@ -52,16 +52,34 @@ def estimate_offset_bbox(
     return mid_board - mid_pp
 
 
-def solve_offset_median(
+def estimate_adaptive_threshold(
+    pp: np.ndarray,
+    min_th: float = 0.8,
+    max_th: float = 5.0,
+    default: float = 8.0,
+) -> float:
+    """Ngưỡng khớp pad thích nghi theo mật độ component.
+
+    Dữ liệu board dày (comp cách nhau chỉ ~1.5mm) làm ngưỡng cố định 8mm
+    bắt nhầm pad của component lân cận → offset sai. Ngưỡng dùng nửa
+    khoảng cách tối thiểu giữa 2 component, bị chặn trong [min_th, max_th].
+    """
+    n = len(pp)
+    if n < 2:
+        return default
+    tree = cKDTree(pp)
+    dists, _ = tree.query(pp, k=2)
+    min_nn = float(dists[:, 1].min())
+    return float(min(max(min_nn / 2.0, min_th), max_th))
+
+
+def _solve_offset_from(
     gtp_pts: np.ndarray,
     pp: np.ndarray,
     offset0: np.ndarray,
+    dist_threshold: float,
     max_iter: int = 20,
-    dist_threshold: float = 8.0,
 ) -> Optional[Tuple[np.ndarray, int, float]]:
-    if len(gtp_pts) == 0 or len(pp) == 0:
-        return None
-
     offset = offset0.copy()
     prev_offset = offset.copy()
     per_component = np.empty((0, 2))
@@ -105,11 +123,46 @@ def solve_offset_median(
     return offset, n_matched, median_resid
 
 
+def solve_offset_median(
+    gtp_pts: np.ndarray,
+    pp: np.ndarray,
+    offset0: np.ndarray,
+    max_iter: int = 20,
+    dist_threshold: Optional[float] = None,
+) -> Optional[Tuple[np.ndarray, int, float]]:
+    if len(gtp_pts) == 0 or len(pp) == 0:
+        return None
+    if dist_threshold is None:
+        dist_threshold = estimate_adaptive_threshold(pp)
+
+    # Thử nhiều điểm khởi tạo: 0 (dữ liệu đã aligned) và offset0 (ước lượng
+    # bbox/centroid). Dữ liệu thật vốn đã khớp pad nên offset thật = 0;
+    # offset0 lớn do component phân bố lệch sẽ làm shift nhầm sang pad lân cận.
+    # Chọn kết quả khớp được nhiều component nhất, ưu tiên residual nhỏ.
+    candidates = [np.zeros(2, dtype=np.float64), np.asarray(offset0, dtype=np.float64)]
+    best = None
+    for cand in candidates:
+        res = _solve_offset_from(gtp_pts, pp, cand, dist_threshold, max_iter)
+        if res is None:
+            continue
+        offset, n_matched, resid = res
+        if best is None:
+            best = (offset, n_matched, resid)
+            continue
+        _, best_n, best_resid = best
+        if n_matched > best_n:
+            best = (offset, n_matched, resid)
+        elif n_matched == best_n and resid < best_resid:
+            best = (offset, n_matched, resid)
+
+    return best
+
+
 def try_rotation(
     gtp_pts: np.ndarray,
     pp: np.ndarray,
     angle_deg: float,
-    dist_threshold: float = 8.0,
+    dist_threshold: Optional[float] = None,
 ) -> Optional[Tuple[np.ndarray, int, float]]:
     theta = np.radians(angle_deg)
     R = np.array([[np.cos(theta), -np.sin(theta)],
@@ -126,7 +179,7 @@ def try_rotation(
 def detect_best_rotation(
     gtp_pts: np.ndarray,
     pp: np.ndarray,
-    dist_threshold: float = 8.0,
+    dist_threshold: Optional[float] = None,
 ) -> AlignResult:
     best = None
     for angle in (0, 90, 180, 270):
@@ -195,6 +248,10 @@ def align_instance(
         )
 
     paste_np = np.array([(p.x_mm, p.y_mm) for p in paste_pts], dtype=np.float64)
+
+    # Khởi tạo offset0 bằng centroid (mid_paste - mid_pp) thay vì bbox:
+    # với dữ liệu đã aligned cho kết quả (0,0), khớp với ngưỡng thích nghi nhỏ.
+    offset0 = paste_np.mean(axis=0) - pp.mean(axis=0)
 
     if detect_rotation:
         result = detect_best_rotation(paste_np, pp)

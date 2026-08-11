@@ -32,6 +32,31 @@ def test_magnifier_scale_is_five_x_of_fit():
     assert scale == pytest.approx(max(base * _MAG_FACTOR, _MAG_MIN_SCALE))
 
 
+def test_magnifier_scale_custom_factor():
+    board = 200.0
+    vw, vh = 300, 220
+    base = min(vw, vh) / board
+    assert _magnifier_scale(board, vw, vh, 10.0) == pytest.approx(
+        max(base * 10.0, _MAG_MIN_SCALE)
+    )
+    assert _magnifier_scale(board, vw, vh, 3.0) == pytest.approx(
+        max(base * 3.0, _MAG_MIN_SCALE)
+    )
+
+
+def test_magnifier_scale_factor_differentiates_on_large_board():
+    # regression: the old _MAG_MIN_SCALE=24 floor made every factor collapse
+    # to the same value for large boards, so the zoom selector did nothing
+    board = 250.0
+    vw, vh = 380, 300
+    s3 = _magnifier_scale(board, vw, vh, 3.0)
+    s16 = _magnifier_scale(board, vw, vh, 16.0)
+    base = min(vw, vh) / board
+    assert s3 == pytest.approx(base * 3.0)
+    assert s16 == pytest.approx(base * 16.0)
+    assert s16 > s3
+
+
 def test_magnifier_scale_independent_of_bigest_window():
     a = _magnifier_scale(200.0, 300, 220)
     b = _magnifier_scale(200.0, 300, 220)
@@ -46,13 +71,17 @@ def test_magnifier_view_centers_on_scene_point(app):
     view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     view.show()
+    app.processEvents()
 
     scene.addRect(QRectF(0, 0, 2000, 2000), QColor(255, 255, 255))
+    app.processEvents()
 
     target = (1234.0, 987.0)
-    scale = _magnifier_scale(2000.0, view.viewport().width(), view.viewport().height())
+    scale = _magnifier_scale(2000.0, max(view.viewport().width(), 1),
+                             max(view.viewport().height(), 1))
     view.setTransform(QTransform().fromScale(scale, scale))
     view.centerOn(*target)
+    app.processEvents()
 
     center = view.mapToScene(view.viewport().rect().center())
     assert abs(center.x() - target[0]) * scale <= 1.5

@@ -12,12 +12,14 @@ from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsItem, QComboBox,
     QCheckBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QDoubleSpinBox, QWidget, QDialog,
+    QSizePolicy, QFrame,
 )
 
 from models.review import ReviewRecord
 from services.gerber.gerber_render import (
-    RenderData, LineShape, FlashShape, parse_render,
+    RenderData, LineShape, ArcShape, FlashShape, parse_render,
 )
+from services.gerber.gerber_render_lib import parse_layer
 from services.gerber.gerber_transform import apply_transform, transform_rot
 from utils.path_utils import resource_path
 
@@ -30,6 +32,8 @@ HIGHLIGHT_COLOR = QColor("#39FF14")
 BACKGROUND = QColor("#0B1220")
 
 _CROSS_BOARD_RATIO = 0.01
+_MIN_ARROW_PX = 18.0
+_MIN_ARROW_WING_PX = 7.0
 
 
 def _layer_key(layer: str) -> str:
@@ -92,13 +96,15 @@ def _crosshair_half(size: Optional[float], fallback: float) -> float:
     return min(max(size * 1.15, 0.15), fallback)
 
 
-_MAG_FACTOR = 5.0
-_MAG_MIN_SCALE = 24.0
+_MAG_FACTOR = 6.0
+_MAG_FACTORS = (3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 25.0)
+_MAG_MIN_SCALE = 1.0
 
 
-def _magnifier_scale(board_size: float, vw: int, vh: int) -> float:
+def _magnifier_scale(board_size: float, vw: int, vh: int,
+                     factor: float = _MAG_FACTOR) -> float:
     base = min(float(vw), float(vh)) / max(board_size, 1.0)
-    return max(base * _MAG_FACTOR, _MAG_MIN_SCALE)
+    return max(base * factor, _MAG_MIN_SCALE)
 
 
 def _add_flash(
@@ -186,6 +192,39 @@ def _add_flash(
                 QPointF(gx + lx2 + dx, -gy - ly2 - dy),
             ]
             path.addPolygon(QPolygonF(quad))
+
+
+def _append_arc_path(
+    path: QPainterPath,
+    ar: ArcShape,
+    mirror: bool,
+    angle: float,
+    off_x: float,
+    off_y: float,
+    cx0: float,
+    cy0: float,
+) -> None:
+    """Append an arc stroke to `path` with the display transform + y-flip."""
+    sx, sy = apply_transform(ar.x1, ar.y1, mirror, angle, off_x, off_y, cx0, cy0)
+    ex, ey = apply_transform(ar.x2, ar.y2, mirror, angle, off_x, off_y, cx0, cy0)
+    cx_, cy_ = apply_transform(ar.cx, ar.cy, mirror, angle, off_x, off_y, cx0, cy0)
+    r = math.hypot(sx - cx_, sy - cy_)
+    if r <= 1e-9:
+        path.moveTo(sx, -sy)
+        path.lineTo(ex, -ey)
+        return
+    rect = QRectF(cx_ - r, -cy_ - r, 2 * r, 2 * r)
+    if ar.x1 == ar.x2 and ar.y1 == ar.y2:
+        path.addEllipse(rect)
+        return
+    path.moveTo(sx, -sy)
+    a_start = math.degrees(math.atan2(sy - cy_, sx - cx_))
+    a_end = math.degrees(math.atan2(ey - cy_, ex - cx_))
+    if ar.clockwise:
+        sweep = -((a_start - a_end) % 360.0)
+    else:
+        sweep = (a_end - a_start) % 360.0
+    path.arcTo(rect, a_start, sweep)
 
 
 def _add_rect_path(path: QPainterPath, gx, gy, w, h, rot):
@@ -293,18 +332,20 @@ class MarkerOverlayItem(QGraphicsItem):
     """
 
     def __init__(self, markers: List[Tuple[float, float, float, float]],
-                 show_unselected: bool = True, parent=None) -> None:
+                 show_unselected: bool = True, arrow_floor: float = 0.0,
+                 parent=None) -> None:
         super().__init__(parent)
         self._markers = markers  # (x, -y, rot_deg, half)
         self._show_unselected = show_unselected
         self._selected = -1
+        self._arrow_floor = arrow_floor
         self._rect = self._compute_rect()
         self._build_geom()
 
     def _compute_rect(self) -> QRectF:
         if not self._markers:
             return QRectF()
-        pad = max(m[3] for m in self._markers) * 1.8
+        pad = max(m[3] for m in self._markers) * 1.8 + self._arrow_floor
         xs = [m[0] for m in self._markers]
         ys = [m[1] for m in self._markers]
         return QRectF(min(xs) - pad, min(ys) - pad,
@@ -313,7 +354,6 @@ class MarkerOverlayItem(QGraphicsItem):
 
     def _build_geom(self) -> None:
         self._cross: Dict[float, QPainterPath] = {}
-        self._arrow: Dict[float, QPolygonF] = {}
         for m in self._markers:
             h = m[3]
             if h in self._cross:
@@ -324,11 +364,6 @@ class MarkerOverlayItem(QGraphicsItem):
             cross.moveTo(0.0, -h)
             cross.lineTo(0.0, h)
             self._cross[h] = cross
-            self._arrow[h] = QPolygonF([
-                QPointF(-1.4 * h, 0.0),
-                QPointF(-h, -0.25 * h),
-                QPointF(-h, 0.25 * h),
-            ])
 
     def set_selected(self, index: int) -> None:
         if index != self._selected:
@@ -352,11 +387,24 @@ class MarkerOverlayItem(QGraphicsItem):
         selected = self._selected
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
+        scale = abs(painter.worldTransform().m11())
+        if scale <= 0.0:
+            scale = 1.0
+        min_len = _MIN_ARROW_PX / scale
+        min_wing = _MIN_ARROW_WING_PX / scale
         for i, (mx, my, rot, half) in enumerate(self._markers):
             is_selected = (i == selected)
             if not self._show_unselected and not is_selected:
                 continue
             color = HIGHLIGHT_COLOR if is_selected else CROSS_COLOR
+            alen = max(0.4 * half, min_len)
+            tip = half + alen
+            wing = min(max(0.25 * half, min_wing), alen)
+            arrow = QPolygonF([
+                QPointF(-tip, 0.0),
+                QPointF(-half, -wing),
+                QPointF(-half, wing),
+            ])
             painter.save()
             painter.translate(mx, my)
             if is_selected:
@@ -373,7 +421,7 @@ class MarkerOverlayItem(QGraphicsItem):
                 painter.drawPath(self._cross[half])
                 painter.setBrush(color)
                 painter.setPen(Qt.NoPen)
-                painter.drawPolygon(self._arrow[half])
+                painter.drawPolygon(arrow)
                 painter.setBrush(Qt.NoBrush)
             else:
                 painter.rotate(-rot)
@@ -384,7 +432,7 @@ class MarkerOverlayItem(QGraphicsItem):
                 painter.drawPath(self._cross[half])
                 painter.setBrush(color)
                 painter.setPen(Qt.NoPen)
-                painter.drawPolygon(self._arrow[half])
+                painter.drawPolygon(arrow)
             painter.restore()
         painter.restore()
 
@@ -392,6 +440,7 @@ class MarkerOverlayItem(QGraphicsItem):
 class GerberView(QGraphicsView):
     cursor_moved = Signal(float, float)
     cursor_left = Signal()
+    zoom_end = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -408,6 +457,11 @@ class GerberView(QGraphicsView):
         self._fast_render = False
         self._fast_timer: Optional[QTimer] = None
 
+        self._zoom_pixmap: Optional[QPixmap] = None
+        self._zoom_ratio: float = 1.0
+        self._zoom_anchor: QPoint = QPoint(0, 0)
+        self._zoom_active = False
+
     def _set_fast_render(self) -> None:
         if self._fast_render:
             return
@@ -419,6 +473,12 @@ class GerberView(QGraphicsView):
             return
         self._fast_render = False
         self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        if self._zoom_pixmap is not None and self._zoom_ratio != 1.0:
+            self.scale(self._zoom_ratio, self._zoom_ratio)
+        self._zoom_pixmap = None
+        self._zoom_ratio = 1.0
+        self._zoom_active = False
+        self.zoom_end.emit()
         self.viewport().update()
 
     def _schedule_smooth_restore(self) -> None:
@@ -433,7 +493,13 @@ class GerberView(QGraphicsView):
     def wheelEvent(self, event: QWheelEvent) -> None:
         self._set_fast_render()
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
-        self.scale(factor, factor)
+        if self._zoom_pixmap is None:
+            self._zoom_pixmap = self.viewport().grab()
+            self._zoom_ratio = 1.0
+        self._zoom_ratio = min(500.0, max(0.002, self._zoom_ratio * factor))
+        self._zoom_anchor = event.position().toPoint()
+        self._zoom_active = True
+        self.viewport().update()
         self._schedule_smooth_restore()
 
     def fit(self) -> None:
@@ -498,6 +564,22 @@ class GerberView(QGraphicsView):
             painter.end()
             event.accept()
             return
+        if self._zoom_pixmap is not None and self._zoom_ratio != 1.0:
+            pm = self._zoom_pixmap
+            size = pm.deviceIndependentSize()
+            painter = QPainter(self.viewport())
+            painter.fillRect(self.viewport().rect(), self.backgroundBrush())
+            a = self._zoom_anchor
+            painter.translate(a.x(), a.y())
+            painter.scale(self._zoom_ratio, self._zoom_ratio)
+            painter.translate(-a.x(), -a.y())
+            painter.drawPixmap(
+                QRectF(0.0, 0.0, size.width(), size.height()), pm,
+                QRectF(0.0, 0.0, size.width(), size.height()),
+            )
+            painter.end()
+            event.accept()
+            return
         super().paintEvent(event)
 
 
@@ -518,7 +600,7 @@ class GerberLoadWorker(QThread):
         try:
             data: Dict[str, RenderData] = {}
             self.progress.emit("Đang đọc GKO (outline)...", 12)
-            data["outline"] = parse_render(self._gko)
+            data["outline"] = parse_layer(self._gko)
 
             data["top"] = RenderData()
             data["bottom"] = RenderData()
@@ -527,16 +609,16 @@ class GerberLoadWorker(QThread):
 
             if self._gtp and os.path.exists(self._gtp):
                 self.progress.emit("Đang đọc GTP (Top Paste)...", 30)
-                data["top"] = parse_render(self._gtp)
+                data["top"] = parse_layer(self._gtp)
             if self._gbp and os.path.exists(self._gbp):
                 self.progress.emit("Đang đọc GBP (Bottom Paste)...", 45)
-                data["bottom"] = parse_render(self._gbp)
+                data["bottom"] = parse_layer(self._gbp)
             if self._gto and os.path.exists(self._gto):
                 self.progress.emit("Đang đọc GTO (Silkscreen)...", 60)
-                data["silk"] = parse_render(self._gto)
+                data["silk"] = parse_layer(self._gto)
             if self._gbo and os.path.exists(self._gbo):
                 self.progress.emit("Đang đọc GBO (Silkscreen)...", 75)
-                data["silk_bottom"] = parse_render(self._gbo)
+                data["silk_bottom"] = parse_layer(self._gbo)
 
             self.progress.emit("Hoàn tất.", 100)
             self.finished.emit(data)
@@ -592,6 +674,7 @@ class GerberViewer(QWidget):
         self._component_index: List[int] = []
         self._scene_scale = 1.0
         self._mag_target: Optional[Tuple[float, float]] = None
+        self._mag_factor: float = _MAG_FACTOR
 
         self._build_ui()
         self._apply_layer()
@@ -611,6 +694,7 @@ class GerberViewer(QWidget):
             "silk": self._chk_silk.isChecked(),
             "pickplace": self._chk_pickplace.isChecked(),
             "crosshair": self._chk_crosshair.isChecked(),
+            "mag_factor": self._mag_factor,
         }
 
     def apply_display_settings(self, settings: Dict[str, Any]) -> None:
@@ -635,6 +719,12 @@ class GerberViewer(QWidget):
         self._chk_silk.setChecked(bool(settings.get("silk", True)))
         self._chk_pickplace.setChecked(bool(settings.get("pickplace", True)))
         self._chk_crosshair.setChecked(bool(settings.get("crosshair", True)))
+        if "mag_factor" in settings:
+            target = float(settings.get("mag_factor", _MAG_FACTOR))
+            for i in range(self._combo_mag.count()):
+                if self._combo_mag.itemData(i) == target:
+                    self._combo_mag.setCurrentIndex(i)
+                    break
 
     def _save_display_settings(self) -> None:
         self.settings_saved.emit(self.display_settings())
@@ -712,10 +802,41 @@ class GerberViewer(QWidget):
         self._lbl_status.setWordWrap(True)
         panel.addWidget(self._lbl_status)
 
-        mag_group = QGroupBox("Chi tiết (Zoom 5x)")
-        mag_layout = QVBoxLayout(mag_group)
+        self._mag_group = QGroupBox(f"Chi tiết (Zoom {_MAG_FACTOR:g}x)")
+        self._mag_group.setStyleSheet("""
+QGroupBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 0px;
+    margin-top: 18px;
+    font-weight: bold;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 4px;
+    color: #0D9488;
+    font-size: 11pt;
+}
+""")
+        mag_layout = QVBoxLayout(self._mag_group)
         mag_layout.setSpacing(4)
+        mag_layout.setContentsMargins(0, 0, 0, 0)
+        mag_row = QHBoxLayout()
+        mag_row.addWidget(QLabel("Độ phóng:"))
+        self._combo_mag = QComboBox()
+        default_idx = 0
+        for i, f in enumerate(_MAG_FACTORS):
+            self._combo_mag.addItem(f"{f:g}x", f)
+            if abs(f - _MAG_FACTOR) < 1e-9:
+                default_idx = i
+        self._combo_mag.setCurrentIndex(default_idx)
+        self._combo_mag.currentIndexChanged.connect(self._on_mag_factor_changed)
+        mag_row.addWidget(self._combo_mag, 1)
+        mag_layout.addLayout(mag_row)
         self._mag_view = QGraphicsView()
+        self._mag_view.setFrameShape(QFrame.NoFrame)
         self._mag_view.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self._mag_view.setBackgroundBrush(BACKGROUND)
         self._mag_view.setInteractive(False)
@@ -724,17 +845,19 @@ class GerberViewer(QWidget):
         self._mag_view.setResizeAnchor(QGraphicsView.NoAnchor)
         self._mag_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._mag_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._mag_view.setMinimumSize(300, 220)
-        self._mag_view.setMaximumHeight(260)
+        self._mag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._mag_view.setMinimumSize(380, 300)
+        self._mag_view.setMaximumHeight(360)
         self._mag_view.setScene(self._scene)
-        mag_layout.addWidget(self._mag_view)
+        mag_layout.addWidget(self._mag_view, 1)
         self._lbl_mag_hint = QLabel("Rê chuột trên bản vẽ / chọn linh kiện để xem chi tiết.")
         self._lbl_mag_hint.setWordWrap(True)
         mag_layout.addWidget(self._lbl_mag_hint)
-        panel.addWidget(mag_group)
+        panel.addWidget(self._mag_group)
 
         self._view.cursor_moved.connect(self._update_magnifier)
         self._view.cursor_left.connect(self._refresh_magnifier)
+        self._view.zoom_end.connect(self._refresh_magnifier)
 
         self._display_dialog = QDialog(self)
         self._display_dialog.setWindowTitle("Tùy chỉnh hiển thị")
@@ -746,7 +869,7 @@ class GerberViewer(QWidget):
 
         panel_widget = QWidget()
         panel_widget.setLayout(panel)
-        panel_widget.setFixedWidth(320)
+        panel_widget.setFixedWidth(400)
         body.addWidget(panel_widget)
 
         layout.addLayout(body, 1)
@@ -908,7 +1031,14 @@ class GerberViewer(QWidget):
     def _update_magnifier(self, x: float, y: float) -> None:
         if not self._loaded:
             return
+        if getattr(self._view, "_zoom_active", False):
+            return
         self._mag_target = (x, y)
+        self._refresh_magnifier()
+
+    def _on_mag_factor_changed(self) -> None:
+        self._mag_factor = float(self._combo_mag.currentData() or _MAG_FACTOR)
+        self._mag_group.setTitle(f"Chi tiết (Zoom {self._mag_factor:g}x)")
         self._refresh_magnifier()
 
     def _refresh_magnifier(self) -> None:
@@ -917,7 +1047,7 @@ class GerberViewer(QWidget):
         vp = self._mag_view.viewport()
         vw = max(vp.width(), 1)
         vh = max(vp.height(), 1)
-        scale = _magnifier_scale(self._board_size(), vw, vh)
+        scale = _magnifier_scale(self._board_size(), vw, vh, self._mag_factor)
         x, y = self._mag_target
         self._mag_view.setTransform(QTransform().fromScale(scale, scale))
         self._mag_view.centerOn(x, y)
@@ -954,10 +1084,13 @@ class GerberViewer(QWidget):
         off_x: float,
         off_y: float,
     ) -> None:
-        if not render_data.lines:
+        if not render_data.lines and not render_data.arcs:
             return
         center_x, center_y = self._board_center
-        scale = self._scene_scale
+        try:
+            scale = abs(self._view.transform().m11())
+        except Exception:
+            scale = self._scene_scale
         min_w = (1.0 / scale) if scale > 0 else 1.05
         buckets: Dict[float, QPainterPath] = {}
         for ln in render_data.lines:
@@ -971,6 +1104,13 @@ class GerberViewer(QWidget):
             x2, y2 = apply_transform(x2, y2, mirror, angle, off_x, off_y, center_x, center_y)
             path.moveTo(x1, -y1)
             path.lineTo(x2, -y2)
+        for ar in render_data.arcs:
+            w = round(max(ar.width, min_w), 3)
+            path = buckets.get(w)
+            if path is None:
+                path = QPainterPath()
+                buckets[w] = path
+            _append_arc_path(path, ar, mirror, angle, off_x, off_y, center_x, center_y)
         for w, path in buckets.items():
             pen = QPen(color, w)
             pen.setCosmetic(False)
@@ -988,10 +1128,15 @@ class GerberViewer(QWidget):
         if not render_data.flashes:
             return
         center_x, center_y = self._board_center
-        path = QPainterPath()
+        dark = QPainterPath()
+        clear = QPainterPath()
         for fl in render_data.flashes:
-            _add_flash(path, fl, mirror, angle, off_x, off_y, center_x, center_y)
-        self._scene.addPath(path, QPen(Qt.NoPen), QBrush(color))
+            target = clear if fl.negative else dark
+            _add_flash(target, fl, mirror, angle, off_x, off_y, center_x, center_y)
+        final = dark
+        if not clear.isEmpty():
+            final = QPainterPath(dark.subtracted(clear))
+        self._scene.addPath(final, QPen(Qt.NoPen), QBrush(color))
 
     def _redraw(self) -> None:
         if not self._loaded:
@@ -1037,8 +1182,14 @@ class GerberViewer(QWidget):
                 size = _nearest_pad_size(pads_raw, x, y)
                 half = _crosshair_half(size, self._cross_half)
                 markers.append((x, -y, rotation, half))
+            try:
+                view_scale = abs(self._view.transform().m11())
+            except Exception:
+                view_scale = 1.0
+            arrow_floor = (_MIN_ARROW_PX / view_scale) if view_scale > 0 else 0.0
             self._overlay = MarkerOverlayItem(
-                markers, show_unselected=self._chk_crosshair.isChecked()
+                markers, show_unselected=self._chk_crosshair.isChecked(),
+                arrow_floor=arrow_floor,
             )
             self._scene.addItem(self._overlay)
 
@@ -1057,6 +1208,9 @@ class GerberViewer(QWidget):
         for ln in self._outline.lines:
             xs += [ln.x1, ln.x2]
             ys += [ln.y1, ln.y2]
+        for ar in self._outline.arcs:
+            xs += [ar.x1, ar.x2]
+            ys += [ar.y1, ar.y2]
         for fl in self._outline.flashes:
             xs.append(fl.cx)
             ys.append(fl.cy)
@@ -1073,6 +1227,9 @@ class GerberViewer(QWidget):
         for ln in self._outline.lines:
             xs += [ln.x1, ln.x2]
             ys += [ln.y1, ln.y2]
+        for ar in self._outline.arcs:
+            xs += [ar.x1, ar.x2]
+            ys += [ar.y1, ar.y2]
         for fl in self._outline.flashes:
             xs.append(fl.cx)
             ys.append(fl.cy)
@@ -1099,6 +1256,10 @@ class GerberViewer(QWidget):
         self._chk_crosshair.setChecked(True)
         self._search_input.clear()
         self._reset_offset()
+        for i in range(self._combo_mag.count()):
+            if abs(self._combo_mag.itemData(i) - _MAG_FACTOR) < 1e-9:
+                self._combo_mag.setCurrentIndex(i)
+                break
         self._fit_scene()
 
 

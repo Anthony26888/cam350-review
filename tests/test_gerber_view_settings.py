@@ -39,6 +39,7 @@ def test_apply_display_settings_round_trip(viewer):
         "silk": False,
         "pickplace": True,
         "crosshair": False,
+        "mag_factor": 10.0,
     }
     viewer.apply_display_settings(settings)
     d = viewer.display_settings()
@@ -53,6 +54,7 @@ def test_apply_display_settings_round_trip(viewer):
     assert d["silk"] is False
     assert d["pickplace"] is True
     assert d["crosshair"] is False
+    assert d["mag_factor"] == 10.0
 
 
 def test_default_settings_when_none(viewer):
@@ -68,6 +70,7 @@ def test_default_settings_when_none(viewer):
     assert d["silk"] is True
     assert d["pickplace"] is True
     assert d["crosshair"] is True
+    assert d["mag_factor"] == 6.0
 
 
 def test_apply_invalid_does_not_crash(viewer):
