@@ -6,23 +6,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QLabel, QPushButton, QStyle,
 )
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QColor
 
 from models.review import ReviewRecord
-
-_STATUS_COLORS = {
-    "Pending": None,
-    "OK": QColor(240, 253, 244),
-    "Edited": QColor(254, 242, 242),
-    "Aligned": QColor(240, 253, 250),
-}
-
-_STATUS_TEXT_COLORS = {
-    "Pending": None,
-    "OK": QColor(22, 101, 52),
-    "Edited": QColor(234, 88, 12),
-    "Aligned": QColor(59, 130, 246),
-}
+from ui.i18n import tr
+from ui.style import status_bg_colors, status_text_colors
 
 _STATUS_COLUMN = 8
 
@@ -51,13 +38,14 @@ class TableWidget(QWidget):
         filter_layout.setSpacing(4)
 
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText("Search...")
+        self._search_input.setPlaceholderText(tr("Search..."))
         self._search_input.textChanged.connect(self._on_search)
 
         self._status_filter = QComboBox()
-        self._status_filter.addItems(["All", "Pending", "OK", "Edited"])
+        for _status in ["All", "Pending", "OK", "Edited", "Aligned"]:
+            self._status_filter.addItem(tr(_status), userData=_status)
         self._status_filter.currentTextChanged.connect(self._on_filter)
-        self._status_filter.setFixedWidth(90)
+        self._status_filter.setFixedWidth(110)
 
         self._x_min = QDoubleSpinBox()
         self._x_min.setRange(_RANGE_MIN, _RANGE_MAX)
@@ -89,26 +77,26 @@ class TableWidget(QWidget):
 
         filter_layout.addWidget(self._search_input, 1)
         filter_layout.addWidget(self._status_filter)
-        filter_layout.addWidget(QLabel("X:"))
+        filter_layout.addWidget(QLabel(tr("X:")))
         filter_layout.addWidget(self._x_min)
         filter_layout.addWidget(QLabel("~"))
         filter_layout.addWidget(self._x_max)
-        filter_layout.addWidget(QLabel("Y:"))
+        filter_layout.addWidget(QLabel(tr("Y:")))
         filter_layout.addWidget(self._y_min)
         filter_layout.addWidget(QLabel("~"))
         filter_layout.addWidget(self._y_max)
         self._btn_clear = QPushButton()
-        self._btn_clear.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_LineEditClearButton))
         self._btn_clear.setIconSize(QSize(14, 14))
         self._btn_clear.setFixedWidth(24)
-        self._btn_clear.setToolTip("Clear all filters")
+        self._btn_clear.setToolTip(tr("Clear all filters"))
         self._btn_clear.clicked.connect(self._clear_filters)
+        self.refresh_icons()
         filter_layout.addWidget(self._btn_clear)
         self._layout.addLayout(filter_layout)
 
         self._table = QTableWidget()
         self._table.setColumnCount(len(_COLUMNS))
-        self._table.setHorizontalHeaderLabels(_COLUMNS)
+        self._table.setHorizontalHeaderLabels([tr(c) for c in _COLUMNS])
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setSelectionMode(QTableWidget.SingleSelection)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -123,6 +111,11 @@ class TableWidget(QWidget):
 
         self._layout.addWidget(self._table)
 
+    def refresh_icons(self) -> None:
+        self._btn_clear.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_LineEditClearButton)
+        )
+
     def set_records(self, records: List[ReviewRecord]) -> None:
         self._records = records
         self._checked_set.clear()
@@ -130,7 +123,7 @@ class TableWidget(QWidget):
 
     def _apply_filters(self) -> None:
         search_text = self._search_input.text().strip().lower()
-        status_filter = self._status_filter.currentText()
+        status_filter = self._status_filter.currentData() or "All"
         x_min = self._x_min.value()
         x_max = self._x_max.value()
         y_min = self._y_min.value()
@@ -181,6 +174,14 @@ class TableWidget(QWidget):
             self._set_row_values(row, idx)
         self._table.blockSignals(False)
 
+    def _status_text_colors(self) -> dict:
+        from config.config_manager import ConfigManager
+        return status_text_colors(ConfigManager.instance().config.theme)
+
+    def _status_bg_colors(self) -> dict:
+        from config.config_manager import ConfigManager
+        return status_bg_colors(ConfigManager.instance().config.theme)
+
     def _set_row_values(self, row: int, idx: int) -> None:
         rec = self._records[idx]
 
@@ -198,7 +199,7 @@ class TableWidget(QWidget):
             self._display_x(rec),
             self._display_y(rec),
             self._display_rotation(rec),
-            rec.status,
+            tr(rec.status),
             rec.remark,
         ]
 
@@ -207,12 +208,12 @@ class TableWidget(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             item.setData(Qt.UserRole, idx)
             if col + 1 == _STATUS_COLUMN:
-                text_color = _STATUS_TEXT_COLORS.get(rec.status)
+                text_color = self._status_text_colors().get(rec.status)
                 if text_color:
                     item.setForeground(text_color)
             self._table.setItem(row, col + 1, item)
 
-        color = _STATUS_COLORS.get(rec.status)
+        color = self._status_bg_colors().get(rec.status)
         if color:
             for col in range(len(_COLUMNS)):
                 item = self._table.item(row, col)
@@ -256,11 +257,11 @@ class TableWidget(QWidget):
                 item = QTableWidgetItem(status)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 item.setData(Qt.UserRole, idx)
-                text_color = _STATUS_TEXT_COLORS.get(status)
+                text_color = self._status_text_colors().get(status)
                 if text_color:
                     item.setForeground(text_color)
                 self._table.setItem(row, _STATUS_COLUMN, item)
-                color = _STATUS_COLORS.get(status)
+                color = self._status_bg_colors().get(status)
                 if color:
                     for col in range(len(_COLUMNS)):
                         cell = self._table.item(row, col)

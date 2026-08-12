@@ -11,6 +11,7 @@ import win32clipboard
 
 
 from config.config_manager import ConfigManager
+from ui.i18n import tr
 
 _NUMBER_RE = r"[-+]?\d+(?:\.\d+)?"
 _WM_GETTEXTLENGTH = 0x000E
@@ -61,10 +62,10 @@ class Cam350Controller:
         win32gui.EnumWindows(enum_callback, None)
 
         if self._hwnd is None:
-            msg = f"CAM350 window not found"
+            msg = tr("CAM350 window not found")
             if title:
-                msg += f" (searched for '{title}' and 'CAM350')"
-            raise RuntimeError(f"{msg}. Is CAM350 running?")
+                msg += tr(" (searched for '{title}' and 'CAM350')", title=title)
+            raise RuntimeError(tr("{msg}. Is CAM350 running?", msg=msg))
 
         return self._hwnd
 
@@ -112,7 +113,7 @@ class Cam350Controller:
 
         if win32gui.GetForegroundWindow() != hwnd:
             raise RuntimeError(
-                "Không thể kích hoạt cửa sổ CAM350. Vui lòng đưa CAM350 lên foreground rồi thử lại."
+                tr("Cannot activate CAM350 window. Please bring CAM350 to the foreground and try again.")
             )
 
         time.sleep(0.2)
@@ -121,7 +122,7 @@ class Cam350Controller:
         config = self._config_mgr.config
 
         if not config.xTextbox.x or not config.yTextbox.x:
-            raise RuntimeError("CAM350 not calibrated. Please run calibration first.")
+            raise RuntimeError(tr("CAM350 not calibrated. Please run calibration first."))
 
         self.activate()
         time.sleep(0.1)
@@ -162,7 +163,7 @@ class Cam350Controller:
         pos = config.xTextbox if axis == "x" else config.yTextbox
         if not pos.x or not pos.y:
             raise RuntimeError(
-                "CAM350 not calibrated. Please run calibration first."
+                tr("CAM350 not calibrated. Please run calibration first.")
             )
 
         self.activate()
@@ -194,8 +195,8 @@ class Cam350Controller:
             time.sleep(0.25)
 
         raise RuntimeError(
-            f"No numeric value found in CAM350 {axis.upper()} field. "
-            f"Position ({pos.x}, {pos.y}), clipboard content was: {text!r}"
+            tr("No numeric value found in CAM350 {axis} field. Position ({x}, {y}), clipboard content was: {content}",
+               axis=axis.upper(), x=pos.x, y=pos.y, content=repr(text))
         )
 
     def run_origin_macro(self, origin_x: float, origin_y: float, layer: str = "top", angle_deg: int = 0) -> tuple:
@@ -207,7 +208,7 @@ class Cam350Controller:
         config = self._config_mgr.config
         if not config.xTextbox.x or not config.yTextbox.x:
             raise RuntimeError(
-                "CAM350 not calibrated. Please run calibration first."
+                tr("CAM350 not calibrated. Please run calibration first.")
             )
 
         self.activate()

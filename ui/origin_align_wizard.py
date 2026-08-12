@@ -13,6 +13,7 @@ MACRO_SWITCH_DELAY_S = 5
 
 from config.config_manager import ConfigManager
 from database.pcb_info_repo import PcbInfoRepo
+from ui.i18n import tr
 from models.pcb_info import PcbInfo
 from models.pickplace import PickPlaceData, PickPlaceComponent
 from models.review import ReviewRecord
@@ -55,25 +56,25 @@ class AlignWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.progress.emit("Phát hiện panel từ GKO...", 5)
+            self.progress.emit(tr("Detecting panel from GKO..."), 5)
             panel_info = detect_panel(self._gko_path)
 
-            self.progress.emit(f"Phát hiện: {panel_info.kind}, {panel_info.count} instance(s)", 10)
+            self.progress.emit(tr("Detected: {kind}, {count} instance(s)", kind=panel_info.kind, count=panel_info.count), 10)
 
             gtp_pts = None
             gbp_pts = None
 
             if self._gtp_path and os.path.exists(self._gtp_path):
-                self.progress.emit("Đọc GTP (Top Paste)...", 15)
+                self.progress.emit(tr("Reading GTP (Top Paste)..."), 15)
                 gtp_pts = parse_flashes(self._gtp_path)
 
             if self._gbp_path and os.path.exists(self._gbp_path):
-                self.progress.emit("Đọc GBP (Bottom Paste)...", 20)
+                self.progress.emit(tr("Reading GBP (Bottom Paste)..."), 20)
                 gbp_pts = parse_flashes(self._gbp_path)
 
             scale = 0.0254 if self._mil_to_mm else 1.0
 
-            self.progress.emit("Tính toán offset cho từng instance...", 30)
+            self.progress.emit(tr("Computing offset for each instance..."), 30)
 
             align_results = {}
 
@@ -85,7 +86,9 @@ class AlignWorker(QThread):
             for i, instance in enumerate(panel_info.instances):
                 pct = 30 + int((i / total_instances) * 40)
                 self.progress.emit(
-                    f"Instance {i + 1}/{total_instances}: {instance.sub_name or 'board'}...", pct
+                    tr("Instance {current}/{total}: {name}...",
+                       current=i + 1, total=total_instances, name=instance.sub_name or tr("board")),
+                    pct
                 )
 
                 layer_results = {}
@@ -122,7 +125,7 @@ class AlignWorker(QThread):
 
                 align_results[i] = layer_results
 
-            self.progress.emit("Tạo transforms...", 80)
+            self.progress.emit(tr("Creating transforms..."), 80)
 
             transforms = []
             for c in self._pickplace.components:
@@ -155,11 +158,11 @@ class AlignWorker(QThread):
                 rot_layers=self._rot_layers,
             )
 
-            self.progress.emit("Hoàn tất tính toán.", 100)
+            self.progress.emit(tr("Calculation complete."), 100)
             self.finished.emit(align_results, transforms, panel_info, self._origin_mode, self._rotation_angle)
 
         except Exception as e:
-            self.progress.emit(f"Lỗi: {e}", -1)
+            self.progress.emit(tr("Error: {e}", e=e), -1)
 
 
 class OriginAlignWizard(QDialog):
@@ -237,16 +240,16 @@ class OriginAlignWizard(QDialog):
 
         btn_layout = QHBoxLayout()
 
-        self._btn_back = QPushButton("◀ Back")
+        self._btn_back = QPushButton(tr("◀ Back"))
         self._btn_back.clicked.connect(self._on_back)
         self._btn_back.setMinimumHeight(36)
         self._btn_back.setVisible(False)
 
-        self._btn_next = QPushButton("Next ▶")
+        self._btn_next = QPushButton(tr("Next ▶"))
         self._btn_next.clicked.connect(self._on_next)
         self._btn_next.setMinimumHeight(36)
 
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton(tr("Cancel"))
         self._btn_cancel.clicked.connect(self.reject)
         self._btn_cancel.setMinimumHeight(36)
 
@@ -285,64 +288,64 @@ class OriginAlignWizard(QDialog):
             steps[step]()
 
         self._btn_back.setVisible(step > 0 and step < len(steps) - 1)
-        self._btn_next.setText("Finish" if step == len(steps) - 1 else "Next ▶")
+        self._btn_next.setText(tr("Finish") if step == len(steps) - 1 else tr("Next ▶"))
         self._btn_cancel.setVisible(step < len(steps) - 1)
 
     def _step_files(self) -> None:
-        self._lbl_title.setText("Step 1/6: Chọn file Gerber")
+        self._lbl_title.setText(tr("Step 1/6: Select Gerber Files"))
 
-        group = QGroupBox("Gerber Files")
+        group = QGroupBox(tr("Gerber Files"))
         form = QFormLayout(group)
 
         gko_layout = QHBoxLayout()
-        self._lbl_gko = QLabel("(chưa chọn)")
+        self._lbl_gko = QLabel(tr("(not selected)"))
         self._lbl_gko.setStyleSheet("color: #888;")
-        btn_gko = QPushButton("Browse...")
+        btn_gko = QPushButton(tr("Browse..."))
         btn_gko.clicked.connect(self._browse_gko)
         gko_layout.addWidget(self._lbl_gko, 1)
         gko_layout.addWidget(btn_gko)
-        form.addRow("GKO (Outline) *:", gko_layout)
+        form.addRow(tr("GKO (Outline) *:"), gko_layout)
 
         gtp_layout = QHBoxLayout()
-        self._lbl_gtp = QLabel("(không bắt buộc)")
+        self._lbl_gtp = QLabel(tr("(optional)"))
         self._lbl_gtp.setStyleSheet("color: #888;")
-        btn_gtp = QPushButton("Browse...")
+        btn_gtp = QPushButton(tr("Browse..."))
         btn_gtp.clicked.connect(self._browse_gtp)
         gtp_layout.addWidget(self._lbl_gtp, 1)
         gtp_layout.addWidget(btn_gtp)
-        form.addRow("GTP (Top Paste):", gtp_layout)
+        form.addRow(tr("GTP (Top Paste):"), gtp_layout)
 
         gbp_layout = QHBoxLayout()
-        self._lbl_gbp = QLabel("(không bắt buộc)")
+        self._lbl_gbp = QLabel(tr("(optional)"))
         self._lbl_gbp.setStyleSheet("color: #888;")
-        btn_gbp = QPushButton("Browse...")
+        btn_gbp = QPushButton(tr("Browse..."))
         btn_gbp.clicked.connect(self._browse_gbp)
         gbp_layout.addWidget(self._lbl_gbp, 1)
         gbp_layout.addWidget(btn_gbp)
-        form.addRow("GBP (Bottom Paste):", gbp_layout)
+        form.addRow(tr("GBP (Bottom Paste):"), gbp_layout)
 
         gto_layout = QHBoxLayout()
-        self._lbl_gto = QLabel("(không bắt buộc)")
+        self._lbl_gto = QLabel(tr("(optional)"))
         self._lbl_gto.setStyleSheet("color: #888;")
-        btn_gto = QPushButton("Browse...")
+        btn_gto = QPushButton(tr("Browse..."))
         btn_gto.clicked.connect(self._browse_gto)
         gto_layout.addWidget(self._lbl_gto, 1)
         gto_layout.addWidget(btn_gto)
-        form.addRow("GTO (Top Overlay / Silkscreen):", gto_layout)
+        form.addRow(tr("GTO (Top Overlay / Silkscreen):"), gto_layout)
 
         gbo_layout = QHBoxLayout()
-        self._lbl_gbo = QLabel("(không bắt buộc)")
+        self._lbl_gbo = QLabel(tr("(optional)"))
         self._lbl_gbo.setStyleSheet("color: #888;")
-        btn_gbo = QPushButton("Browse...")
+        btn_gbo = QPushButton(tr("Browse..."))
         btn_gbo.clicked.connect(self._browse_gbo)
         gbo_layout.addWidget(self._lbl_gbo, 1)
         gbo_layout.addWidget(btn_gbo)
-        form.addRow("GBO (Bottom Overlay / Silkscreen):", gbo_layout)
+        form.addRow(tr("GBO (Bottom Overlay / Silkscreen):"), gbo_layout)
 
         info = QLabel(
-            "* GKO là bắt buộc (Gerber Outline).\n"
-            "GTP/GBP giúp dò offset chính xác hơn (khuyến nghị).\n"
-            "GTO/GBO (tên/designator trên board) chỉ dùng để hiển thị trong Gerber View."
+            tr("* GKO is required (Gerber Outline).\n"
+               "GTP/GBP help detect offsets more accurately (recommended).\n"
+               "GTO/GBO (names/designators on the board) are only used for display in Gerber View.")
         )
         info.setStyleSheet("color: #666; font-style: italic; margin-top: 8px;")
 
@@ -350,7 +353,7 @@ class OriginAlignWizard(QDialog):
         self._content_area.addWidget(info)
 
     def _step_panel_check(self) -> None:
-        self._lbl_title.setText("Step 2/6: Kết quả phát hiện Panel")
+        self._lbl_title.setText(tr("Step 2/6: Panel Detection Result"))
 
         panel_info = self._panel_info
         if not panel_info:
@@ -364,28 +367,38 @@ class OriginAlignWizard(QDialog):
 
         _mm_to_mil = 1.0 / 0.0254
 
+        if panel_info.kind == 'A':
+            kind_label = tr("Panel Type A (step-repeat)")
+        elif panel_info.kind == 'B':
+            kind_label = tr("Panel Type B (multiple blocks)")
+        else:
+            kind_label = tr("Single board")
+
         lines = []
-        lines.append(f"Loại: {'Panel Kiểu A (step-repeat)' if panel_info.kind == 'A' else 'Panel Kiểu B (nhiều block)' if panel_info.kind == 'B' else 'Board đơn'}")
-        lines.append(f"Số instance: {panel_info.count}")
+        lines.append(tr("Type: {kind}", kind=kind_label))
+        lines.append(tr("Instances: {count}", count=panel_info.count))
         lines.append(f"")
-        lines.append(f"Panel Origin: ({pox:.4f}, {poy:.4f}) mm  ({pox * _mm_to_mil:.2f}, {poy * _mm_to_mil:.2f}) mil")
-        lines.append(f"Panel Width:  {panel_info.panel_w:.4f} mm  ({panel_info.panel_w * _mm_to_mil:.2f} mil)")
-        lines.append(f"Panel Height: {panel_info.panel_h:.4f} mm  ({panel_info.panel_h * _mm_to_mil:.2f} mil)")
+        lines.append(tr("Panel Origin: ({x:.4f}, {y:.4f}) mm  ({xm:.2f}, {ym:.2f}) mil",
+                        x=pox, y=poy, xm=pox * _mm_to_mil, ym=poy * _mm_to_mil))
+        lines.append(tr("Panel Width:  {w:.4f} mm  ({wm:.2f} mil)",
+                        w=panel_info.panel_w, wm=panel_info.panel_w * _mm_to_mil))
+        lines.append(tr("Panel Height: {h:.4f} mm  ({hm:.2f} mil)",
+                        h=panel_info.panel_h, hm=panel_info.panel_h * _mm_to_mil))
         lines.append(f"")
 
         for inst in panel_info.instances:
             ox, oy = inst.origin
-            layer_tag = f" [layer: {inst.sub_name}]" if inst.sub_name else ""
+            layer_tag = tr(" [layer: {name}]", name=inst.sub_name) if inst.sub_name else ""
             lines.append(
-                f"  Instance {inst.k}{layer_tag}:"
+                tr("  Instance {k}{tag}:", k=inst.k, tag=layer_tag)
             )
             lines.append(
-                f"    origin=({ox - pox:.4f}, {oy - poy:.4f}) mm  "
-                f"({(ox - pox) * _mm_to_mil:.2f}, {(oy - poy) * _mm_to_mil:.2f}) mil"
+                tr("    origin=({x:.4f}, {y:.4f}) mm  ({xm:.2f}, {ym:.2f}) mil",
+                   x=ox - pox, y=oy - poy, xm=(ox - pox) * _mm_to_mil, ym=(oy - poy) * _mm_to_mil)
             )
             lines.append(
-                f"    w={inst.w:.4f} mm ({inst.w * _mm_to_mil:.2f} mil)  "
-                f"h={inst.h:.4f} mm ({inst.h * _mm_to_mil:.2f} mil)"
+                tr("    w={w:.4f} mm ({wm:.2f} mil)  h={h:.4f} mm ({hm:.2f} mil)",
+                   w=inst.w, wm=inst.w * _mm_to_mil, h=inst.h, hm=inst.h * _mm_to_mil)
             )
 
         text.setText("\n".join(lines))
@@ -393,23 +406,23 @@ class OriginAlignWizard(QDialog):
 
         if panel_info.is_panel:
             info = QLabel(
-                "Panel đã được phát hiện. Bước tiếp theo cho phép chọn chế độ gốc toạ độ."
+                tr("Panel detected. The next step lets you choose the origin mode.")
             )
             info.setStyleSheet("color: #006600; font-weight: bold; margin-top: 8px;")
             self._content_area.addWidget(info)
 
     def _step_options(self) -> None:
-        self._lbl_title.setText("Step 3/6: Tuỳ chọn xoay và đơn vị")
+        self._lbl_title.setText(tr("Step 3/6: Rotation and Unit Options"))
 
         panel_info = self._panel_info
         if not panel_info:
             return
 
-        rot_group = QGroupBox("Xoay Panel/Board")
+        rot_group = QGroupBox(tr("Rotate Panel/Board"))
         rot_layout = QVBoxLayout(rot_group)
 
         self._rot_group = QButtonGroup(self)
-        angles = [(0, "0° (không xoay) — mặc định"), (90, "90°")]
+        angles = [(0, tr("0° (no rotation) - default")), (90, "90°")]
         self._rb_rot = {}
         for val, label in angles:
             rb = QRadioButton(label)
@@ -420,11 +433,11 @@ class OriginAlignWizard(QDialog):
             rot_layout.addWidget(rb)
         self._content_area.addWidget(rot_group)
 
-        self._rot_layer_group = QGroupBox("Chọn layer áp dụng công thức xoay 90°")
+        self._rot_layer_group = QGroupBox(tr("Select layer to apply 90° rotation formula"))
         layer_layout = QVBoxLayout(self._rot_layer_group)
-        self._chk_rot_top = QCheckBox("Top layer — công thức 90°: (x, -(H-y))")
+        self._chk_rot_top = QCheckBox(tr("Top layer - 90° formula: (x, -(H-y))"))
         self._chk_rot_top.setChecked(True)
-        self._chk_rot_bottom = QCheckBox("Bottom layer — công thức 90°: (x, y)")
+        self._chk_rot_bottom = QCheckBox(tr("Bottom layer - 90° formula: (x, y)"))
         self._chk_rot_bottom.setChecked(False)
         layer_layout.addWidget(self._chk_rot_top)
         layer_layout.addWidget(self._chk_rot_bottom)
@@ -437,24 +450,24 @@ class OriginAlignWizard(QDialog):
         self._rb_rot[90].toggled.connect(_toggle_rot_layers)
         _toggle_rot_layers(self._rb_rot[90].isChecked())
 
-        unit_group = QGroupBox("Đơn vị toạ độ PickPlace")
+        unit_group = QGroupBox(tr("PickPlace coordinate units"))
         unit_layout = QVBoxLayout(unit_group)
 
-        self._rb_unit_mm = QRadioButton("mm (milimét) — mặc định")
+        self._rb_unit_mm = QRadioButton(tr("mm (millimeters) - default"))
         self._rb_unit_mm.setChecked(True)
-        self._rb_unit_mil = QRadioButton("mil (chuyển đổi sang mm: * 0.0254)")
+        self._rb_unit_mil = QRadioButton(tr("mil (convert to mm: * 0.0254)"))
 
         unit_layout.addWidget(self._rb_unit_mm)
         unit_layout.addWidget(self._rb_unit_mil)
         self._content_area.addWidget(unit_group)
 
     def _step_run(self) -> None:
-        self._lbl_title.setText("Step 4/6: Đang tính toán offset...")
+        self._lbl_title.setText(tr("Step 4/6: Computing offsets..."))
 
         self._progress_bar.setVisible(True)
         self._lbl_progress.setVisible(True)
         self._progress_bar.setValue(0)
-        self._lbl_progress.setText("Bắt đầu tính toán...")
+        self._lbl_progress.setText(tr("Starting computation..."))
 
         self._btn_next.setEnabled(False)
         self._btn_back.setEnabled(False)
@@ -498,7 +511,7 @@ class OriginAlignWizard(QDialog):
         self._origin_mode = origin_mode
         self._rotation_angle = rotation_angle
 
-        self._lbl_title.setText("Step 4/6: Đang cập nhật dữ liệu...")
+        self._lbl_title.setText(tr("Step 4/6: Updating data..."))
 
         total = len(transforms)
         self._progress_bar.setMaximum(total)
@@ -518,29 +531,29 @@ class OriginAlignWizard(QDialog):
             updated_count += 1
 
             self._progress_bar.setValue(i + 1)
-            self._lbl_progress.setText(f"Đã cập nhật {updated_count}/{total}")
+            self._lbl_progress.setText(tr("Updated {count}/{total}", count=updated_count, total=total))
             if i % 30 == 0:
                 QApplication.processEvents()
 
         self._progress_bar.setMaximum(100)
         self._progress_bar.setValue(100)
-        self._lbl_progress.setText(f"Hoàn tất! {updated_count} components đã được căn chỉnh.")
+        self._lbl_progress.setText(tr("Done! {count} components aligned.", count=updated_count))
 
         self._worker_done = True
         self._btn_next.setEnabled(True)
-        self._btn_next.setText("Next ▶")
+        self._btn_next.setText(tr("Next ▶"))
         self._btn_back.setEnabled(True)
         self._btn_cancel.setEnabled(True)
 
     def _step_macro(self) -> None:
-        self._lbl_title.setText("Step 5/6: Lấy Panel Origin từ CAM350 (Macro)")
+        self._lbl_title.setText(tr("Step 5/6: Get Panel Origin from CAM350 (Macro)"))
 
-        layer_group = QGroupBox("Layer")
+        layer_group = QGroupBox(tr("Layer"))
         layer_layout = QVBoxLayout(layer_group)
 
-        self._rb_layer_top = QRadioButton("Top layer (mặc định)")
+        self._rb_layer_top = QRadioButton(tr("Top layer (default)"))
         self._rb_layer_top.setChecked(True)
-        self._rb_layer_bottom = QRadioButton("Bottom layer")
+        self._rb_layer_bottom = QRadioButton(tr("Bottom layer"))
 
         self._layer_group = QButtonGroup(self)
         self._layer_group.addButton(self._rb_layer_top)
@@ -550,30 +563,30 @@ class OriginAlignWizard(QDialog):
         layer_layout.addWidget(self._rb_layer_bottom)
         self._content_area.addWidget(layer_group)
 
-        group = QGroupBox("Macro")
+        group = QGroupBox(tr("Macro"))
         layout = QVBoxLayout(group)
 
         info = QLabel(
-            "Nhấn nút bên dưới để chạy macro trên CAM350:\n"
-            "1. Sau khi bấm Run Macro, app đợi 5 giây — hãy chuyển sang cửa sổ CAM350 trong lúc đó\n"
-            "2. Nếu Step 2 chọn xoay 90°: chương trình bấm Ctrl+Alt+R để xoay board 90° trước\n"
-            "3. Top layer: Ctrl+Alt+X (hiện marker Space Origin) → jump tới Panel Origin (từ Step 2)\n"
-            "4. Bottom layer: Ctrl+Alt+B (xem Bottom) → Ctrl+Alt+X → jump tới tọa độ biến đổi tương ứng\n"
-            "5. Xác nhận thông báo hiện lên bằng phím Enter\n"
-            "\n"
-            "Lưu ý: CAM350 phải đang hiển thị đơn vị mm để tọa độ jump chính xác."
+            tr("Press the button below to run the macro on CAM350:\n"
+               "1. After pressing Run Macro, the app waits 5 seconds - switch to the CAM350 window in the meantime\n"
+               "2. If Step 2 selected 90° rotation: the program presses Ctrl+Alt+R to rotate the board 90° first\n"
+               "3. Top layer: Ctrl+Alt+X (show Space Origin marker) -> jump to Panel Origin (from Step 2)\n"
+               "4. Bottom layer: Ctrl+Alt+B (view Bottom) -> Ctrl+Alt+X -> jump to the transformed coordinates\n"
+               "5. Confirm the dialog that appears by pressing Enter\n"
+               "\n"
+               "Note: CAM350 must be displaying mm units for accurate jumps.")
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: #666; padding: 4px 0;")
         layout.addWidget(info)
 
-        self._btn_run_macro = QPushButton("Run Macro ▶")
+        self._btn_run_macro = QPushButton(tr("Run Macro ▶"))
         self._btn_run_macro.setMinimumHeight(36)
         self._btn_run_macro.setStyleSheet("background-color: #0D9488; color: white; font-weight: bold;")
         self._btn_run_macro.clicked.connect(self._run_macro)
         layout.addWidget(self._btn_run_macro)
 
-        self._lbl_macro_status = QLabel("Chưa chạy.")
+        self._lbl_macro_status = QLabel(tr("Not run yet."))
         self._lbl_macro_status.setWordWrap(True)
         self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;")
         layout.addWidget(self._lbl_macro_status)
@@ -583,7 +596,7 @@ class OriginAlignWizard(QDialog):
         cfg = self._config_mgr.config
         if (not cfg.xTextbox.x) or (not cfg.yTextbox.x):
             self._btn_run_macro.setEnabled(False)
-            self._lbl_macro_status.setText("CAM350 chưa được calibrate. Vui lòng chạy Calibration Wizard trước.")
+            self._lbl_macro_status.setText(tr("CAM350 is not calibrated. Please run the Calibration Wizard first."))
             self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: #fff0f0; padding: 8px; border: 1px solid #ccc;")
             return
         else:
@@ -591,8 +604,9 @@ class OriginAlignWizard(QDialog):
                 return
             if self._macro_y is None:
                 return
-            layer_label = "Top" if self._macro_layer == "top" else "Bottom"
-            self._lbl_macro_status.setText(f"Đã lấy Panel Origin ({layer_label}): X = {self._macro_x:.4f}, Y = {self._macro_y:.4f}")
+            layer_label = tr("Top") if self._macro_layer == "top" else tr("Bottom")
+            self._lbl_macro_status.setText(tr("Got Panel Origin ({layer}): X = {x:.4f}, Y = {y:.4f}",
+                                              layer=layer_label, x=self._macro_x, y=self._macro_y))
             return
 
     def _run_macro(self) -> None:
@@ -607,7 +621,7 @@ class OriginAlignWizard(QDialog):
         self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;")
 
         self._macro_countdown = MACRO_SWITCH_DELAY_S
-        self._lbl_macro_status.setText(f"Vui lòng chuyển sang cửa sổ CAM350 trong {self._macro_countdown} giây...")
+        self._lbl_macro_status.setText(tr("Please switch to the CAM350 window in {n} seconds...", n=self._macro_countdown))
         QApplication.processEvents()
         self._macro_timer.start(1000)
 
@@ -617,10 +631,10 @@ class OriginAlignWizard(QDialog):
             self._macro_timer.stop()
             self._execute_macro()
             return
-        self._lbl_macro_status.setText(f"Vui lòng chuyển sang cửa sổ CAM350 trong {self._macro_countdown} giây...")
+        self._lbl_macro_status.setText(tr("Please switch to the CAM350 window in {n} seconds...", n=self._macro_countdown))
 
     def _execute_macro(self) -> None:
-        self._lbl_macro_status.setText("Đang chạy macro trên CAM350...")
+        self._lbl_macro_status.setText(tr("Running macro on CAM350..."))
         QApplication.processEvents()
 
         layer = "bottom" if self._rb_layer_bottom.isChecked() else "top"
@@ -642,9 +656,12 @@ class OriginAlignWizard(QDialog):
                 else:
                     ox, oy = pox, poy
         except (AttributeError, TypeError):
-            error = "Chưa có dữ liệu Panel Origin từ Step 2."
+            error = tr("No Panel Origin data from Step 2.")
 
-        self._lbl_macro_status.setText(f"Đang chạy macro trên CAM350... (layer={layer}, angle={angle_deg}°, jump=({ox}, {oy}))")
+        self._lbl_macro_status.setText(
+            tr("Running macro on CAM350... (layer={layer}, angle={angle}°, jump=({ox}, {oy}))",
+               layer=layer, angle=angle_deg, ox=ox, oy=oy)
+        )
         QApplication.processEvents()
 
         if error is None:
@@ -662,27 +679,31 @@ class OriginAlignWizard(QDialog):
         self._btn_cancel.setEnabled(True)
 
         if error is not None:
-            self._lbl_macro_status.setText(f"Macro thất bại: {error}")
+            self._lbl_macro_status.setText(tr("Macro failed: {error}", error=error))
             self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: #fff0f0; padding: 8px; border: 1px solid #ccc;")
             return
 
         self._macro_layer = layer
         self._macro_x = ox
         self._macro_y = oy
-        layer_label = "Top" if layer == "top" else "Bottom"
-        self._lbl_macro_status.setText(f"Đã lấy Panel Origin ({layer_label}): X = {ox:.4f}, Y = {oy:.4f}")
+        layer_label = tr("Top") if layer == "top" else tr("Bottom")
+        self._lbl_macro_status.setText(tr("Got Panel Origin ({layer}): X = {x:.4f}, Y = {y:.4f}",
+                                          layer=layer_label, x=ox, y=oy))
 
     def _step_result(self) -> None:
-        self._lbl_title.setText("Step 6/6: Kết quả Alignment")
+        self._lbl_title.setText(tr("Step 6/6: Alignment Result"))
 
         self._result_text.setVisible(True)
 
         _mm_to_mil = 1.0 / 0.0254
 
+        origin_mode_label = tr("Panel Origin") if self._origin_mode == 'panel' else tr("Board Origin")
+        mil_conv = tr("Yes (×0.0254)") if self._mil_to_mm else tr("No")
+
         lines = []
-        lines.append(f"Chế độ gốc: {'Panel Origin' if self._origin_mode == 'panel' else 'Board Origin'}")
-        lines.append(f"Xoay: {self._rotation_angle}°")
-        lines.append(f"Chuyển đổi mil→mm: {'Có (×0.0254)' if self._mil_to_mm else 'Không'}")
+        lines.append(tr("Origin mode: {mode}", mode=origin_mode_label))
+        lines.append(tr("Rotation: {angle}°", angle=self._rotation_angle))
+        lines.append(tr("mil→mm conversion: {value}", value=mil_conv))
         lines.append(f"")
 
         pox, poy = self._panel_info.panel_origin
@@ -690,18 +711,19 @@ class OriginAlignWizard(QDialog):
             w = self._panel_info.panel_w
             h = self._panel_info.panel_h
             ox, oy = 0.0, 0.0
-            label = 'Panel'
+            label = tr('Panel')
         else:
             w = self._panel_info.instances[0].w
             h = self._panel_info.instances[0].h
             ox = self._panel_info.instances[0].origin[0] - pox
             oy = self._panel_info.instances[0].origin[1] - poy
-            label = 'Board'
-        lines.append(f"{label} Width:  {w:.4f} mm  ({w * _mm_to_mil:.2f} mil)")
-        lines.append(f"{label} Height: {h:.4f} mm  ({h * _mm_to_mil:.2f} mil)")
-        lines.append(f"{label} Origin: ({ox:.4f}, {oy:.4f}) mm  ({ox * _mm_to_mil:.2f}, {oy * _mm_to_mil:.2f}) mil")
+            label = tr('Board')
+        lines.append(tr("{label} Width:  {w:.4f} mm  ({wm:.2f} mil)", label=label, w=w, wm=w * _mm_to_mil))
+        lines.append(tr("{label} Height: {h:.4f} mm  ({hm:.2f} mil)", label=label, h=h, hm=h * _mm_to_mil))
+        lines.append(tr("{label} Origin: ({x:.4f}, {y:.4f}) mm  ({xm:.2f}, {ym:.2f}) mil",
+                        label=label, x=ox, y=oy, xm=ox * _mm_to_mil, ym=oy * _mm_to_mil))
         lines.append(f"")
-        lines.append(f"Kết quả offset từng instance:")
+        lines.append(tr("Per-instance offset results:"))
         lines.append(f"")
 
         pox, poy = self._panel_info.panel_origin
@@ -716,16 +738,18 @@ class OriginAlignWizard(QDialog):
             inst = self._panel_info.instances[k]
             ox = inst.origin[0] - pox
             oy = inst.origin[1] - poy
-            lines.append(f"Instance {k}:")
-            lines.append(f"  Board Width:  {inst.w:.4f} mm ({inst.w * _mm_to_mil:.2f} mil)")
-            lines.append(f"  Board Height: {inst.h:.4f} mm ({inst.h * _mm_to_mil:.2f} mil)")
-            lines.append(f"  Board Origin: ({ox:.4f}, {oy:.4f}) mm  ({ox * _mm_to_mil:.2f}, {oy * _mm_to_mil:.2f}) mil")
+            lines.append(tr("Instance {k}:", k=k))
+            lines.append(tr("  Board Width:  {w:.4f} mm ({wm:.2f} mil)", w=inst.w, wm=inst.w * _mm_to_mil))
+            lines.append(tr("  Board Height: {h:.4f} mm ({hm:.2f} mil)", h=inst.h, hm=inst.h * _mm_to_mil))
+            lines.append(tr("  Board Origin: ({x:.4f}, {y:.4f}) mm  ({xm:.2f}, {ym:.2f}) mil",
+                            x=ox, y=oy, xm=ox * _mm_to_mil, ym=oy * _mm_to_mil))
             for lk, r in results.items():
-                layer_label = "Top" if lk == "top" else ("Bottom" if lk == "bottom" else "Gộp")
-                lines.append(f"  [{layer_label}] Offset X: {r.offset_x:.4f} mm")
-                lines.append(f"  [{layer_label}] Offset Y: {r.offset_y:.4f} mm")
-                lines.append(f"  [{layer_label}] Offset Rotation: {r.rotation_angle:.0f}°")
-                lines.append(f"  [{layer_label}] Matched: {r.n_matched}/{r.n_total}, Residual: {r.median_residual:.6f} mm")
+                layer_label = tr("Top") if lk == "top" else (tr("Bottom") if lk == "bottom" else tr("Combined"))
+                lines.append(tr("  [{layer}] Offset X: {v:.4f} mm", layer=layer_label, v=r.offset_x))
+                lines.append(tr("  [{layer}] Offset Y: {v:.4f} mm", layer=layer_label, v=r.offset_y))
+                lines.append(tr("  [{layer}] Offset Rotation: {v:.0f}°", layer=layer_label, v=r.rotation_angle))
+                lines.append(tr("  [{layer}] Matched: {m}/{total}, Residual: {r:.6f} mm",
+                                layer=layer_label, m=r.n_matched, total=r.n_total, r=r.median_residual))
             lines.append(f"")
 
         total_unmodified = sum(
@@ -733,14 +757,14 @@ class OriginAlignWizard(QDialog):
             if tf.new_x is None and tf.new_y is None and tf.new_rotation is None
         )
         total_modified = len(self._transforms) - total_unmodified
-        lines.append(f"Tổng số components: {len(self._transforms)}")
-        lines.append(f"Đã căn chỉnh: {total_modified}")
-        lines.append(f"Bỏ qua (không thay đổi): {total_unmodified}")
+        lines.append(tr("Total components: {count}", count=len(self._transforms)))
+        lines.append(tr("Aligned: {count}", count=total_modified))
+        lines.append(tr("Skipped (unchanged): {count}", count=total_unmodified))
 
         self._result_text.setText("\n".join(lines))
 
     def _browse_gko(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GKO", "", "Gerber Files (*.gko *.GKO *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GKO file"), "", "Gerber Files (*.gko *.GKO *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gko_path = path
             self._lbl_gko.setText(os.path.basename(path))
@@ -748,7 +772,7 @@ class OriginAlignWizard(QDialog):
             self._config_mgr.update(gerberGko=path)
 
     def _browse_gtp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GTP", "", "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GTP file"), "", "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gtp_path = path
             self._lbl_gtp.setText(os.path.basename(path))
@@ -756,7 +780,7 @@ class OriginAlignWizard(QDialog):
             self._config_mgr.update(gerberGtp=path)
 
     def _browse_gbp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GBP", "", "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GBP file"), "", "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gbp_path = path
             self._lbl_gbp.setText(os.path.basename(path))
@@ -764,7 +788,7 @@ class OriginAlignWizard(QDialog):
             self._config_mgr.update(gerberGbp=path)
 
     def _browse_gto(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GTO", "", "Gerber Files (*.gto *.GTO *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GTO file"), "", "Gerber Files (*.gto *.GTO *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gto_path = path
             self._lbl_gto.setText(os.path.basename(path))
@@ -772,7 +796,7 @@ class OriginAlignWizard(QDialog):
             self._config_mgr.update(gerberGto=path)
 
     def _browse_gbo(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file GBO", "", "Gerber Files (*.gbo *.GBO *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GBO file"), "", "Gerber Files (*.gbo *.GBO *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gbo_path = path
             self._lbl_gbo.setText(os.path.basename(path))
@@ -782,13 +806,13 @@ class OriginAlignWizard(QDialog):
     def _on_next(self) -> None:
         if self._step_index == 0:
             if not self._gko_path:
-                QMessageBox.warning(self, "Warning", "Vui lòng chọn file GKO (Outline).")
+                QMessageBox.warning(self, tr("Warning"), tr("Please select the GKO (Outline) file."))
                 return
-            self._lbl_title.setText("Đang phân tích Gerber...")
+            self._lbl_title.setText(tr("Analyzing Gerber..."))
             try:
                 self._panel_info = detect_panel(self._gko_path)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Không thể đọc GKO: {e}")
+                QMessageBox.critical(self, tr("Error"), tr("Cannot read GKO: {e}", e=e))
                 return
             self._show_step(1)
             return

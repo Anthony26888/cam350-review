@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from database.pcb_info_repo import PcbInfoRepo
+from ui.i18n import tr
 from models.pcb_info import PcbInfo
 from services.cam350_controller import Cam350Controller
 
@@ -49,7 +50,7 @@ class PcbInfoDialog(QDialog):
         self._repo = PcbInfoRepo()
         self._cam350 = Cam350Controller()
         self._hotkey_filter: Optional[_HotkeyFilter] = None
-        self.setWindowTitle("PCB Info")
+        self.setWindowTitle(tr("PCB Info"))
         self.setModal(True)
         self.setMinimumWidth(520)
         self._boc_edits: Dict[str, QLineEdit] = {}
@@ -67,7 +68,7 @@ class PcbInfoDialog(QDialog):
         row = QHBoxLayout()
         row.setSpacing(8)
         edit = QLineEdit()
-        edit.setPlaceholderText(label)
+        edit.setPlaceholderText(tr(label))
         edit.setMinimumWidth(150)
         edit.textChanged.connect(self._update_save_visibility)
         self._boc_edits[label] = edit
@@ -80,34 +81,36 @@ class PcbInfoDialog(QDialog):
         layout = QVBoxLayout(self)
 
         hint = QLabel(
-            f"Hotkey {HOTKEY_COMBO}: trỏ chuột tới vị trí mong muốn trong CAM350 "
-            "rồi nhấn hotkey để đọc tọa độ.\nMacro tự điền X Boc 1 & Y Boc 1, lần 2 điền "
-            "Boc 2, lần 3 điền Boc 3. Nút Save hiện ra sau khi đủ dữ liệu."
+            tr("Hotkey {hk}: point the mouse at the desired position in CAM350 "
+               "then press the hotkey to read coordinates.\n"
+               "The macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills "
+               "Boc 2, the 3rd time fills Boc 3. The Save button appears after enough data.",
+               hk=HOTKEY_COMBO)
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #0F766E; font-weight: bold; padding: 4px 0;")
         layout.addWidget(hint)
 
-        board_group = QGroupBox("Board")
+        board_group = QGroupBox(tr("Board"))
         board_form = QFormLayout(board_group)
         self._spin_board_width = self._numeric_field()
         self._spin_board_height = self._numeric_field()
         self._spin_work_width = self._numeric_field()
         self._spin_position = self._numeric_field(decimals=0)
         self._spin_thickness = self._numeric_field()
-        board_form.addRow("Board Width:", self._spin_board_width)
-        board_form.addRow("Board Height:", self._spin_board_height)
-        board_form.addRow("Working Area Width:", self._spin_work_width)
-        board_form.addRow("Position Working:", self._spin_position)
-        board_form.addRow("Thickness:", self._spin_thickness)
+        board_form.addRow(tr("Board Width:"), self._spin_board_width)
+        board_form.addRow(tr("Board Height:"), self._spin_board_height)
+        board_form.addRow(tr("Working Area Width:"), self._spin_work_width)
+        board_form.addRow(tr("Position Working:"), self._spin_position)
+        board_form.addRow(tr("Thickness:"), self._spin_thickness)
         layout.addWidget(board_group)
 
         self._spin_board_width.valueChanged.connect(self._on_board_width_changed)
 
-        boc_group = QGroupBox("Boc Coordinates (auto-filled by hotkey)")
+        boc_group = QGroupBox(tr("Boc Coordinates (auto-filled by hotkey)"))
         boc_form = QFormLayout(boc_group)
         for label in ("X Boc 1", "Y Boc 1", "X Boc 2", "Y Boc 2", "X Boc 3", "Y Boc 3"):
-            boc_form.addRow(label, self._boc_row(label))
+            boc_form.addRow(tr(label), self._boc_row(label))
         layout.addWidget(boc_group)
 
         self._lbl_status = QLabel("")
@@ -116,13 +119,13 @@ class PcbInfoDialog(QDialog):
         layout.addWidget(self._lbl_status)
 
         btn_layout = QHBoxLayout()
-        self._btn_reset = QPushButton("Reset")
+        self._btn_reset = QPushButton(tr("Reset"))
         self._btn_reset.clicked.connect(self._reset)
-        self._btn_save = QPushButton("Save")
+        self._btn_save = QPushButton(tr("Save"))
         self._btn_save.setObjectName("primary")
         self._btn_save.clicked.connect(self._save)
         self._btn_save.setVisible(False)
-        btn_close = QPushButton("Cancel")
+        btn_close = QPushButton(tr("Cancel"))
         btn_close.clicked.connect(self.close)
         btn_layout.addWidget(self._btn_reset)
         btn_layout.addWidget(self._btn_save)
@@ -138,7 +141,7 @@ class PcbInfoDialog(QDialog):
             if not ok:
                 raise RuntimeError("RegisterHotKey returned 0")
         except Exception as e:
-            self._lbl_status.setText(f"Không đăng ký được hotkey {HOTKEY_COMBO}: {e}")
+            self._lbl_status.setText(tr("Cannot register hotkey {hk}: {e}", hk=HOTKEY_COMBO, e=e))
             return
         self._hotkey_filter = _HotkeyFilter(self._trigger_macro)
         app = QApplication.instance()
@@ -175,17 +178,18 @@ class PcbInfoDialog(QDialog):
     def _trigger_macro(self) -> None:
         index = self._next_boc_index()
         if index is None:
-            self._lbl_status.setText("Đã đủ 3 vị trí Boc. Nhấn Save để lưu.")
+            self._lbl_status.setText(tr("All 3 Boc positions filled. Press Save to save."))
             return
         try:
             x = self._cam350.read_value("x")
             y = self._cam350.read_value("y")
         except RuntimeError as e:
-            QMessageBox.warning(self, "Macro Failed", str(e))
+            QMessageBox.warning(self, tr("Macro Failed"), str(e))
             return
         self._boc_edits[f"X Boc {index}"].setText(self._format_float(x))
         self._boc_edits[f"Y Boc {index}"].setText(self._format_float(y))
-        self._lbl_status.setText(f"Đã điền Boc {index} (X={self._format_float(x)}, Y={self._format_float(y)}).")
+        self._lbl_status.setText(tr("Filled Boc {index} (X={x}, Y={y}).",
+                                    index=index, x=self._format_float(x), y=self._format_float(y)))
         self._update_save_visibility()
 
     def _update_save_visibility(self) -> None:
@@ -225,8 +229,8 @@ class PcbInfoDialog(QDialog):
 
     def _reset(self) -> None:
         reply = QMessageBox.question(
-            self, "Reset PCB Info",
-            "Xóa toàn bộ dữ liệu PCB Info và trả về dữ liệu mặc định?",
+            self, tr("Reset PCB Info"),
+            tr("Clear all PCB Info data and restore defaults?"),
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
@@ -234,10 +238,10 @@ class PcbInfoDialog(QDialog):
         try:
             self._repo.clear()
         except RuntimeError as e:
-            QMessageBox.critical(self, "Reset Failed", str(e))
+            QMessageBox.critical(self, tr("Reset Failed"), str(e))
             return
         self._load()
-        self._lbl_status.setText("Đã reset về dữ liệu mặc định.")
+        self._lbl_status.setText(tr("Reset to default data."))
 
     def _save(self) -> None:
         pcb = PcbInfo(
@@ -256,7 +260,7 @@ class PcbInfoDialog(QDialog):
         try:
             self._repo.save(pcb)
         except RuntimeError as e:
-            QMessageBox.critical(self, "Save Failed", str(e))
+            QMessageBox.critical(self, tr("Save Failed"), str(e))
             return
-        QMessageBox.information(self, "Success", "PCB info saved.")
+        QMessageBox.information(self, tr("Success"), tr("PCB info saved."))
         self.accept()

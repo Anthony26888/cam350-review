@@ -41,7 +41,7 @@ def test_save_and_load(tmp_path):
     record = _make_record()
     SessionService.save(str(path), [record], source_file="src.xlsx", current_index=2)
     loaded = SessionService.load(str(path))
-    assert loaded.version == 3
+    assert loaded.version == 4
     assert loaded.source_file == "src.xlsx"
     assert loaded.current_index == 2
     assert len(loaded.records) == 1
@@ -61,7 +61,7 @@ def test_save_and_load_gerber_paths(tmp_path):
         gerberGbo=r"D:\gerber\b.GBO",
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 3
+    assert loaded.version == 4
     assert loaded.gerberGko == r"D:\gerber\b.GKO"
     assert loaded.gerberGtp == r"D:\gerber\b.GTP"
     assert loaded.gerberGbp == r"D:\gerber\b.GBP"
@@ -142,6 +142,34 @@ def test_load_legacy_version(tmp_path):
     loaded = SessionService.load(str(path))
     assert loaded.version == 1
     assert loaded.pcb_info is None
+
+
+def test_save_and_load_column_mapping(tmp_path):
+    path = tmp_path / "session_mapping.cam350review"
+    record = _make_record()
+    mapping = {
+        "designator": "Ref",
+        "mpn": "Part Number",
+        "layer": "Side",
+        "x": "Xpos",
+        "y": "Ypos",
+        "rotation": "Angle",
+    }
+    SessionService.save(
+        str(path), [record], source_file="src.xlsx", column_mapping=mapping
+    )
+    loaded = SessionService.load(str(path))
+    assert loaded.version == 4
+    assert loaded.column_mapping == mapping
+    assert loaded.column_mapping["x"] == "Xpos"
+
+
+def test_save_column_mapping_defaults_none(tmp_path):
+    path = tmp_path / "session_mapping_empty.cam350review"
+    record = _make_record()
+    SessionService.save(str(path), [record])
+    loaded = SessionService.load(str(path))
+    assert loaded.column_mapping is None
 
 
 def test_load_missing_file(tmp_path):

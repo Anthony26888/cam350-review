@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from models.review import ReviewRecord
+from ui.i18n import tr
 from services.gerber.gerber_render import (
     RenderData, LineShape, ArcShape, FlashShape, parse_render,
 )
@@ -32,8 +33,8 @@ HIGHLIGHT_COLOR = QColor("#39FF14")
 BACKGROUND = QColor("#0B1220")
 
 _CROSS_BOARD_RATIO = 0.01
-_MIN_ARROW_PX = 18.0
-_MIN_ARROW_WING_PX = 7.0
+_MIN_ARROW_PX = 10.0
+_MIN_ARROW_WING_PX = 3.0
 
 
 def _layer_key(layer: str) -> str:
@@ -116,6 +117,7 @@ def _add_flash(
     off_y: float = 0.0,
     cx0: float = 0.0,
     cy0: float = 0.0,
+    mirror_x: bool = False,
 ) -> None:
     """Append one flash to `path` with the display transform applied.
 
@@ -124,12 +126,12 @@ def _add_flash(
     stroked lines, so every layer rotates together.
     """
     def _t_abs(x: float, y: float) -> Tuple[float, float]:
-        return apply_transform(x, y, mirror, angle, off_x, off_y, cx0, cy0)
+        return apply_transform(x, y, mirror, angle, off_x, off_y, cx0, cy0, mirror_x)
 
     def _t_loc(x: float, y: float) -> Tuple[float, float]:
-        return apply_transform(x, y, mirror, angle, 0.0, 0.0, 0.0, 0.0)
+        return apply_transform(x, y, mirror, angle, 0.0, 0.0, 0.0, 0.0, mirror_x)
 
-    rot = transform_rot(fl.rot, mirror, angle)
+    rot = transform_rot(fl.rot, mirror, angle, mirror_x)
 
     if fl.kind == "circle":
         gx, gy = _t_abs(fl.cx, fl.cy)
@@ -203,11 +205,12 @@ def _append_arc_path(
     off_y: float,
     cx0: float,
     cy0: float,
+    mirror_x: bool = False,
 ) -> None:
     """Append an arc stroke to `path` with the display transform + y-flip."""
-    sx, sy = apply_transform(ar.x1, ar.y1, mirror, angle, off_x, off_y, cx0, cy0)
-    ex, ey = apply_transform(ar.x2, ar.y2, mirror, angle, off_x, off_y, cx0, cy0)
-    cx_, cy_ = apply_transform(ar.cx, ar.cy, mirror, angle, off_x, off_y, cx0, cy0)
+    sx, sy = apply_transform(ar.x1, ar.y1, mirror, angle, off_x, off_y, cx0, cy0, mirror_x)
+    ex, ey = apply_transform(ar.x2, ar.y2, mirror, angle, off_x, off_y, cx0, cy0, mirror_x)
+    cx_, cy_ = apply_transform(ar.cx, ar.cy, mirror, angle, off_x, off_y, cx0, cy0, mirror_x)
     r = math.hypot(sx - cx_, sy - cy_)
     if r <= 1e-9:
         path.moveTo(sx, -sy)
@@ -599,7 +602,7 @@ class GerberLoadWorker(QThread):
     def run(self) -> None:
         try:
             data: Dict[str, RenderData] = {}
-            self.progress.emit("Đang đọc GKO (outline)...", 12)
+            self.progress.emit(tr("Reading GKO (outline)..."), 12)
             data["outline"] = parse_layer(self._gko)
 
             data["top"] = RenderData()
@@ -608,19 +611,19 @@ class GerberLoadWorker(QThread):
             data["silk_bottom"] = RenderData()
 
             if self._gtp and os.path.exists(self._gtp):
-                self.progress.emit("Đang đọc GTP (Top Paste)...", 30)
+                self.progress.emit(tr("Reading GTP (Top Paste)..."), 30)
                 data["top"] = parse_layer(self._gtp)
             if self._gbp and os.path.exists(self._gbp):
-                self.progress.emit("Đang đọc GBP (Bottom Paste)...", 45)
+                self.progress.emit(tr("Reading GBP (Bottom Paste)..."), 45)
                 data["bottom"] = parse_layer(self._gbp)
             if self._gto and os.path.exists(self._gto):
-                self.progress.emit("Đang đọc GTO (Silkscreen)...", 60)
+                self.progress.emit(tr("Reading GTO (Silkscreen)..."), 60)
                 data["silk"] = parse_layer(self._gto)
             if self._gbo and os.path.exists(self._gbo):
-                self.progress.emit("Đang đọc GBO (Silkscreen)...", 75)
+                self.progress.emit(tr("Reading GBO (Silkscreen)..."), 75)
                 data["silk_bottom"] = parse_layer(self._gbo)
 
-            self.progress.emit("Hoàn tất.", 100)
+            self.progress.emit(tr("Done."), 100)
             self.finished.emit(data)
         except Exception as e:
             self.failed.emit(str(e))
@@ -641,7 +644,7 @@ class GerberViewer(QWidget):
         display_settings: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Gerber View — Overlay PickPlace")
+        self.setWindowTitle(tr("Gerber View - Overlay PickPlace"))
         self.setWindowFlags(
             Qt.Window
             | Qt.WindowMaximizeButtonHint
@@ -687,6 +690,7 @@ class GerberViewer(QWidget):
             "rotation": self._combo_rot.currentData() or 0,
             "invert_rot": self._chk_invert_rot.isChecked(),
             "flip": self._chk_flip.isChecked(),
+            "mirror_x": self._chk_mirror_x.isChecked(),
             "offset_x": self._spin_off_x.value(),
             "offset_y": self._spin_off_y.value(),
             "outline": self._chk_outline.isChecked(),
@@ -712,6 +716,7 @@ class GerberViewer(QWidget):
                     break
         self._chk_invert_rot.setChecked(bool(settings.get("invert_rot", False)))
         self._chk_flip.setChecked(bool(settings.get("flip", False)))
+        self._chk_mirror_x.setChecked(bool(settings.get("mirror_x", False)))
         self._spin_off_x.setValue(float(settings.get("offset_x", 0.0)))
         self._spin_off_y.setValue(float(settings.get("offset_y", 0.0)))
         self._chk_outline.setChecked(bool(settings.get("outline", True)))
@@ -728,7 +733,7 @@ class GerberViewer(QWidget):
 
     def _save_display_settings(self) -> None:
         self.settings_saved.emit(self.display_settings())
-        self._lbl_status.setText("Đã lưu thông số hiển thị vào session.")
+        self._lbl_status.setText(tr("Display settings saved to session."))
         self._display_dialog.accept()
 
     def _build_ui(self) -> None:
@@ -740,7 +745,7 @@ class GerberViewer(QWidget):
             _logo = QLabel()
             _logo.setPixmap(_logo_pm.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             top_bar.addWidget(_logo)
-        self._lbl_title = QLabel("Đang đọc file Gerber...")
+        self._lbl_title = QLabel(tr("Reading Gerber file..."))
         self._lbl_title.setStyleSheet("font-size: 13px; font-weight: bold;")
         top_bar.addWidget(self._lbl_title)
         top_bar.addStretch()
@@ -758,11 +763,11 @@ class GerberViewer(QWidget):
         panel.setSpacing(8)
 
         btn_row = QHBoxLayout()
-        btn_disp = QPushButton("Hiển thị…")
+        btn_disp = QPushButton(tr("Display..."))
         btn_disp.clicked.connect(self._open_display_dialog)
-        btn_fit = QPushButton("Fit View")
+        btn_fit = QPushButton(tr("Fit View"))
         btn_fit.clicked.connect(self._fit_scene)
-        btn_reset = QPushButton("Reset")
+        btn_reset = QPushButton(tr("Reset"))
         btn_reset.clicked.connect(self._on_reset)
         btn_row.addWidget(btn_disp)
         btn_row.addWidget(btn_fit)
@@ -770,24 +775,26 @@ class GerberViewer(QWidget):
         panel.addLayout(btn_row)
 
         layer_row = QHBoxLayout()
-        layer_row.addWidget(QLabel("Layer:"))
+        layer_row.addWidget(QLabel(tr("Layer:")))
         self._combo_layer = QComboBox()
-        self._combo_layer.addItem("Top layer (GKO + GTP)")
-        self._combo_layer.addItem("Bottom layer (GKO + GBP)")
+        self._combo_layer.addItem(tr("Top layer (GKO + GTP)"))
+        self._combo_layer.addItem(tr("Bottom layer (GKO + GBP)"))
         self._combo_layer.currentIndexChanged.connect(self._on_layer_changed)
         layer_row.addWidget(self._combo_layer, 1)
         panel.addLayout(layer_row)
 
-        panel.addWidget(QLabel("Components:"))
+        panel.addWidget(QLabel(tr("Components:")))
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText("Tìm component...")
+        self._search_input.setPlaceholderText(tr("Search component..."))
         self._search_input.setClearButtonEnabled(True)
         self._search_input.textChanged.connect(self._apply_layer)
         panel.addWidget(self._search_input)
 
         self._table_components = QTableWidget()
         self._table_components.setColumnCount(4)
-        self._table_components.setHorizontalHeaderLabels(["Designator", "X", "Y", "Rot"])
+        self._table_components.setHorizontalHeaderLabels([
+            tr("Designator"), tr("X"), tr("Y"), tr("Rot"),
+        ])
         self._table_components.setSelectionBehavior(QTableWidget.SelectRows)
         self._table_components.setSelectionMode(QTableWidget.SingleSelection)
         self._table_components.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -798,11 +805,11 @@ class GerberViewer(QWidget):
         self._table_components.cellDoubleClicked.connect(self._on_component_double_clicked)
         panel.addWidget(self._table_components, 1)
 
-        self._lbl_status = QLabel("Chưa có dữ liệu.")
+        self._lbl_status = QLabel(tr("No data yet."))
         self._lbl_status.setWordWrap(True)
         panel.addWidget(self._lbl_status)
 
-        self._mag_group = QGroupBox(f"Chi tiết (Zoom {_MAG_FACTOR:g}x)")
+        self._mag_group = QGroupBox(tr("Details (Zoom {f:g}x)", f=_MAG_FACTOR))
         self._mag_group.setStyleSheet("""
 QGroupBox {
     background-color: #FFFFFF;
@@ -824,7 +831,7 @@ QGroupBox::title {
         mag_layout.setSpacing(4)
         mag_layout.setContentsMargins(0, 0, 0, 0)
         mag_row = QHBoxLayout()
-        mag_row.addWidget(QLabel("Độ phóng:"))
+        mag_row.addWidget(QLabel(tr("Zoom:")))
         self._combo_mag = QComboBox()
         default_idx = 0
         for i, f in enumerate(_MAG_FACTORS):
@@ -850,7 +857,7 @@ QGroupBox::title {
         self._mag_view.setMaximumHeight(360)
         self._mag_view.setScene(self._scene)
         mag_layout.addWidget(self._mag_view, 1)
-        self._lbl_mag_hint = QLabel("Rê chuột trên bản vẽ / chọn linh kiện để xem chi tiết.")
+        self._lbl_mag_hint = QLabel(tr("Hover the drawing / select a component to see details."))
         self._lbl_mag_hint.setWordWrap(True)
         mag_layout.addWidget(self._lbl_mag_hint)
         panel.addWidget(self._mag_group)
@@ -860,10 +867,10 @@ QGroupBox::title {
         self._view.zoom_end.connect(self._refresh_magnifier)
 
         self._display_dialog = QDialog(self)
-        self._display_dialog.setWindowTitle("Tùy chỉnh hiển thị")
+        self._display_dialog.setWindowTitle(tr("Display settings"))
         display_layout = QVBoxLayout(self._display_dialog)
         display_layout.addWidget(self._build_display_group())
-        btn_save_disp = QPushButton("Lưu thông số hiển thị")
+        btn_save_disp = QPushButton(tr("Save display settings"))
         btn_save_disp.clicked.connect(self._save_display_settings)
         display_layout.addWidget(btn_save_disp)
 
@@ -875,12 +882,12 @@ QGroupBox::title {
         layout.addLayout(body, 1)
 
     def _build_display_group(self) -> QGroupBox:
-        group = QGroupBox("Hiển thị")
+        group = QGroupBox(tr("Display"))
         layout = QVBoxLayout(group)
         layout.setSpacing(6)
 
         rot_row = QHBoxLayout()
-        rot_row.addWidget(QLabel("Xoay Gerber:"))
+        rot_row.addWidget(QLabel(tr("Rotate Gerber:")))
         self._combo_rot = QComboBox()
         for angle in (0, 90, 180, 270):
             self._combo_rot.addItem(f"{angle}°", angle)
@@ -888,16 +895,20 @@ QGroupBox::title {
         rot_row.addWidget(self._combo_rot, 1)
         layout.addLayout(rot_row)
 
-        self._chk_invert_rot = QCheckBox("Đảo chiều xoay gerber")
+        self._chk_invert_rot = QCheckBox(tr("Invert Gerber rotation"))
         self._chk_invert_rot.toggled.connect(self._redraw)
         layout.addWidget(self._chk_invert_rot)
 
-        self._chk_flip = QCheckBox("Lật Gerber (Mirror Y)")
+        self._chk_flip = QCheckBox(tr("Flip Gerber (Mirror Y)"))
         self._chk_flip.toggled.connect(self._redraw)
         layout.addWidget(self._chk_flip)
 
+        self._chk_mirror_x = QCheckBox(tr("Flip Gerber (Mirror X)"))
+        self._chk_mirror_x.toggled.connect(self._redraw)
+        layout.addWidget(self._chk_mirror_x)
+
         off_row = QHBoxLayout()
-        off_row.addWidget(QLabel("Offset X:"))
+        off_row.addWidget(QLabel(tr("Offset X:")))
         self._spin_off_x = QDoubleSpinBox()
         self._spin_off_x.setRange(-100.0, 100.0)
         self._spin_off_x.setSingleStep(0.05)
@@ -905,7 +916,7 @@ QGroupBox::title {
         self._spin_off_x.setValue(0.0)
         self._spin_off_x.valueChanged.connect(self._redraw)
         off_row.addWidget(self._spin_off_x, 1)
-        off_row.addWidget(QLabel("Y:"))
+        off_row.addWidget(QLabel(tr("Y:")))
         self._spin_off_y = QDoubleSpinBox()
         self._spin_off_y.setRange(-100.0, 100.0)
         self._spin_off_y.setSingleStep(0.05)
@@ -918,27 +929,27 @@ QGroupBox::title {
         off_row.addWidget(btn_zero)
         layout.addLayout(off_row)
 
-        self._chk_outline = QCheckBox("Hiện Outline GKO")
+        self._chk_outline = QCheckBox(tr("Show GKO outline"))
         self._chk_outline.setChecked(True)
         self._chk_outline.toggled.connect(self._redraw)
         layout.addWidget(self._chk_outline)
 
-        self._chk_paste = QCheckBox("Hiện Paste (GTP / GBP)")
+        self._chk_paste = QCheckBox(tr("Show Paste (GTP / GBP)"))
         self._chk_paste.setChecked(True)
         self._chk_paste.toggled.connect(self._redraw)
         layout.addWidget(self._chk_paste)
 
-        self._chk_silk = QCheckBox("Hiện Silkscreen (GTO / GBO)")
+        self._chk_silk = QCheckBox(tr("Show Silkscreen (GTO / GBO)"))
         self._chk_silk.setChecked(True)
         self._chk_silk.toggled.connect(self._redraw)
         layout.addWidget(self._chk_silk)
 
-        self._chk_pickplace = QCheckBox("Hiện PickPlace (đã align)")
+        self._chk_pickplace = QCheckBox(tr("Show PickPlace (aligned)"))
         self._chk_pickplace.setChecked(True)
         self._chk_pickplace.toggled.connect(self._redraw)
         layout.addWidget(self._chk_pickplace)
 
-        self._chk_crosshair = QCheckBox("Hiện Crosshair")
+        self._chk_crosshair = QCheckBox(tr("Show crosshair"))
         self._chk_crosshair.setChecked(True)
         self._chk_crosshair.toggled.connect(self._redraw)
         layout.addWidget(self._chk_crosshair)
@@ -950,7 +961,7 @@ QGroupBox::title {
 
     def _start_load(self) -> None:
         if not self._gko_path or not os.path.exists(self._gko_path):
-            QMessageBox.critical(self, "Error", "Không có file GKO hợp lệ.")
+            QMessageBox.critical(self, tr("Error"), tr("No valid GKO file."))
             self.close()
             return
         self._worker = GerberLoadWorker(
@@ -977,16 +988,18 @@ QGroupBox::title {
         self._apply_layer()
         self._redraw()
         self._fit_scene()
-        self._lbl_title.setText("Gerber View — Overlay PickPlace")
+        self._lbl_title.setText(tr("Gerber View - Overlay PickPlace"))
         self._lbl_status.setText(
-            f"Outline: {len(self._outline.lines)} nét, {len(self._outline.flashes)} pad | "
-            f"Top: {len(self._top.flashes)} pad | Bottom: {len(self._bottom.flashes)} pad | "
-            f"Silk Top: {len(self._silk.lines)} nét | Silk Bottom: {len(self._silk_bottom.lines)} nét"
+            tr("Outline: {ol} lines, {of} pads | Top: {tf} pads | Bottom: {bf} pads | "
+               "Silk Top: {st} lines | Silk Bottom: {sb} lines",
+               ol=len(self._outline.lines), of=len(self._outline.flashes),
+               tf=len(self._top.flashes), bf=len(self._bottom.flashes),
+               st=len(self._silk.lines), sb=len(self._silk_bottom.lines))
         )
 
     def _on_load_failed(self, message: str) -> None:
-        self._lbl_title.setText("Lỗi đọc file Gerber")
-        QMessageBox.critical(self, "Error", f"Không thể đọc Gerber:\n{message}")
+        self._lbl_title.setText(tr("Error reading Gerber file"))
+        QMessageBox.critical(self, tr("Error"), tr("Cannot read Gerber:\n{message}", message=message))
 
     def _on_layer_changed(self) -> None:
         self._apply_layer()
@@ -1038,7 +1051,7 @@ QGroupBox::title {
 
     def _on_mag_factor_changed(self) -> None:
         self._mag_factor = float(self._combo_mag.currentData() or _MAG_FACTOR)
-        self._mag_group.setTitle(f"Chi tiết (Zoom {self._mag_factor:g}x)")
+        self._mag_group.setTitle(tr("Details (Zoom {f:g}x)", f=self._mag_factor))
         self._refresh_magnifier()
 
     def _refresh_magnifier(self) -> None:
@@ -1083,6 +1096,7 @@ QGroupBox::title {
         mirror: bool,
         off_x: float,
         off_y: float,
+        mirror_x: bool = False,
     ) -> None:
         if not render_data.lines and not render_data.arcs:
             return
@@ -1100,8 +1114,8 @@ QGroupBox::title {
                 path = QPainterPath()
                 buckets[w] = path
             x1, y1, x2, y2 = ln.x1, ln.y1, ln.x2, ln.y2
-            x1, y1 = apply_transform(x1, y1, mirror, angle, off_x, off_y, center_x, center_y)
-            x2, y2 = apply_transform(x2, y2, mirror, angle, off_x, off_y, center_x, center_y)
+            x1, y1 = apply_transform(x1, y1, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
+            x2, y2 = apply_transform(x2, y2, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
             path.moveTo(x1, -y1)
             path.lineTo(x2, -y2)
         for ar in render_data.arcs:
@@ -1110,7 +1124,7 @@ QGroupBox::title {
             if path is None:
                 path = QPainterPath()
                 buckets[w] = path
-            _append_arc_path(path, ar, mirror, angle, off_x, off_y, center_x, center_y)
+            _append_arc_path(path, ar, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
         for w, path in buckets.items():
             pen = QPen(color, w)
             pen.setCosmetic(False)
@@ -1124,6 +1138,7 @@ QGroupBox::title {
         mirror: bool,
         off_x: float,
         off_y: float,
+        mirror_x: bool = False,
     ) -> None:
         if not render_data.flashes:
             return
@@ -1132,7 +1147,7 @@ QGroupBox::title {
         clear = QPainterPath()
         for fl in render_data.flashes:
             target = clear if fl.negative else dark
-            _add_flash(target, fl, mirror, angle, off_x, off_y, center_x, center_y)
+            _add_flash(target, fl, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
         final = dark
         if not clear.isEmpty():
             final = QPainterPath(dark.subtracted(clear))
@@ -1148,6 +1163,7 @@ QGroupBox::title {
         if self._chk_invert_rot.isChecked():
             angle = (360 - angle) % 360
         mirror = self._chk_flip.isChecked()
+        mirror_x = self._chk_mirror_x.isChecked()
         off_x = self._spin_off_x.value()
         off_y = self._spin_off_y.value()
 
@@ -1156,12 +1172,12 @@ QGroupBox::title {
         silk = self._silk if is_top else self._silk_bottom
 
         if self._chk_outline.isChecked():
-            self._render_lines(self._outline, OUTLINE_COLOR, angle, mirror, off_x, off_y)
+            self._render_lines(self._outline, OUTLINE_COLOR, angle, mirror, off_x, off_y, mirror_x)
         if self._chk_silk.isChecked():
-            self._render_lines(silk, SILK_COLOR, angle, mirror, off_x, off_y)
-            self._render_fills(silk, SILK_COLOR, angle, mirror, off_x, off_y)
+            self._render_lines(silk, SILK_COLOR, angle, mirror, off_x, off_y, mirror_x)
+            self._render_fills(silk, SILK_COLOR, angle, mirror, off_x, off_y, mirror_x)
         if self._chk_paste.isChecked():
-            self._render_fills(paste, TOP_PASTE_COLOR if is_top else BOTTOM_PASTE_COLOR, angle, mirror, off_x, off_y)
+            self._render_fills(paste, TOP_PASTE_COLOR if is_top else BOTTOM_PASTE_COLOR, angle, mirror, off_x, off_y, mirror_x)
 
         if self._chk_pickplace.isChecked():
             center_x, center_y = self._board_center
@@ -1171,7 +1187,7 @@ QGroupBox::title {
             ]
             self._pads = [
                 (
-                    *apply_transform(px, py, mirror, angle, off_x, off_y, center_x, center_y),
+                    *apply_transform(px, py, mirror, angle, off_x, off_y, center_x, center_y, mirror_x),
                     size,
                 )
                 for px, py, size in pads_raw
@@ -1245,6 +1261,7 @@ QGroupBox::title {
         self._spin_off_x.setValue(0.0)
         self._spin_off_y.setValue(0.0)
         self._chk_flip.setChecked(False)
+        self._chk_mirror_x.setChecked(False)
 
     def _on_reset(self) -> None:
         self._combo_rot.setCurrentIndex(0)

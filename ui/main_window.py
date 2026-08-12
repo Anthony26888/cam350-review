@@ -2,7 +2,7 @@ import math
 import os
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -19,8 +19,8 @@ from config.config_manager import ConfigManager
 from database.review_repo import ReviewRepo
 from license.info import license_summary
 from models.review import ReviewRecord
-from models.pickplace import PickPlaceData, PickPlaceComponent
-from services.pickplace_reader import PickPlaceReader
+from models.pickplace import PickPlaceData, PickPlaceComponent, COLUMN_FIELDS
+from services.pickplace_reader import PickPlaceReader, STANDARD_MAPPING
 from services.cam350_controller import Cam350Controller
 from services.export_service import ExportService
 from services.datasheet_service import DatasheetService
@@ -29,24 +29,50 @@ from ui.table_widget import TableWidget
 from ui.review_panel import ReviewPanel
 from ui.edit_dialog import EditDialog
 from ui.batch_edit_dialog import BatchEditDialog
+from ui.mapping_dialog import ColumnMappingDialog
 from ui.settings_dialog import SettingsDialog
 from ui.calibration_wizard import CalibrationWizard
 from ui.origin_align_wizard import OriginAlignWizard
 from ui.gerber_viewer import GerberViewer
+from ui.i18n import tr
 from utils.path_utils import resource_path
 from ui.jump_popup import JumpPopup
 
 
+def _icon_stroke() -> str:
+    try:
+        if ConfigManager.instance().config.theme == "dark":
+            return "#CBD5E1"
+    except Exception:
+        pass
+    return "#334155"
+
+
+def _icon_stroke_disabled() -> str:
+    try:
+        if ConfigManager.instance().config.theme == "dark":
+            return "#475569"
+    except Exception:
+        pass
+    return "#94A3B8"
+
+
 def _paint_icon(draw, size: int = 26) -> QIcon:
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    p.setPen(QPen(QColor("#334155"), 1.6))
-    p.setBrush(Qt.NoBrush)
-    draw(p, size)
-    p.end()
-    return QIcon(pm)
+    icon = QIcon()
+    for mode, color in (
+        (QIcon.Mode.Normal, _icon_stroke()),
+        (QIcon.Mode.Disabled, _icon_stroke_disabled()),
+    ):
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(QPen(QColor(color), 1.6))
+        p.setBrush(Qt.NoBrush)
+        draw(p, size)
+        p.end()
+        icon.addPixmap(pm, mode)
+    return icon
 
 
 def _board_icon() -> QIcon:
@@ -169,6 +195,7 @@ class MainWindow(QMainWindow):
         self._session_file: Optional[str] = None
         self._dirty = False
         self._jump_popup: Optional[JumpPopup] = None
+        self._toolbar: Optional[QToolBar] = None
 
         self._undo_stack: List[List[Dict[str, Any]]] = []
         self._redo_stack: List[List[Dict[str, Any]]] = []
@@ -190,91 +217,95 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         menubar = self._menubar = QMenuBar()
 
-        file_menu = menubar.addMenu("&File")
+        file_menu = menubar.addMenu(tr("&File"))
 
-        new_action = QAction("New Session", self)
+        new_action = QAction(tr("New Session"), self)
         new_action.setShortcut(QKeySequence.New)
         new_action.triggered.connect(self._new_session)
         file_menu.addAction(new_action)
 
-        open_session_action = QAction("Open Session...", self)
+        open_session_action = QAction(tr("Open Session..."), self)
         open_session_action.setShortcut(QKeySequence("Ctrl+O"))
         open_session_action.triggered.connect(self._open_session)
         file_menu.addAction(open_session_action)
 
-        save_action = QAction("Save Session", self)
+        save_action = QAction(tr("Save Session"), self)
         save_action.setShortcut(QKeySequence.Save)
         save_action.triggered.connect(self._save_session)
         file_menu.addAction(save_action)
 
-        save_as_action = QAction("Save Session As...", self)
+        save_as_action = QAction(tr("Save Session As..."), self)
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         save_as_action.triggered.connect(self._save_session_as)
         file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
 
-        open_pickplace_action = QAction("Open PickPlace Excel...", self)
+        open_pickplace_action = QAction(tr("Open PickPlace Excel..."), self)
         open_pickplace_action.setShortcut(QKeySequence("Ctrl+W"))
         open_pickplace_action.triggered.connect(self._open_file)
         file_menu.addAction(open_pickplace_action)
 
-        export_menu = file_menu.addMenu("&Export")
-        export_report_action = QAction("Export Review Report", self)
+        open_pickplace_mapped_action = QAction(tr("Open PickPlace with Mapping..."), self)
+        open_pickplace_mapped_action.triggered.connect(self._open_file_mapped)
+        file_menu.addAction(open_pickplace_mapped_action)
+
+        export_menu = file_menu.addMenu(tr("&Export"))
+        export_report_action = QAction(tr("Export Review Report"), self)
         export_report_action.triggered.connect(self._export_report)
         export_menu.addAction(export_report_action)
 
-        export_fixed_action = QAction("Export PickPlace Fixed", self)
+        export_fixed_action = QAction(tr("Export PickPlace Fixed"), self)
         export_fixed_action.triggered.connect(self._export_fixed)
         export_menu.addAction(export_fixed_action)
 
         file_menu.addSeparator()
-        exit_action = QAction("Exit", self)
+        exit_action = QAction(tr("Exit"), self)
         exit_action.setShortcut(QKeySequence.Quit)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        edit_menu = menubar.addMenu("&Edit")
-        self._undo_action = QAction("Undo", self)
+        edit_menu = menubar.addMenu(tr("&Edit"))
+        self._undo_action = QAction(tr("Undo"), self)
         self._undo_action.setShortcut(QKeySequence.Undo)
         self._undo_action.triggered.connect(self._undo)
         self._undo_action.setEnabled(False)
         edit_menu.addAction(self._undo_action)
 
-        self._redo_action = QAction("Redo", self)
+        self._redo_action = QAction(tr("Redo"), self)
         self._redo_action.setShortcut(QKeySequence("Ctrl+Shift+Z"))
         self._redo_action.triggered.connect(self._redo)
         self._redo_action.setEnabled(False)
         edit_menu.addAction(self._redo_action)
 
-        tools_menu = menubar.addMenu("&Tools")
-        align_action = QAction("Align PickPlace Origin...", self)
+        tools_menu = menubar.addMenu(tr("&Tools"))
+        align_action = QAction(tr("Align PickPlace Origin..."), self)
         align_action.triggered.connect(self._align_origin)
         tools_menu.addAction(align_action)
 
-        gerber_check_action = QAction("Gerber View...", self)
+        gerber_check_action = QAction(tr("Gerber View..."), self)
         gerber_check_action.triggered.connect(self._open_gerber_check)
         tools_menu.addAction(gerber_check_action)
         self._gerber_check_action = gerber_check_action
 
         tools_menu.addSeparator()
 
-        pcb_info_action = QAction("PCB Info...", self)
+        pcb_info_action = QAction(tr("PCB Info..."), self)
         pcb_info_action.triggered.connect(self._open_pcb_info)
         tools_menu.addAction(pcb_info_action)
 
         tools_menu.addSeparator()
 
-        calibrate_action = QAction("Calibration Wizard", self)
+        calibrate_action = QAction(tr("Calibration Wizard"), self)
         calibrate_action.triggered.connect(self._open_calibration)
         tools_menu.addAction(calibrate_action)
 
-        settings_action = QAction("Settings", self)
+        settings_action = QAction(tr("Settings"), self)
         settings_action.triggered.connect(self._open_settings)
         tools_menu.addAction(settings_action)
 
-        help_menu = menubar.addMenu("&Help")
-        about_action = QAction("About", self)
+        help_menu = menubar.addMenu(tr("&Help"))
+        about_action = QAction(tr("About"), self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
 
@@ -285,75 +316,92 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
 
         toolbar = QToolBar("Main Toolbar")
+        self._toolbar = toolbar
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(24, 24))
 
-        def _std_button(tip: str, icon) -> QPushButton:
+        def _std_button(tip: str, icon_factory: Callable[[], QIcon]) -> QPushButton:
             btn = QPushButton()
             btn.setToolTip(tip)
-            btn.setIcon(icon)
+            btn.setIcon(icon_factory())
             btn.setFixedSize(34, 30)
             return btn
 
         spi = self.style().standardIcon
-        btn_new = _std_button("New Session (Ctrl+N)", spi(QStyle.StandardPixmap.SP_FileIcon))
+        icon_sources: List[tuple[QPushButton, Callable[[], QIcon]]] = []
+
+        def _register(btn: QPushButton, factory: Callable[[], QIcon]) -> QPushButton:
+            icon_sources.append((btn, factory))
+            return btn
+
+        btn_new = _register(
+            _std_button(tr("New Session (Ctrl+N)"), lambda: spi(QStyle.StandardPixmap.SP_FileIcon)),
+            lambda: spi(QStyle.StandardPixmap.SP_FileIcon),
+        )
         btn_new.clicked.connect(self._new_session)
 
-        btn_open_session = _std_button("Open Session (Ctrl+O)", spi(QStyle.StandardPixmap.SP_DialogOpenButton))
+        btn_open_session = _register(
+            _std_button(tr("Open Session (Ctrl+O)"), lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton)),
+            lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton),
+        )
         btn_open_session.clicked.connect(self._open_session)
 
-        btn_save = _std_button("Save Session (Ctrl+S)", spi(QStyle.StandardPixmap.SP_DialogSaveButton))
+        btn_save = _register(
+            _std_button(tr("Save Session (Ctrl+S)"), lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton)),
+            lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton),
+        )
         btn_save.clicked.connect(self._save_session)
 
-        self._btn_open = _std_button("Open PickPlace Excel", _grid_icon())
+        self._btn_open = _register(_std_button(tr("Open PickPlace Excel"), _grid_icon), _grid_icon)
         self._btn_open.clicked.connect(self._open_file)
 
-        self._btn_align = _std_button("Align PickPlace Origin", spi(QStyle.StandardPixmap.SP_BrowserReload))
+        self._btn_align = _register(
+            _std_button(tr("Align PickPlace Origin"), lambda: spi(QStyle.StandardPixmap.SP_BrowserReload)),
+            lambda: spi(QStyle.StandardPixmap.SP_BrowserReload),
+        )
         self._btn_align.clicked.connect(self._align_origin)
         self._btn_align.setEnabled(False)
 
-        self._btn_gerber_check = _std_button("Gerber View", _board_icon())
+        self._btn_gerber_check = _register(_std_button(tr("Gerber View"), _board_icon), _board_icon)
         self._btn_gerber_check.clicked.connect(self._open_gerber_check)
         self._btn_gerber_check.setEnabled(False)
 
-        self._btn_export_report = _std_button("Export Review Report", _doc_icon())
+        self._btn_export_report = _register(_std_button(tr("Export Review Report"), _doc_icon), _doc_icon)
         self._btn_export_report.clicked.connect(self._export_report)
         self._btn_export_report.setEnabled(False)
 
-        self._btn_export_fixed = _std_button("Export PickPlace Fixed", _export_icon())
+        self._btn_export_fixed = _register(_std_button(tr("Export PickPlace Fixed"), _export_icon), _export_icon)
         self._btn_export_fixed.clicked.connect(self._export_fixed)
         self._btn_export_fixed.setEnabled(False)
 
-        self._btn_batch_edit = _std_button("Batch Edit", spi(QStyle.StandardPixmap.SP_FileDialogInfoView))
+        self._btn_batch_edit = _register(
+            _std_button(tr("Batch Edit"), lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView)),
+            lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView),
+        )
         self._btn_batch_edit.clicked.connect(self._batch_edit)
         self._btn_batch_edit.setEnabled(False)
 
-        self._btn_pcb_info = _std_button("PCB Info", _chip_icon())
+        self._btn_pcb_info = _register(_std_button(tr("PCB Info"), _chip_icon), _chip_icon)
         self._btn_pcb_info.clicked.connect(self._open_pcb_info)
 
-        self._btn_ok_checked = _std_button("OK Checked", spi(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self._btn_ok_checked.clicked.connect(self._mark_checked_ok)
+        self._btn_ok_checked = _register(
+            _std_button(tr("OK Checked"), lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton)),
+            lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton),
+        )
         self._btn_ok_checked.setObjectName("success")
         self._btn_ok_checked.setEnabled(False)
 
-        self._btn_delete = _std_button("Delete Selected", spi(QStyle.StandardPixmap.SP_TrashIcon))
-        self._btn_delete.clicked.connect(self._delete_selected)
+        self._btn_delete = _register(
+            _std_button(tr("Delete Selected"), lambda: spi(QStyle.StandardPixmap.SP_TrashIcon)),
+            lambda: spi(QStyle.StandardPixmap.SP_TrashIcon),
+        )
         self._btn_delete.setObjectName("danger")
         self._btn_delete.setEnabled(False)
 
-        self._btn_settings = _std_button("Settings", _gear_icon())
+        self._btn_settings = _register(_std_button(tr("Settings"), _gear_icon), _gear_icon)
         self._btn_settings.clicked.connect(self._open_settings)
 
-        self._lbl_total = QLabel("Total: 0")
-        self._lbl_ok = QLabel("OK: 0")
-        self._lbl_edit = QLabel("Edit: 0")
-        self._lbl_pending = QLabel("Pending: 0")
-        self._lbl_align = QLabel("Aligned: 0")
-        self._lbl_total.setObjectName("stat_total")
-        self._lbl_ok.setObjectName("stat_ok")
-        self._lbl_edit.setObjectName("stat_edit")
-        self._lbl_pending.setObjectName("stat_pending")
-        self._lbl_align.setObjectName("stat_align")
+        self._toolbar_icon_sources = icon_sources
 
         toolbar.addWidget(btn_new)
         toolbar.addWidget(btn_open_session)
@@ -375,17 +423,6 @@ class MainWindow(QMainWindow):
 
         self.addToolBar(toolbar)
 
-        stats_widget = QWidget(self)
-        self._stats_widget = stats_widget
-        stats_layout = QHBoxLayout(stats_widget)
-        stats_layout.setContentsMargins(8, 0, 8, 0)
-        stats_layout.setSpacing(8)
-        stats_layout.addWidget(self._lbl_total)
-        stats_layout.addWidget(self._lbl_pending)
-        stats_layout.addWidget(self._lbl_ok)
-        stats_layout.addWidget(self._lbl_edit)
-        stats_layout.addWidget(self._lbl_align)
-        self._menubar.setCornerWidget(stats_widget, Qt.TopRightCorner)
         self.setMenuBar(self._menubar)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -409,10 +446,17 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(splitter)
 
+    def _apply_toolbar_icons(self) -> None:
+        for btn, factory in getattr(self, "_toolbar_icon_sources", []):
+            btn.setIcon(factory())
+
+    def refresh_icons(self) -> None:
+        self._apply_toolbar_icons()
+
     def _build_statusbar(self) -> None:
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
-        self._status_label = QLabel("Ready")
+        self._status_label = QLabel(tr("Ready"))
         self._statusbar.addWidget(self._status_label)
         self._search_count_label = QLabel("")
         self._statusbar.addPermanentWidget(self._search_count_label)
@@ -433,7 +477,7 @@ class MainWindow(QMainWindow):
             except (ValueError, AttributeError):
                 pass
 
-        self._status_label.setText("No session to restore. Open a PickPlace file or load a session.")
+        self._status_label.setText(tr("No session to restore. Open a PickPlace file or load a session."))
 
     def _clear_all(self) -> None:
         self._dirty = False
@@ -454,7 +498,7 @@ class MainWindow(QMainWindow):
         self._btn_align.setEnabled(False)
         self._update_gerber_view_button()
         self._update_progress()
-        self._status_label.setText("Ready")
+        self._status_label.setText(tr("Ready"))
         from database.pcb_info_repo import PcbInfoRepo
         try:
             PcbInfoRepo().clear()
@@ -555,18 +599,18 @@ class MainWindow(QMainWindow):
     def _new_session(self) -> None:
         if self._dirty and self._records:
             reply = QMessageBox.question(
-                self, "New Session",
-                "Current session not saved. Discard?",
+                self, tr("New Session"),
+                tr("Current session not saved. Discard?"),
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
                 return
         self._clear_all()
-        self._status_label.setText("New session created")
+        self._status_label.setText(tr("New session created"))
 
     def _open_session(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Session", "",
+            self, tr("Open Session"), "",
             "CAM350 Review Files (*.cam350review);;All Files (*.*)"
         )
         if not file_path:
@@ -575,11 +619,11 @@ class MainWindow(QMainWindow):
         try:
             session = self._session_service.load(file_path)
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            QMessageBox.critical(self, "Error", f"Failed to load session: {e}")
+            QMessageBox.critical(self, tr("Error"), tr("Failed to load session: {e}", e=str(e)))
             return
 
         if not session.records:
-            QMessageBox.warning(self, "Warning", "Session file is empty.")
+            QMessageBox.warning(self, tr("Warning"), tr("Session file is empty."))
             return
 
         records = self._session_service.list_to_records(session.records)
@@ -600,7 +644,12 @@ class MainWindow(QMainWindow):
 
         if session.source_file:
             try:
-                self._pickplace_data = self._reader.read(session.source_file)
+                if session.column_mapping:
+                    self._pickplace_data = self._reader.read_with_mapping(
+                        session.source_file, session.column_mapping
+                    )
+                else:
+                    self._pickplace_data = self._reader.read(session.source_file)
             except (FileNotFoundError, ValueError):
                 self._pickplace_data = None
 
@@ -623,15 +672,15 @@ class MainWindow(QMainWindow):
 
         self._update_progress()
         self._dirty = False
-        self._status_label.setText(f"Loaded session: {os.path.basename(file_path)}")
+        self._status_label.setText(tr("Loaded session: {name}", name=os.path.basename(file_path)))
 
     def _save_session_as(self) -> None:
         if not self._records:
-            QMessageBox.warning(self, "Warning", "No data to save.")
+            QMessageBox.warning(self, tr("Warning"), tr("No data to save."))
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Session As", "",
+            self, tr("Save Session As"), "",
             "CAM350 Review Files (*.cam350review);;All Files (*.*)"
         )
         if not file_path:
@@ -654,15 +703,16 @@ class MainWindow(QMainWindow):
             gerberGto=gerber.get("gerberGto", ""),
             gerberGbo=gerber.get("gerberGbo", ""),
             gerber_view=self._current_gerber_view_settings(),
+            column_mapping=self._pickplace_data.column_mapping if self._pickplace_data else None,
         )
         self._session_file = file_path
         self._config_mgr.update(lastSessionFile=file_path)
         self._dirty = False
-        self._status_label.setText(f"Session saved: {os.path.basename(file_path)}")
+        self._status_label.setText(tr("Session saved: {name}", name=os.path.basename(file_path)))
 
     def _save_session(self) -> None:
         if not self._records:
-            QMessageBox.warning(self, "Warning", "No data to save.")
+            QMessageBox.warning(self, tr("Warning"), tr("No data to save."))
             return
 
         if self._session_file:
@@ -680,26 +730,59 @@ class MainWindow(QMainWindow):
                 gerberGto=gerber.get("gerberGto", ""),
                 gerberGbo=gerber.get("gerberGbo", ""),
                 gerber_view=self._current_gerber_view_settings(),
+                column_mapping=self._pickplace_data.column_mapping if self._pickplace_data else None,
             )
             self._config_mgr.update(lastSessionFile=self._session_file)
             self._dirty = False
-            self._status_label.setText(f"Session saved: {os.path.basename(self._session_file)}")
+            self._status_label.setText(tr("Session saved: {name}", name=os.path.basename(self._session_file)))
         else:
             self._save_session_as()
 
     def _open_file(self) -> None:
+        self._open_file_with_mapping(force=False)
+
+    def _open_file_mapped(self) -> None:
+        self._open_file_with_mapping(force=True)
+
+    def _open_file_with_mapping(self, force: bool = False) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open PickPlace File", "", "Excel Files (*.xlsx)"
+            self, tr("Open PickPlace File"), "", "Excel Files (*.xlsx)"
         )
         if not file_path:
             return
 
         try:
-            data = self._reader.read(file_path)
+            headers = self._reader.read_headers(file_path)
         except (ValueError, FileNotFoundError) as e:
-            QMessageBox.critical(self, "Error", str(e))
+            QMessageBox.critical(self, tr("Error"), str(e))
             return
 
+        mapping = None
+        required = None
+        is_standard = all(
+            header in headers for header in STANDARD_MAPPING.values()
+        )
+        if force or not is_standard:
+            dialog = ColumnMappingDialog(file_path, headers, parent=self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            mapping = dialog.column_mapping
+            required = dialog.required_fields
+
+        try:
+            if mapping:
+                data = self._reader.read_with_mapping(
+                    file_path, mapping, required=required
+                )
+            else:
+                data = self._reader.read(file_path)
+        except (ValueError, FileNotFoundError) as e:
+            QMessageBox.critical(self, tr("Error"), str(e))
+            return
+
+        self._apply_loaded_pickplace(data, file_path)
+
+    def _apply_loaded_pickplace(self, data: PickPlaceData, file_path: str) -> None:
         self._pickplace_data = data
         self._config_mgr.update(lastFile=file_path)
 
@@ -734,7 +817,10 @@ class MainWindow(QMainWindow):
             self._select_and_display(0)
 
         self._update_progress()
-        self._status_label.setText(f"Loaded {len(data.components)} components from {os.path.basename(file_path)}")
+        self._status_label.setText(
+            tr("Loaded {count} components from {name}",
+               count=len(data.components), name=os.path.basename(file_path))
+        )
 
     def _select_and_display(self, index: int, progress_text: str = "") -> None:
         if not self._records or index < 0 or index >= len(self._records):
@@ -783,11 +869,13 @@ class MainWindow(QMainWindow):
         jump_y = record.new_y if record.new_y is not None else record.old_y
         try:
             self._cam350.jump_to(jump_x, jump_y)
-            self._status_label.setText(f"Jumped to {record.designator}: ({jump_x}, {jump_y})")
+            self._status_label.setText(
+                tr("Jumped to {des}: ({x}, {y})", des=record.designator, x=jump_x, y=jump_y)
+            )
         except RuntimeError as e:
-            QMessageBox.warning(self, "CAM350 Error", str(e))
+            QMessageBox.warning(self, tr("CAM350 Error"), str(e))
         except Exception:
-            self._status_label.setText("Jump cancelled (mouse moved to corner)")
+            self._status_label.setText(tr("Jump cancelled (mouse moved to corner)"))
 
     def _popup_ok(self, index: int) -> None:
         self._select_and_display(index)
@@ -811,7 +899,7 @@ class MainWindow(QMainWindow):
         self._table_widget.update_record_row(index)
         self._update_progress()
         self._config_mgr.update(lastReviewId=record.id)
-        self._status_label.setText(f"{record.designator}: Edited")
+        self._status_label.setText(tr("{des}: Edited", des=record.designator))
         if self._jump_popup:
             self._jump_popup.refresh_row(index)
             self._jump_popup.navigate_to(index)
@@ -821,8 +909,8 @@ class MainWindow(QMainWindow):
             return
         record = self._records[index]
         reply = QMessageBox.question(
-            self, "Delete Record",
-            f"Delete {record.designator}?",
+            self, tr("Delete Record"),
+            tr("Delete {des}?", des=record.designator),
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
@@ -833,7 +921,7 @@ class MainWindow(QMainWindow):
         self._table_widget.set_records(self._records)
         self._review_panel.set_record_list(self._records)
         self._update_progress()
-        self._status_label.setText(f"Deleted {record.designator}")
+        self._status_label.setText(tr("Deleted {des}", des=record.designator))
         if not self._records:
             if self._jump_popup:
                 self._jump_popup.close()
@@ -854,12 +942,18 @@ class MainWindow(QMainWindow):
         record = self._records[self._current_index]
         self._push_undo()
         record.status = "OK"
+        if record.new_x is None:
+            record.new_x = record.old_x
+        if record.new_y is None:
+            record.new_y = record.old_y
+        if record.new_rotation is None:
+            record.new_rotation = record.old_rotation
         record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._repo.update(record)
-        self._table_widget.update_record_status(self._current_index, "OK")
+        self._table_widget.update_record_row(self._current_index)
         self._update_progress()
         self._config_mgr.update(lastReviewId=record.id)
-        self._status_label.setText(f"{record.designator}: OK")
+        self._status_label.setText(tr("{des}: OK", des=record.designator))
         QApplication.processEvents()
         self._next()
 
@@ -877,39 +971,31 @@ class MainWindow(QMainWindow):
             self._table_widget.update_record_row(self._current_index)
             self._update_progress()
             self._config_mgr.update(lastReviewId=record.id)
-            self._status_label.setText(f"{record.designator}: Edited")
+            self._status_label.setText(tr("{des}: Edited", des=record.designator))
             QApplication.processEvents()
             self._next()
 
     def _update_progress(self) -> None:
         if not self._records:
-            self._lbl_total.setText("Total: 0")
-            self._lbl_ok.setText("OK: 0")
-            self._lbl_edit.setText("Edit: 0")
-            self._lbl_pending.setText("Pending: 0")
-            self._lbl_align.setText("Aligned: 0")
+            self._review_panel.update_stats(0, 0, 0, 0, 0)
             return
         total = len(self._records)
         ok_count = sum(1 for r in self._records if r.status == "OK")
         edit_count = sum(1 for r in self._records if r.status == "Edited")
         pending_count = sum(1 for r in self._records if r.status == "Pending")
         align_count = sum(1 for r in self._records if r.status == "Aligned")
-        self._lbl_total.setText(f"Total: {total}")
-        self._lbl_pending.setText(f"Pending: {pending_count}")
-        self._lbl_ok.setText(f"OK: {ok_count}")
-        self._lbl_edit.setText(f"Edit: {edit_count}")
-        self._lbl_align.setText(f"Aligned: {align_count}")
+        self._review_panel.update_stats(total, ok_count, edit_count, pending_count, align_count)
 
 
     def _export_report(self) -> None:
         all_records = self._repo.get_all()
         if not all_records:
-            QMessageBox.warning(self, "Warning", "No data to export.")
+            QMessageBox.warning(self, tr("Warning"), tr("No data to export."))
             return
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         default_name = f"Review_Report_{timestamp}.xlsx"
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Review Report", default_name,
+            self, tr("Export Review Report"), default_name,
             "Excel Files (*.xlsx);;All Files (*.*)"
         )
         if not file_path:
@@ -925,12 +1011,12 @@ class MainWindow(QMainWindow):
 
     def _export_fixed(self) -> None:
         if not self._records or self._pickplace_data is None:
-            QMessageBox.warning(self, "Warning", "No data to export. Load a file first.")
+            QMessageBox.warning(self, tr("Warning"), tr("No data to export. Load a file first."))
             return
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         default_name = f"PickPlace_Fixed_{timestamp}.csv"
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export PickPlace Fixed", default_name,
+            self, tr("Export PickPlace Fixed"), default_name,
             "CSV Files (*.csv);;All Files (*.*)"
         )
         if not file_path:
@@ -951,24 +1037,24 @@ class MainWindow(QMainWindow):
         self._btn_export_report.setEnabled(not exporting)
         self._btn_export_fixed.setEnabled(not exporting)
         if exporting:
-            self._status_label.setText("Exporting...")
+            self._status_label.setText(tr("Exporting..."))
 
     def _on_export_done(self, file_path: str) -> None:
         self._set_exporting(False)
-        self._status_label.setText("Export complete")
-        QMessageBox.information(self, "Success", f"File exported:\n{file_path}")
+        self._status_label.setText(tr("Export complete"))
+        QMessageBox.information(self, tr("Success"), tr("File exported:\n{path}", path=file_path))
 
     def _on_export_error(self, message: str) -> None:
         self._set_exporting(False)
-        self._status_label.setText("Export failed")
-        QMessageBox.critical(self, "Export Error", message)
+        self._status_label.setText(tr("Export failed"))
+        QMessageBox.critical(self, tr("Export Error"), message)
 
     def _search_datasheet(self, mpn: str) -> None:
         if not mpn:
             return
         if self._datasheet_worker and self._datasheet_worker.isRunning():
             return
-        self._status_label.setText(f"Searching datasheet for {mpn}...")
+        self._status_label.setText(tr("Searching datasheet for {mpn}...", mpn=mpn))
         self._review_panel.set_datasheet("Searching...")
         self._review_panel.set_datasheet_searching(True)
         worker = DatasheetWorker(mpn, self)
@@ -986,20 +1072,20 @@ class MainWindow(QMainWindow):
                 self._dirty = True
                 self._repo.update(record)
             self._review_panel.set_datasheet(url)
-            self._status_label.setText(f"Datasheet found for {mpn}")
+            self._status_label.setText(tr("Datasheet found for {mpn}", mpn=mpn))
         else:
             self._review_panel.set_datasheet("")
-            self._status_label.setText(f"No datasheet found for {mpn}")
+            self._status_label.setText(tr("No datasheet found for {mpn}", mpn=mpn))
 
     def _on_datasheet_error(self, message: str) -> None:
         self._review_panel.set_datasheet_searching(False)
         self._review_panel.set_datasheet("")
-        self._status_label.setText(f"Datasheet search error: {message}")
+        self._status_label.setText(tr("Datasheet search error: {message}", message=message))
 
     def _batch_edit(self) -> None:
         indices = self._table_widget.get_checked_indices()
         if not indices:
-            QMessageBox.warning(self, "Warning", "No records selected. Check records in the table first.")
+            QMessageBox.warning(self, tr("Warning"), tr("No records selected. Check records in the table first."))
             return
         dialog = BatchEditDialog(self)
         if not dialog.exec():
@@ -1021,8 +1107,9 @@ class MainWindow(QMainWindow):
         if not summary:
             return
         reply = QMessageBox.question(
-            self, "Confirm Batch Edit",
-            f"Apply the following to {len(indices)} selected records?\n\n- " + "\n- ".join(summary),
+            self, tr("Confirm Batch Edit"),
+            tr("Apply the following to {n} selected records?\n\n- {list}",
+               n=len(indices), list="\n- ".join(summary)),
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
@@ -1031,9 +1118,9 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._push_undo()
         progress = QProgressDialog(
-            "Applying batch edit...", "Cancel", 0, len(indices), self
+            tr("Applying batch edit..."), "Cancel", 0, len(indices), self
         )
-        progress.setWindowTitle("Batch Edit")
+        progress.setWindowTitle(tr("Batch Edit"))
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
@@ -1066,19 +1153,19 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
         progress.close()
         self._update_progress()
-        self._status_label.setText(f"Batch edited {len(indices)} records")
+        self._status_label.setText(tr("Batch edited {n} records", n=len(indices)))
 
     def _mark_checked_ok(self) -> None:
         indices = self._table_widget.get_checked_indices()
         if not indices:
-            QMessageBox.warning(self, "Warning", "No records selected.")
+            QMessageBox.warning(self, tr("Warning"), tr("No records selected."))
             return
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._push_undo()
         progress = QProgressDialog(
-            "Marking records as OK...", "Cancel", 0, len(indices), self
+            tr("Marking records as OK..."), "Cancel", 0, len(indices), self
         )
-        progress.setWindowTitle("Mark OK")
+        progress.setWindowTitle(tr("Mark OK"))
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
@@ -1101,16 +1188,16 @@ class MainWindow(QMainWindow):
         progress.close()
         self._table_widget.clear_checked()
         self._update_progress()
-        self._status_label.setText(f"Marked OK: {len(indices)} records")
+        self._status_label.setText(tr("Marked OK: {n} records", n=len(indices)))
 
     def _delete_selected(self) -> None:
         indices = self._table_widget.get_checked_indices()
         if not indices:
-            QMessageBox.warning(self, "Warning", "No records selected. Check records in the table first.")
+            QMessageBox.warning(self, tr("Warning"), tr("No records selected. Check records in the table first."))
             return
         reply = QMessageBox.question(
-            self, "Delete Records",
-            f"Delete {len(indices)} selected records?",
+            self, tr("Delete Records"),
+            tr("Delete {n} selected records?", n=len(indices)),
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
@@ -1135,15 +1222,15 @@ class MainWindow(QMainWindow):
             self._btn_delete.setEnabled(False)
             self._btn_align.setEnabled(False)
             self._update_gerber_view_button()
-            self._status_label.setText("All records deleted")
+            self._status_label.setText(tr("All records deleted"))
         else:
             new_index = min(self._current_index, len(self._records) - 1)
             self._select_and_display(new_index)
-            self._status_label.setText(f"Deleted {len(indices)} records")
+            self._status_label.setText(tr("Deleted {n} records", n=len(indices)))
 
     def _show_about(self) -> None:
         dlg = QDialog(self)
-        dlg.setWindowTitle("About CAM350 Review Assistant")
+        dlg.setWindowTitle(tr("About CAM350 Review Assistant"))
         dlg.setFixedSize(420, 350)
         layout = QVBoxLayout(dlg)
 
@@ -1172,15 +1259,79 @@ class MainWindow(QMainWindow):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(tr("Close"))
         btn_close.clicked.connect(dlg.accept)
         layout.addWidget(btn_close, alignment=Qt.AlignCenter)
 
         dlg.exec()
 
     def _open_settings(self) -> None:
+        old_language = self._config_mgr.config.language
         dialog = SettingsDialog(self)
         dialog.exec()
+        if self._config_mgr.config.language != old_language:
+            self._rebuild_for_language()
+
+    def _rebuild_for_language(self) -> None:
+        records = self._records
+        current_index = self._current_index
+        session_file = self._session_file
+        dirty = self._dirty
+        pickplace_data = self._pickplace_data
+        gerber_view_settings = self._gerber_view_settings
+        undo_stack = self._undo_stack
+        redo_stack = self._redo_stack
+
+        if self._jump_popup is not None:
+            self._jump_popup.close()
+            self._jump_popup = None
+        if self._gerber_viewer is not None:
+            self._gerber_viewer.close()
+            self._gerber_viewer = None
+
+        if self._toolbar is not None:
+            self.removeToolBar(self._toolbar)
+            self._toolbar.deleteLater()
+            self._toolbar = None
+        central = self.centralWidget()
+        if central is not None:
+            self.setCentralWidget(QWidget())
+            central.deleteLater()
+
+        self._build_menus()
+        self._build_ui()
+        self._build_statusbar()
+
+        self._records = records
+        self._pickplace_data = pickplace_data
+        self._current_index = current_index
+        self._session_file = session_file
+        self._dirty = dirty
+        self._gerber_view_settings = gerber_view_settings
+        self._undo_stack = undo_stack
+        self._redo_stack = redo_stack
+
+        has_records = bool(records)
+        self._btn_export_report.setEnabled(has_records)
+        self._btn_export_fixed.setEnabled(has_records)
+        self._btn_batch_edit.setEnabled(has_records)
+        self._btn_ok_checked.setEnabled(has_records)
+        self._btn_delete.setEnabled(has_records)
+        self._btn_align.setEnabled(has_records)
+        self._undo_action.setEnabled(bool(undo_stack))
+        self._redo_action.setEnabled(bool(redo_stack))
+        self._update_gerber_view_button()
+
+        self._table_widget.set_records(records)
+        self._review_panel.set_record_list(records)
+        if 0 <= current_index < len(records):
+            self._review_panel.display_record(
+                records[current_index], current_index, len(records)
+            )
+        else:
+            self._review_panel.clear_record()
+        self._update_progress()
+        self._status_label.setText(tr("Ready"))
 
     def _open_pcb_info(self) -> None:
         from ui.pcb_info_dialog import PcbInfoDialog
@@ -1193,7 +1344,7 @@ class MainWindow(QMainWindow):
 
     def _align_origin(self) -> None:
         if self._pickplace_data is None:
-            QMessageBox.warning(self, "Warning", "Vui lòng mở file PickPlace trước.")
+            QMessageBox.warning(self, tr("Warning"), tr("Please open a PickPlace file first."))
             return
 
         self._push_undo()
@@ -1212,7 +1363,7 @@ class MainWindow(QMainWindow):
 
     def _open_gerber_check(self) -> None:
         if not self._records:
-            QMessageBox.warning(self, "Warning", "Không có dữ liệu. Mở PickPlace hoặc session trước.")
+            QMessageBox.warning(self, tr("Warning"), tr("No data. Open a PickPlace file or load a session first."))
             return
 
         cfg = self._config_mgr.config
@@ -1224,7 +1375,7 @@ class MainWindow(QMainWindow):
 
         if not gko:
             gko, _ = QFileDialog.getOpenFileName(
-                self, "Chọn file GKO (Outline)", "",
+                self, tr("Select GKO file (Outline)"), "",
                 "Gerber Files (*.gko *.GKO *.gbr *.GBR);;All Files (*.*)"
             )
             if not gko:
@@ -1232,25 +1383,25 @@ class MainWindow(QMainWindow):
             self._config_mgr.update(gerberGko=gko)
         if not gtp:
             gtp, _ = QFileDialog.getOpenFileName(
-                self, "Chọn file GTP (Top Paste — tùy chọn)", "",
+                self, tr("Select GTP file (Top Paste - optional)"), "",
                 "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)"
             )
             self._config_mgr.update(gerberGtp=gtp)
         if not gbp:
             gbp, _ = QFileDialog.getOpenFileName(
-                self, "Chọn file GBP (Bottom Paste — tùy chọn)", "",
+                self, tr("Select GBP file (Bottom Paste - optional)"), "",
                 "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)"
             )
             self._config_mgr.update(gerberGbp=gbp)
         if not gto:
             gto, _ = QFileDialog.getOpenFileName(
-                self, "Chọn file GTO (Silkscreen — tùy chọn)", "",
+                self, tr("Select GTO file (Silkscreen - optional)"), "",
                 "Gerber Files (*.gto *.GTO *.gbr *.GBR);;All Files (*.*)"
             )
             self._config_mgr.update(gerberGto=gto)
         if not gbo:
             gbo, _ = QFileDialog.getOpenFileName(
-                self, "Chọn file GBO (Bottom Silkscreen — tùy chọn)", "",
+                self, tr("Select GBO file (Bottom Silkscreen - optional)"), "",
                 "Gerber Files (*.gbo *.GBO *.gbr *.GBR);;All Files (*.*)"
             )
             self._config_mgr.update(gerberGbo=gbo)
@@ -1350,7 +1501,7 @@ class MainWindow(QMainWindow):
         snap = self._undo_stack.pop()
         self._restore_records(snap)
         self._update_undo_actions()
-        self._status_label.setText("Undo: restored previous state")
+        self._status_label.setText(tr("Undo: restored previous state"))
 
     def _redo(self) -> None:
         if not self._redo_stack:
@@ -1360,7 +1511,7 @@ class MainWindow(QMainWindow):
         snap = self._redo_stack.pop()
         self._restore_records(snap)
         self._update_undo_actions()
-        self._status_label.setText("Redo: restored next state")
+        self._status_label.setText(tr("Redo: restored next state"))
 
     def _focus_search(self) -> None:
         self._table_widget._search_input.setFocus()
@@ -1369,10 +1520,10 @@ class MainWindow(QMainWindow):
         try:
             if self._dirty and self._records:
                 reply = QMessageBox.question(
-                    self, "Save Session",
-                    "Save current session before closing?\n"
-                    "Yes: save session file\n"
-                    "No: discard all changes",
+                    self, tr("Save Session"),
+                    tr("Save current session before closing?\n"
+                       "Yes: save session file\n"
+                       "No: discard all changes"),
                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                 )
                 if reply == QMessageBox.Cancel:

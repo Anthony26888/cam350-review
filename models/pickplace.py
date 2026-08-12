@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
+
+
+COLUMN_FIELDS = ("designator", "mpn", "layer", "x", "y", "rotation")
 
 
 @dataclass
@@ -20,6 +23,7 @@ class PickPlaceData:
     components: List[PickPlaceComponent] = field(default_factory=list)
     file_path: str = ""
     raw_data: List[dict] = field(default_factory=list)
+    column_mapping: Optional[Dict[str, str]] = None
 
     @property
     def count(self) -> int:

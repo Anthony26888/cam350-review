@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap, QResizeEvent
 
 from models.review import ReviewRecord
+from ui.i18n import tr
 from utils.path_utils import resource_path
 
 
@@ -49,7 +50,7 @@ class JumpPopup(QWidget):
         self._filtered: List[int] = []
         self._current_index: int = 0
 
-        self.setWindowTitle("Component Info")
+        self.setWindowTitle(tr("Component Info"))
         self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint | Qt.CustomizeWindowHint)
         self.setMinimumWidth(360)
@@ -133,15 +134,15 @@ class JumpPopup(QWidget):
 
         # Title
         title_layout = QHBoxLayout()
-        self._lbl_title = QLabel("Component Info")
+        self._lbl_title = QLabel(tr("Component Info"))
         self._lbl_title.setObjectName("title")
         title_layout.addWidget(self._lbl_title)
         title_layout.addStretch()
 
-        self._btn_prev = QPushButton("◀ Prev")
+        self._btn_prev = QPushButton(tr("◀ Prev"))
         self._btn_prev.setObjectName("nav")
         self._btn_prev.clicked.connect(self._on_prev)
-        self._btn_next = QPushButton("Next ▶")
+        self._btn_next = QPushButton(tr("Next ▶"))
         self._btn_next.setObjectName("nav")
         self._btn_next.clicked.connect(self._on_next)
         title_layout.addWidget(self._btn_prev)
@@ -159,31 +160,31 @@ class JumpPopup(QWidget):
 
         self._lbl_des = QLabel("")
         self._lbl_des.setObjectName("value")
-        lbl_des_title = QLabel("Designator:")
+        lbl_des_title = QLabel(tr("Designator:"))
         lbl_des_title.setObjectName("field")
         form.addRow(lbl_des_title, self._lbl_des)
 
         self._lbl_mpn = QLabel("")
         self._lbl_mpn.setObjectName("value")
-        lbl_mpn_title = QLabel("MPN:")
+        lbl_mpn_title = QLabel(tr("MPN:"))
         lbl_mpn_title.setObjectName("field")
         form.addRow(lbl_mpn_title, self._lbl_mpn)
 
         self._lbl_layer = QLabel("")
         self._lbl_layer.setObjectName("value")
-        lbl_layer_title = QLabel("Layer:")
+        lbl_layer_title = QLabel(tr("Layer:"))
         lbl_layer_title.setObjectName("field")
         form.addRow(lbl_layer_title, self._lbl_layer)
 
         self._lbl_old_xy = QLabel("")
         self._lbl_old_xy.setObjectName("value")
-        lbl_old_title = QLabel("Old X/Y:")
+        lbl_old_title = QLabel(tr("Old X/Y:"))
         lbl_old_title.setObjectName("field")
         form.addRow(lbl_old_title, self._lbl_old_xy)
 
         self._lbl_old_rot = QLabel("")
         self._lbl_old_rot.setObjectName("value")
-        lbl_old_rot_title = QLabel("Old Rot:")
+        lbl_old_rot_title = QLabel(tr("Old Rot:"))
         lbl_old_rot_title.setObjectName("field")
         form.addRow(lbl_old_rot_title, self._lbl_old_rot)
 
@@ -201,12 +202,12 @@ class JumpPopup(QWidget):
 
         new_xy_layout = QHBoxLayout()
         new_xy_layout.setSpacing(2)
-        new_xy_layout.addWidget(QLabel("X:"))
+        new_xy_layout.addWidget(QLabel(tr("X:")))
         new_xy_layout.addWidget(self._spin_new_x, 1)
-        new_xy_layout.addWidget(QLabel("Y:"))
+        new_xy_layout.addWidget(QLabel(tr("Y:")))
         new_xy_layout.addWidget(self._spin_new_y, 1)
 
-        lbl_new_title = QLabel("New X/Y:")
+        lbl_new_title = QLabel(tr("New X/Y:"))
         lbl_new_title.setObjectName("field")
         form.addRow(lbl_new_title, new_xy_layout)
 
@@ -217,28 +218,28 @@ class JumpPopup(QWidget):
         self._spin_new_rot.setMinimumWidth(100)
         self._spin_new_rot.setStyleSheet("color: #0D9488; font-weight: bold; background-color: #FFFFFF;")
 
-        lbl_new_rot_title = QLabel("New Rot:")
+        lbl_new_rot_title = QLabel(tr("New Rot:"))
         lbl_new_rot_title.setObjectName("field")
         form.addRow(lbl_new_rot_title, self._spin_new_rot)
 
         # Rotation reference image
         rot_guide_box = QVBoxLayout()
-        rot_guide_caption = QLabel("Rotation Guide")
+        rot_guide_caption = QLabel(tr("Rotation Guide"))
         rot_guide_caption.setObjectName("field")
         rot_guide_box.addWidget(rot_guide_caption)
-        rot_guide_box.addWidget(self._rotation_image("rotation-guide.png", "Rotation guide"))
+        rot_guide_box.addWidget(self._rotation_image("rotation-guide.png", tr("Rotation guide")))
         form.addRow(rot_guide_box)
 
         self._remark = QTextEdit()
         self._remark.setMaximumHeight(60)
-        self._remark.setPlaceholderText("Remark...")
-        lbl_remark_title = QLabel("Remark:")
+        self._remark.setPlaceholderText(tr("Remark..."))
+        lbl_remark_title = QLabel(tr("Remark:"))
         lbl_remark_title.setObjectName("field")
         form.addRow(lbl_remark_title, self._remark)
 
         self._lbl_status = QLabel("")
         self._lbl_status.setObjectName("value")
-        lbl_status_title = QLabel("Status:")
+        lbl_status_title = QLabel(tr("Status:"))
         lbl_status_title.setObjectName("field")
         form.addRow(lbl_status_title, self._lbl_status)
 
@@ -250,19 +251,19 @@ class JumpPopup(QWidget):
         layout.addWidget(line2)
 
         # Action buttons
-        self._btn_jump = QPushButton("Jump to CAM350")
+        self._btn_jump = QPushButton(tr("Jump to CAM350"))
         self._btn_jump.setObjectName("jump")
         self._btn_jump.clicked.connect(lambda: self.jump_requested.emit(self._current_index))
 
-        self._btn_ok = QPushButton("OK")
+        self._btn_ok = QPushButton(tr("OK"))
         self._btn_ok.setObjectName("ok")
         self._btn_ok.clicked.connect(lambda: self.ok_requested.emit(self._current_index))
 
-        self._btn_save = QPushButton("Save")
+        self._btn_save = QPushButton(tr("Save"))
         self._btn_save.setObjectName("save")
         self._btn_save.clicked.connect(self._on_save)
 
-        self._btn_delete = QPushButton("Delete")
+        self._btn_delete = QPushButton(tr("Delete"))
         self._btn_delete.setStyleSheet("background-color: #DC2626; color: white;")
         self._btn_delete.clicked.connect(lambda: self.delete_requested.emit(self._current_index))
 
@@ -286,13 +287,13 @@ class JumpPopup(QWidget):
 
         # Search & Mini table
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText("Search component...")
+        self._search_input.setPlaceholderText(tr("Search component..."))
         self._search_input.textChanged.connect(self._on_search)
         layout.addWidget(self._search_input)
 
         self._mini_table = QTableWidget()
         self._mini_table.setColumnCount(3)
-        self._mini_table.setHorizontalHeaderLabels(["No", "Designator", "Status"])
+        self._mini_table.setHorizontalHeaderLabels([tr("No"), tr("Designator"), tr("Status")])
         self._mini_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._mini_table.setSelectionMode(QTableWidget.SingleSelection)
         self._mini_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -330,7 +331,7 @@ class JumpPopup(QWidget):
         des_item = self._mini_table.item(row, 1)
         status_item = self._mini_table.item(row, 2)
         if des_item and status_item:
-            status_item.setText(rec.status or "Pending")
+            status_item.setText(tr(rec.status or "Pending"))
             status_colors = {
                 "Pending": QColor(255, 255, 255),
                 "OK": QColor(200, 255, 200),
@@ -363,7 +364,8 @@ class JumpPopup(QWidget):
         record = self._records[self._current_index]
         total = len(self._records)
 
-        self._lbl_title.setText(f"Component {self._current_index + 1}/{total} — {record.designator}")
+        self._lbl_title.setText(tr("Component {current}/{total} — {des}",
+                                  current=self._current_index + 1, total=total, des=record.designator))
         self._lbl_des.setText(record.designator)
         self._lbl_mpn.setText(record.mpn or "-")
         self._lbl_layer.setText(record.layer or "-")
@@ -381,7 +383,7 @@ class JumpPopup(QWidget):
 
         self._remark.setText(record.remark or "")
 
-        self._lbl_status.setText(record.status or "Pending")
+        self._lbl_status.setText(tr(record.status or "Pending"))
         status_colors = {
             "Pending": "#9E9E9E",
             "OK": "#4CAF50",
@@ -430,7 +432,7 @@ class JumpPopup(QWidget):
             des_item.setFlags(des_item.flags() & ~Qt.ItemIsEditable)
             des_item.setData(Qt.UserRole, idx)
 
-            status_item = QTableWidgetItem(rec.status or "Pending")
+            status_item = QTableWidgetItem(tr(rec.status or "Pending"))
             status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
             status_item.setData(Qt.UserRole, idx)
 

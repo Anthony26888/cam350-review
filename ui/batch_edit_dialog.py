@@ -5,11 +5,13 @@ from PySide6.QtWidgets import (
     QCheckBox, QDialogButtonBox, QGroupBox, QTextEdit, QLabel,
 )
 
+from ui.i18n import tr
+
 
 class BatchEditDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Batch Edit - Offset Values")
+        self.setWindowTitle(tr("Batch Edit - Offset Values"))
         self.setModal(True)
         self.setMinimumWidth(380)
         self._build_ui()
@@ -17,28 +19,28 @@ class BatchEditDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        group = QGroupBox("Offset Values (applied to selected records)")
+        group = QGroupBox(tr("Offset Values (applied to selected records)"))
         form = QFormLayout(group)
 
-        self._apply_x = QCheckBox("Apply X offset")
+        self._apply_x = QCheckBox(tr("Apply X offset"))
         self._offset_x = QDoubleSpinBox()
         self._offset_x.setRange(-999999.0, 999999.0)
         self._offset_x.setDecimals(4)
         self._offset_x.setEnabled(False)
         self._apply_x.toggled.connect(self._offset_x.setEnabled)
 
-        self._negative_x = QCheckBox("Make new X negative")
+        self._negative_x = QCheckBox(tr("Make new X negative"))
 
-        self._apply_y = QCheckBox("Apply Y offset")
+        self._apply_y = QCheckBox(tr("Apply Y offset"))
         self._offset_y = QDoubleSpinBox()
         self._offset_y.setRange(-999999.0, 999999.0)
         self._offset_y.setDecimals(4)
         self._offset_y.setEnabled(False)
         self._apply_y.toggled.connect(self._offset_y.setEnabled)
 
-        self._negative_y = QCheckBox("Make new Y negative")
+        self._negative_y = QCheckBox(tr("Make new Y negative"))
 
-        self._apply_rotation = QCheckBox("Apply Rotation offset")
+        self._apply_rotation = QCheckBox(tr("Apply Rotation offset"))
         self._offset_rotation = QDoubleSpinBox()
         self._offset_rotation.setRange(-999999.0, 999999.0)
         self._offset_rotation.setDecimals(4)
@@ -47,17 +49,17 @@ class BatchEditDialog(QDialog):
 
         self._remark = QTextEdit()
         self._remark.setMaximumHeight(80)
-        self._remark.setPlaceholderText("Enter remark (applied to all selected)...")
+        self._remark.setPlaceholderText(tr("Enter remark (applied to all selected)..."))
 
         form.addRow(self._apply_x, self._offset_x)
         form.addRow("", self._negative_x)
         form.addRow(self._apply_y, self._offset_y)
         form.addRow("", self._negative_y)
         form.addRow(self._apply_rotation, self._offset_rotation)
-        form.addRow("Remark:", self._remark)
+        form.addRow(tr("Remark:"), self._remark)
         layout.addWidget(group)
 
-        info = QLabel("New value = current value + offset\nMake new X/Y negative flips the sign of the resulting coordinate")
+        info = QLabel(tr("New value = current value + offset\nMake new X/Y negative flips the sign of the resulting coordinate"))
         info.setStyleSheet("color: #666; font-style: italic;")
         layout.addWidget(info)
 

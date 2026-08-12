@@ -2,6 +2,19 @@ from dataclasses import dataclass, field
 from typing import Dict, Any
 
 
+def _default_column_profiles() -> Dict[str, Dict[str, str]]:
+    return {
+        "Standard": {
+            "designator": "Designator",
+            "mpn": "MPN",
+            "layer": "Layer",
+            "x": "X",
+            "y": "Y",
+            "rotation": "Rotation",
+        }
+    }
+
+
 @dataclass
 class Point:
     x: int = 0
@@ -32,6 +45,10 @@ class AppConfig:
     gerberGbp: str = ""
     gerberGto: str = ""
     gerberGbo: str = ""
+    theme: str = "light"
+    language: str = "en"
+    columnProfiles: Dict[str, Dict[str, str]] = field(default_factory=_default_column_profiles)
+    lastColumnProfile: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -50,6 +67,10 @@ class AppConfig:
             "gerberGbp": self.gerberGbp,
             "gerberGto": self.gerberGto,
             "gerberGbo": self.gerberGbo,
+            "theme": self.theme,
+            "language": self.language,
+            "columnProfiles": self.columnProfiles,
+            "lastColumnProfile": self.lastColumnProfile,
         }
 
     @staticmethod
@@ -70,4 +91,8 @@ class AppConfig:
             gerberGbp=data.get("gerberGbp", ""),
             gerberGto=data.get("gerberGto", ""),
             gerberGbo=data.get("gerberGbo", ""),
+            theme=data.get("theme", "light"),
+            language=data.get("language", "en"),
+            columnProfiles=data.get("columnProfiles") or _default_column_profiles(),
+            lastColumnProfile=data.get("lastColumnProfile", ""),
         )

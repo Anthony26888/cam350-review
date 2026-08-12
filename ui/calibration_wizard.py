@@ -11,6 +11,7 @@ import win32gui
 
 from config.config_manager import ConfigManager
 from models.config import Point
+from ui.i18n import tr
 
 
 class CalibrationWizard(QWidget):
@@ -22,7 +23,7 @@ class CalibrationWizard(QWidget):
         self._window_title: str = ""
         self._countdown: int = 0
 
-        self.setWindowTitle("Calibration Wizard")
+        self.setWindowTitle(tr("Calibration Wizard"))
         self.setMinimumWidth(520)
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint)
 
@@ -46,7 +47,7 @@ class CalibrationWizard(QWidget):
         self._lbl_instruction.setStyleSheet("font-size: 14px; padding: 10px;")
         layout.addWidget(self._lbl_instruction)
 
-        self._lbl_position = QLabel("No positions captured yet.")
+        self._lbl_position = QLabel(tr("No positions captured yet."))
         self._lbl_position.setWordWrap(True)
         self._lbl_position.setStyleSheet(
             "font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;"
@@ -63,12 +64,12 @@ class CalibrationWizard(QWidget):
 
         self._window_title_layout = QHBoxLayout()
         self._window_title_layout.setContentsMargins(0, 0, 0, 0)
-        self._lbl_window_title = QLabel("Window title:")
+        self._lbl_window_title = QLabel(tr("Window title:"))
         self._lbl_window_title.setVisible(False)
         self._txt_window_title = QLineEdit()
-        self._txt_window_title.setPlaceholderText("e.g. CAM350 V15")
+        self._txt_window_title.setPlaceholderText(tr("e.g. CAM350 V15"))
         self._txt_window_title.setVisible(False)
-        self._btn_detect_title = QPushButton("Detect")
+        self._btn_detect_title = QPushButton(tr("Detect"))
         self._btn_detect_title.clicked.connect(self._detect_title)
         self._btn_detect_title.setVisible(False)
         self._window_title_layout.addWidget(self._lbl_window_title)
@@ -76,28 +77,28 @@ class CalibrationWizard(QWidget):
         self._window_title_layout.addWidget(self._btn_detect_title)
         layout.addLayout(self._window_title_layout)
 
-        self._delay_group = QGroupBox("Delay Settings")
+        self._delay_group = QGroupBox(tr("Delay Settings"))
         delay_layout = QFormLayout(self._delay_group)
         self._delay_spin = QSpinBox()
         self._delay_spin.setRange(50, 2000)
-        self._delay_spin.setSuffix(" ms")
+        self._delay_spin.setSuffix(tr(" ms"))
         self._delay_spin.setValue(self._config_mgr.config.delay)
-        delay_layout.addRow("Jump delay:", self._delay_spin)
+        delay_layout.addRow(tr("Jump delay:"), self._delay_spin)
         layout.addWidget(self._delay_group)
 
         btn_layout = QHBoxLayout()
-        self._btn_capture = QPushButton("Start Capture (3s countdown)")
+        self._btn_capture = QPushButton(tr("Start Capture (3s countdown)"))
         self._btn_capture.clicked.connect(self._start_countdown)
         self._btn_capture.setMinimumHeight(40)
 
-        self._btn_skip = QPushButton("Skip")
+        self._btn_skip = QPushButton(tr("Skip"))
         self._btn_skip.clicked.connect(self._skip_step)
 
-        self._btn_save = QPushButton("Save && Close")
+        self._btn_save = QPushButton(tr("Save && Close"))
         self._btn_save.clicked.connect(self._save_and_close)
         self._btn_save.setVisible(False)
 
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton(tr("Cancel"))
         self._btn_cancel.clicked.connect(self.close)
 
         btn_layout.addWidget(self._btn_capture)
@@ -120,15 +121,15 @@ class CalibrationWizard(QWidget):
 
         if step < 2:
             name, instruction = [
-                ("X Textbox", "1. Move mouse over CAM350 X textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved"),
-                ("Y Textbox", "1. Move mouse over CAM350 Y textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved"),
+                (tr("X Textbox"), tr("1. Move mouse over CAM350 X textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved")),
+                (tr("Y Textbox"), tr("1. Move mouse over CAM350 Y textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved")),
             ][step]
-            self._lbl_title.setText(f"Step {step + 1} of 3: {name}")
+            self._lbl_title.setText(tr("Step {step} of 3: {name}", step=step + 1, name=name))
             self._lbl_instruction.setText(instruction)
-            self._btn_capture.setText("Start Capture (3s countdown)")
+            self._btn_capture.setText(tr("Start Capture (3s countdown)"))
         else:
-            self._lbl_title.setText("Step 3 of 3: CAM350 Window")
-            self._lbl_instruction.setText("Activate CAM350 window, then click 'Detect', or type window title manually:")
+            self._lbl_title.setText(tr("Step 3 of 3: CAM350 Window"))
+            self._lbl_instruction.setText(tr("Activate CAM350 window, then click 'Detect', or type window title manually:"))
 
         self._refresh_status()
         self._btn_capture.setVisible(True)
@@ -148,26 +149,26 @@ class CalibrationWizard(QWidget):
         for i in range(2):
             pos = self._positions[i]
             if pos.x or pos.y:
-                label = "X Textbox" if i == 0 else "Y Textbox"
-                lines.append(f"✓ {label}: ({pos.x}, {pos.y})")
+                label = tr("X Textbox") if i == 0 else tr("Y Textbox")
+                lines.append(tr("✓ {label}: ({x}, {y})", label=label, x=pos.x, y=pos.y))
         if self._window_title:
-            lines.append(f"✓ Window: {self._window_title}")
+            lines.append(tr("✓ Window: {title}", title=self._window_title))
         if self._step_index < 2:
             pos = self._positions[self._step_index]
             if not pos.x and not pos.y:
-                label = "X Textbox" if self._step_index == 0 else "Y Textbox"
-                lines.append(f"? {label}: not set")
+                label = tr("X Textbox") if self._step_index == 0 else tr("Y Textbox")
+                lines.append(tr("? {label}: not set", label=label))
         elif self._step_index == 2 and not self._window_title:
-            lines.append("? Window title: not set")
+            lines.append(tr("? Window title: not set"))
 
-        self._lbl_position.setText("\n".join(lines) if lines else "No positions captured yet.")
+        self._lbl_position.setText("\n".join(lines) if lines else tr("No positions captured yet."))
 
     def _start_countdown(self) -> None:
         self._countdown = 3
         self._lbl_countdown.setText(str(self._countdown))
         self._lbl_countdown.setVisible(True)
         self._btn_capture.setEnabled(False)
-        self._btn_capture.setText("Capturing in 3s...")
+        self._btn_capture.setText(tr("Capturing in 3s..."))
         self._countdown_timer.start(1000)
 
     def _tick_countdown(self) -> None:
@@ -177,7 +178,7 @@ class CalibrationWizard(QWidget):
             self._capture_position()
         else:
             self._lbl_countdown.setText(str(self._countdown))
-            self._btn_capture.setText(f"Capturing in {self._countdown}s...")
+            self._btn_capture.setText(tr("Capturing in {n}s...", n=self._countdown))
 
     def _capture_position(self) -> None:
         x, y = pyautogui.position()
@@ -193,15 +194,15 @@ class CalibrationWizard(QWidget):
             self._window_title = title
             self._refresh_status()
         else:
-            QMessageBox.warning(self, "Warning", "No active window detected.")
+            QMessageBox.warning(self, tr("Warning"), tr("No active window detected."))
 
     def _skip_step(self) -> None:
         self._step_index += 1
         self._show_step(self._step_index)
 
     def _finish(self) -> None:
-        self._lbl_title.setText("Calibration Complete")
-        self._lbl_instruction.setText("All positions captured. Review and click Save & Close.")
+        self._lbl_title.setText(tr("Calibration Complete"))
+        self._lbl_instruction.setText(tr("All positions captured. Review and click Save & Close."))
         self._lbl_window_title.setVisible(False)
         self._txt_window_title.setVisible(False)
         self._btn_detect_title.setVisible(False)
@@ -218,5 +219,5 @@ class CalibrationWizard(QWidget):
             yTextbox=self._positions[1],
             delay=self._delay_spin.value(),
         )
-        QMessageBox.information(self, "Success", "Calibration saved successfully.")
+        QMessageBox.information(self, tr("Success"), tr("Calibration saved successfully."))
         self.close()

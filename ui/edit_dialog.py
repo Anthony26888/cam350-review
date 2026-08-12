@@ -7,13 +7,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from models.review import ReviewRecord
+from ui.i18n import tr
 
 
 class EditDialog(QDialog):
     def __init__(self, record: ReviewRecord, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._record = record
-        self.setWindowTitle(f"Edit - {record.designator}")
+        self.setWindowTitle(tr("Edit - {des}", des=record.designator))
         self.setModal(True)
         self.setMinimumWidth(400)
         self._build_ui()
@@ -22,17 +23,17 @@ class EditDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        original_group = QGroupBox("Original Values")
+        original_group = QGroupBox(tr("Original Values"))
         original_layout = QFormLayout(original_group)
-        original_layout.addRow("Designator:", QLabel(self._record.designator))
-        original_layout.addRow("MPN:", QLabel(self._record.mpn))
-        original_layout.addRow("Layer:", QLabel(self._record.layer))
-        original_layout.addRow("X:", QLabel(str(self._record.old_x)))
-        original_layout.addRow("Y:", QLabel(str(self._record.old_y)))
-        original_layout.addRow("Rotation:", QLabel(str(self._record.old_rotation)))
+        original_layout.addRow(tr("Designator:"), QLabel(self._record.designator))
+        original_layout.addRow(tr("MPN:"), QLabel(self._record.mpn))
+        original_layout.addRow(tr("Layer:"), QLabel(self._record.layer))
+        original_layout.addRow(tr("X:"), QLabel(str(self._record.old_x)))
+        original_layout.addRow(tr("Y:"), QLabel(str(self._record.old_y)))
+        original_layout.addRow(tr("Rotation:"), QLabel(str(self._record.old_rotation)))
         layout.addWidget(original_group)
 
-        edit_group = QGroupBox("Edit Values")
+        edit_group = QGroupBox(tr("Edit Values"))
         edit_layout = QFormLayout(edit_group)
 
         self._new_x = QDoubleSpinBox()
@@ -52,12 +53,12 @@ class EditDialog(QDialog):
 
         self._remark = QTextEdit()
         self._remark.setMaximumHeight(80)
-        self._remark.setPlaceholderText("Enter remark...")
+        self._remark.setPlaceholderText(tr("Enter remark..."))
 
-        edit_layout.addRow("New X:", self._new_x)
-        edit_layout.addRow("New Y:", self._new_y)
-        edit_layout.addRow("New Rotation:", self._new_rotation)
-        edit_layout.addRow("Remark:", self._remark)
+        edit_layout.addRow(tr("New X:"), self._new_x)
+        edit_layout.addRow(tr("New Y:"), self._new_y)
+        edit_layout.addRow(tr("New Rotation:"), self._new_rotation)
+        edit_layout.addRow(tr("Remark:"), self._remark)
         layout.addWidget(edit_group)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

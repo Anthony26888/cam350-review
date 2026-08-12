@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 from models.review import ReviewRecord
 
 
-SESSION_VERSION = 3
+SESSION_VERSION = 4
 
 
 class SessionData:
@@ -22,6 +22,7 @@ class SessionData:
         self.gerberGto: str = ""
         self.gerberGbo: str = ""
         self.gerber_view: Optional[Dict[str, Any]] = None
+        self.column_mapping: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,6 +37,7 @@ class SessionData:
             "gerberGto": self.gerberGto,
             "gerberGbo": self.gerberGbo,
             "gerber_view": self.gerber_view,
+            "column_mapping": self.column_mapping,
         }
 
     @staticmethod
@@ -52,6 +54,7 @@ class SessionData:
         obj.gerberGto = data.get("gerberGto", "")
         obj.gerberGbo = data.get("gerberGbo", "")
         obj.gerber_view = data.get("gerber_view") or None
+        obj.column_mapping = data.get("column_mapping") or None
         return obj
 
 
@@ -116,6 +119,7 @@ class SessionService:
         gerberGto: str = "",
         gerberGbo: str = "",
         gerber_view: Optional[Dict[str, Any]] = None,
+        column_mapping: Optional[Dict[str, str]] = None,
     ) -> None:
         data = SessionData()
         data.source_file = source_file
@@ -128,6 +132,7 @@ class SessionService:
         data.gerberGto = gerberGto
         data.gerberGbo = gerberGbo
         data.gerber_view = gerber_view
+        data.column_mapping = column_mapping
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, indent=2, ensure_ascii=False)
