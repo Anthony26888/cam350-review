@@ -36,6 +36,7 @@ from ui.origin_align_wizard import OriginAlignWizard
 from ui.gerber_viewer import GerberViewer
 from ui.i18n import tr
 from utils.path_utils import resource_path
+from utils.version import APP_VERSION
 from ui.jump_popup import JumpPopup
 
 
@@ -496,6 +497,7 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(False)
         self._btn_delete.setEnabled(False)
         self._btn_align.setEnabled(False)
+        self._clear_gerber_config()
         self._update_gerber_view_button()
         self._update_progress()
         self._status_label.setText(tr("Ready"))
@@ -504,6 +506,12 @@ class MainWindow(QMainWindow):
             PcbInfoRepo().clear()
         except RuntimeError:
             pass
+
+    def _clear_gerber_config(self) -> None:
+        self._config_mgr.update(
+            gerberGko="", gerberGtp="", gerberGbp="",
+            gerberGto="", gerberGbo="",
+        )
 
     @staticmethod
     def _current_pcb_info_dict() -> Optional[dict]:
@@ -545,6 +553,9 @@ class MainWindow(QMainWindow):
             "gerberGto": getattr(session, "gerberGto", ""),
             "gerberGbo": getattr(session, "gerberGbo", ""),
         }
+        embedded = getattr(session, "gerber_files", None) or {}
+        if embedded:
+            paths = self._materialize_embedded_gerber(paths, embedded)
         paths = {k: v for k, v in paths.items() if v}
         if paths:
             self._config_mgr.update(**paths)
@@ -554,6 +565,38 @@ class MainWindow(QMainWindow):
                 gerberGto="", gerberGbo="",
             )
 
+    @staticmethod
+    def _materialize_embedded_gerber(paths: Dict[str, str], embedded: Dict[str, str]) -> Dict[str, str]:
+        from services.session_service import decompress_text
+        from utils.path_utils import user_data_dir
+
+        tmp_dir = os.path.join(user_data_dir(), "tmp_gerber")
+        try:
+            os.makedirs(tmp_dir, exist_ok=True)
+        except OSError:
+            return paths
+        for key, payload in embedded.items():
+            if not payload:
+                continue
+            if paths.get(key) and os.path.exists(paths[key]):
+                continue
+            try:
+                text = decompress_text(payload)
+            except Exception:
+                continue
+            ext = {
+                "gerberGko": "gko", "gerberGtp": "gtp", "gerberGbp": "gbp",
+                "gerberGto": "gto", "gerberGbo": "gbo",
+            }.get(key, "gbr")
+            try:
+                target = os.path.join(tmp_dir, f"{key}.{ext}")
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(text)
+                paths[key] = target
+            except (IOError, OSError):
+                continue
+        return paths
+
     def _existing_gerber_paths(self) -> Dict[str, str]:
         cfg = self._config_mgr.config
         out = {}
@@ -561,6 +604,21 @@ class MainWindow(QMainWindow):
             val = getattr(cfg, key, "")
             if val and os.path.exists(val):
                 out[key] = val
+        return out
+
+    @staticmethod
+    def _collect_gerber_files(paths: Dict[str, str]) -> Dict[str, str]:
+        from services.session_service import compress_text
+
+        out = {}
+        for key, path in (paths or {}).items():
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    out[key] = compress_text(f.read())
+            except (IOError, OSError):
+                continue
         return out
 
     @staticmethod
@@ -692,6 +750,7 @@ class MainWindow(QMainWindow):
         deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
         source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
         gerber = self._existing_gerber_paths()
+        gerber_files = self._collect_gerber_files(gerber)
         self._session_service.save(
             file_path, self._records + deleted_records,
             source_file=source_file,
@@ -704,6 +763,7 @@ class MainWindow(QMainWindow):
             gerberGbo=gerber.get("gerberGbo", ""),
             gerber_view=self._current_gerber_view_settings(),
             column_mapping=self._pickplace_data.column_mapping if self._pickplace_data else None,
+            gerber_files=gerber_files,
         )
         self._session_file = file_path
         self._config_mgr.update(lastSessionFile=file_path)
@@ -719,6 +779,7 @@ class MainWindow(QMainWindow):
             deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
             source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
             gerber = self._existing_gerber_paths()
+            gerber_files = self._collect_gerber_files(gerber)
             self._session_service.save(
                 self._session_file, self._records + deleted_records,
                 source_file=source_file,
@@ -731,6 +792,7 @@ class MainWindow(QMainWindow):
                 gerberGbo=gerber.get("gerberGbo", ""),
                 gerber_view=self._current_gerber_view_settings(),
                 column_mapping=self._pickplace_data.column_mapping if self._pickplace_data else None,
+                gerber_files=gerber_files,
             )
             self._config_mgr.update(lastSessionFile=self._session_file)
             self._dirty = False
@@ -785,6 +847,7 @@ class MainWindow(QMainWindow):
     def _apply_loaded_pickplace(self, data: PickPlaceData, file_path: str) -> None:
         self._pickplace_data = data
         self._config_mgr.update(lastFile=file_path)
+        self._clear_gerber_config()
 
         self._repo.delete_all()
         self._records = []
@@ -1246,7 +1309,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         info = QLabel(
-            "<p><b>Version:</b> 2.1.1</p>"
+            "<p><b>Version:</b> " + APP_VERSION + "</p>"
             "<p><b>License:</b> " + license_summary().replace("|", "<br>") + "</p>"
             "<p><b>Description:</b> A tool for reviewing and editing PickPlace data, "
             "aligning component origins, and exporting fixed position files for CAM350.</p>"

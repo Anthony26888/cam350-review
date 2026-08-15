@@ -1,12 +1,22 @@
+import base64
 import json
 import os
+import zlib
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 from models.review import ReviewRecord
 
 
-SESSION_VERSION = 4
+SESSION_VERSION = 5
+
+
+def compress_text(text: str) -> str:
+    return base64.b64encode(zlib.compress(text.encode("utf-8"), 9)).decode("ascii")
+
+
+def decompress_text(payload: str) -> str:
+    return zlib.decompress(base64.b64decode(payload.encode("ascii"))).decode("utf-8")
 
 
 class SessionData:
@@ -23,6 +33,7 @@ class SessionData:
         self.gerberGbo: str = ""
         self.gerber_view: Optional[Dict[str, Any]] = None
         self.column_mapping: Optional[Dict[str, str]] = None
+        self.gerber_files: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +49,7 @@ class SessionData:
             "gerberGbo": self.gerberGbo,
             "gerber_view": self.gerber_view,
             "column_mapping": self.column_mapping,
+            "gerber_files": self.gerber_files,
         }
 
     @staticmethod
@@ -55,6 +67,7 @@ class SessionData:
         obj.gerberGbo = data.get("gerberGbo", "")
         obj.gerber_view = data.get("gerber_view") or None
         obj.column_mapping = data.get("column_mapping") or None
+        obj.gerber_files = data.get("gerber_files") or None
         return obj
 
 
@@ -120,6 +133,7 @@ class SessionService:
         gerberGbo: str = "",
         gerber_view: Optional[Dict[str, Any]] = None,
         column_mapping: Optional[Dict[str, str]] = None,
+        gerber_files: Optional[Dict[str, str]] = None,
     ) -> None:
         data = SessionData()
         data.source_file = source_file
@@ -133,6 +147,7 @@ class SessionService:
         data.gerberGbo = gerberGbo
         data.gerber_view = gerber_view
         data.column_mapping = column_mapping
+        data.gerber_files = gerber_files
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, indent=2, ensure_ascii=False)

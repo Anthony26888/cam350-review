@@ -1,8 +1,11 @@
 ; CAM350 Review Assistant - Inno Setup Installer
 ; Download Inno Setup: https://jrsoftware.org/isdl.php
 
+#ifndef MyAppVersion
+  #define MyAppVersion "2.1.2"
+#endif
+
 #define MyAppName "CAM350 Review Assistant"
-#define MyAppVersion "2.1.1"
 #define MyAppPublisher "CAM350 Review"
 #define MyAppExeName "CAM350_Review.exe"
 
@@ -21,6 +24,9 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 PrivilegesRequired=admin
+AppMutex=CAM350ReviewMutex
+CloseApplications=yes
+UsePreviousAppDir=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

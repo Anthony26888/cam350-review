@@ -45,12 +45,15 @@ def parse_sr_blocks(path: str) -> List[SRBlock]:
     return blocks
 
 
-def _parse_coord(value: str, decimals: int, int_places: int) -> float:
+def _parse_coord(value: str, decimals: int, int_places: int, suppress: str = "L") -> float:
     sign = -1.0 if value.startswith('-') else 1.0
     digits = value.lstrip('-+')
     total_width = int_places + decimals
     if len(digits) < total_width:
-        digits = digits.zfill(total_width)
+        if suppress == "T":
+            digits = digits.ljust(total_width, "0")
+        else:
+            digits = digits.zfill(total_width)
     int_part = digits[:int_places] or '0'
     frac_part = digits[int_places:]
     return sign * float(f"{int_part}.{frac_part}")
@@ -68,6 +71,7 @@ def parse_segments(path: str) -> List[Tuple[float, float, float, float]]:
     unit_inch = True
     int_places = 4
     decimals = 4
+    suppress = "L"
 
     segments: List[Tuple[float, float, float, float]] = []
 
@@ -84,27 +88,28 @@ def parse_segments(path: str) -> List[Tuple[float, float, float, float]]:
                 unit_inch = False
                 continue
 
-            m_fs = re.match(r'%FSLAX(\d)(\d)Y(\d)(\d)\*%', line)
+            m_fs = re.match(r'%FS([LT])[AI]X(\d)(\d)Y(\d)(\d)\*%', line)
             if m_fs:
-                int_places = int(m_fs.group(1))
-                decimals = int(m_fs.group(2))
+                suppress = m_fs.group(1)
+                int_places = int(m_fs.group(2))
+                decimals = int(m_fs.group(3))
                 continue
 
             if line.startswith('%'):
                 continue
 
-            m_cmd = re.match(r'(X(-?\d+))?(Y(-?\d+))?D0?(\d)\*?$', line)
+            m_cmd = re.match(r'(G0?[123])?(X(-?\d+))?(Y(-?\d+))?(I-?\d+)?(J-?\d+)?D0?(\d)\*?$', line)
             if not m_cmd:
                 continue
 
-            has_x = m_cmd.group(2) is not None
-            has_y = m_cmd.group(4) is not None
+            has_x = m_cmd.group(3) is not None
+            has_y = m_cmd.group(5) is not None
             if has_x:
-                cx = _parse_coord(m_cmd.group(2), decimals, int_places)
+                cx = _parse_coord(m_cmd.group(3), decimals, int_places, suppress)
             if has_y:
-                cy = _parse_coord(m_cmd.group(4), decimals, int_places)
+                cy = _parse_coord(m_cmd.group(5), decimals, int_places, suppress)
 
-            code = m_cmd.group(5)
+            code = m_cmd.group(8)
             scale = 25.4 if unit_inch else 1.0
             if code == '1':
                 segments.append(
@@ -125,6 +130,7 @@ def parse_gerber_points(
     unit_inch = True
     int_places = 4
     decimals = 4
+    suppress = "L"
 
     pts: List[GerberPoint] = []
 
@@ -141,10 +147,11 @@ def parse_gerber_points(
                 unit_inch = False
                 continue
 
-            m_fs = re.match(r'%FSLAX(\d)(\d)Y(\d)(\d)\*%', line)
+            m_fs = re.match(r'%FS([LT])[AI]X(\d)(\d)Y(\d)(\d)\*%', line)
             if m_fs:
-                int_places = int(m_fs.group(1))
-                decimals = int(m_fs.group(2))
+                suppress = m_fs.group(1)
+                int_places = int(m_fs.group(2))
+                decimals = int(m_fs.group(3))
                 continue
 
             m_ln = re.match(r'%LN(.+?)\*%', line)
@@ -155,16 +162,16 @@ def parse_gerber_points(
             if line.startswith('%'):
                 continue
 
-            m_cmd = re.match(r'(X(-?\d+))?(Y(-?\d+))?D0?(\d)\*?$', line)
+            m_cmd = re.match(r'(G0?[123])?(X(-?\d+))?(Y(-?\d+))?(I-?\d+)?(J-?\d+)?D0?(\d)\*?$', line)
             if not m_cmd:
                 continue
 
-            if m_cmd.group(2):
-                x = _parse_coord(m_cmd.group(2), decimals, int_places)
-            if m_cmd.group(4):
-                y = _parse_coord(m_cmd.group(4), decimals, int_places)
+            if m_cmd.group(3):
+                x = _parse_coord(m_cmd.group(3), decimals, int_places, suppress)
+            if m_cmd.group(5):
+                y = _parse_coord(m_cmd.group(5), decimals, int_places, suppress)
 
-            code = m_cmd.group(5)
+            code = m_cmd.group(8)
             if code in codes:
                 x_mm = x * 25.4 if unit_inch else x
                 y_mm = y * 25.4 if unit_inch else y

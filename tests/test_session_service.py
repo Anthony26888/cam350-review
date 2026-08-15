@@ -1,5 +1,5 @@
 from models.review import ReviewRecord
-from services.session_service import SessionService
+from services.session_service import SessionService, compress_text, decompress_text
 
 
 def _make_record(designator="C1", status="Pending"):
@@ -41,7 +41,7 @@ def test_save_and_load(tmp_path):
     record = _make_record()
     SessionService.save(str(path), [record], source_file="src.xlsx", current_index=2)
     loaded = SessionService.load(str(path))
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.source_file == "src.xlsx"
     assert loaded.current_index == 2
     assert len(loaded.records) == 1
@@ -61,7 +61,7 @@ def test_save_and_load_gerber_paths(tmp_path):
         gerberGbo=r"D:\gerber\b.GBO",
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.gerberGko == r"D:\gerber\b.GKO"
     assert loaded.gerberGtp == r"D:\gerber\b.GTP"
     assert loaded.gerberGbp == r"D:\gerber\b.GBP"
@@ -159,7 +159,7 @@ def test_save_and_load_column_mapping(tmp_path):
         str(path), [record], source_file="src.xlsx", column_mapping=mapping
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.column_mapping == mapping
     assert loaded.column_mapping["x"] == "Xpos"
 
@@ -176,3 +176,54 @@ def test_load_missing_file(tmp_path):
     import pytest
     with pytest.raises(FileNotFoundError):
         SessionService.load(str(tmp_path / "missing.cam350review"))
+
+
+def test_compress_round_trip():
+    text = "%FSLAX24Y24*%\n%MOIN*%\nG01*\nX100Y100D02*\nM02*\n"
+    payload = compress_text(text)
+    assert decompress_text(payload) == text
+
+
+def test_save_and_load_gerber_files(tmp_path):
+    path = tmp_path / "session_gerber_files.cam350review"
+    record = _make_record()
+    gerber_files = {
+        "gerberGko": compress_text("GKO-CONTENT\n%MOMM*%\nM02*"),
+        "gerberGtp": compress_text("GTP-CONTENT"),
+    }
+    SessionService.save(
+        str(path), [record], source_file="src.xlsx",
+        gerberGko=r"D:\gerber\b.GKO", gerberGtp=r"D:\gerber\b.GTP",
+        gerber_files=gerber_files,
+    )
+    loaded = SessionService.load(str(path))
+    assert loaded.version == 5
+    assert loaded.gerber_files is not None
+    assert decompress_text(loaded.gerber_files["gerberGko"]) == "GKO-CONTENT\n%MOMM*%\nM02*"
+    assert decompress_text(loaded.gerber_files["gerberGtp"]) == "GTP-CONTENT"
+
+
+def test_save_gerber_files_defaults_none(tmp_path):
+    path = tmp_path / "session_no_gerber_files.cam350review"
+    record = _make_record()
+    SessionService.save(str(path), [record])
+    loaded = SessionService.load(str(path))
+    assert loaded.gerber_files is None
+
+
+def test_load_legacy_v4_gerber_files_none(tmp_path):
+    import json
+    path = tmp_path / "legacy_v4.cam350review"
+    data = {
+        "version": 4,
+        "source_file": "old.xlsx",
+        "current_index": 0,
+        "records": [],
+        "gerberGko": r"D:\gerber\b.GKO",
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    loaded = SessionService.load(str(path))
+    assert loaded.version == 4
+    assert loaded.gerber_files is None
+    assert loaded.gerberGko == r"D:\gerber\b.GKO"

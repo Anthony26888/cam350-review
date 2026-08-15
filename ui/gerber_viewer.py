@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGraphicsView, QGraphicsScene, QGraphicsItem, QComboBox,
     QCheckBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QDoubleSpinBox, QWidget, QDialog,
-    QSizePolicy, QFrame,
+    QHeaderView, QMessageBox, QDoubleSpinBox, QSpinBox, QWidget, QDialog,
+    QSizePolicy, QFrame, QFileDialog,
 )
 
 from models.review import ReviewRecord
@@ -34,7 +34,7 @@ BACKGROUND = QColor("#0B1220")
 
 _CROSS_BOARD_RATIO = 0.01
 _MIN_ARROW_PX = 10.0
-_MIN_ARROW_WING_PX = 3.0
+_MIN_ARROW_WING_RATIO = 0.3
 
 
 def _layer_key(layer: str) -> str:
@@ -166,7 +166,7 @@ def _add_flash(
                 QPointF(gx + lx, -gy - ly)
                 for lx, ly in (_t_loc(px, py) for px, py in fl.pts)
             ]
-        path.addPolygon(QPolygonF(pts))
+        path.addPolygon(QPolygonF(_normalize_winding(pts)))
         return
 
     if fl.kind == "macro" and fl.macro:
@@ -180,7 +180,7 @@ def _add_flash(
                 QPointF(gx + lx, -gy - ly)
                 for lx, ly in (_t_loc(px, py) for px, py in poly_pts)
             ]
-            path.addPolygon(QPolygonF(pts))
+            path.addPolygon(QPolygonF(_normalize_winding(pts)))
         for x1, y1, x2, y2, width in m.segments:
             lx1, ly1 = _t_loc(x1, y1)
             lx2, ly2 = _t_loc(x2, y2)
@@ -193,7 +193,7 @@ def _add_flash(
                 QPointF(gx + lx2 - dx, -gy - ly2 + dy),
                 QPointF(gx + lx2 + dx, -gy - ly2 - dy),
             ]
-            path.addPolygon(QPolygonF(quad))
+            path.addPolygon(QPolygonF(_normalize_winding(quad)))
 
 
 def _append_arc_path(
@@ -230,6 +230,28 @@ def _append_arc_path(
     path.arcTo(rect, a_start, sweep)
 
 
+def _normalize_winding(pts: List[QPointF]) -> List[QPointF]:
+    """Reverse a polygon point list so its winding is positive (CCW).
+
+    All filled subpaths must share the same winding direction, otherwise
+    Qt.WindingFill cancels overlapping subpaths (e.g. gerbonara expands a
+    RoundRect macro into positive-winding circles and negative-winding
+    rects, producing hollow pads). Circles/rounded-rects already wind
+    positively, so polygons are normalized to match.
+    """
+    n = len(pts)
+    if n < 3:
+        return pts
+    area = 0.0
+    for i in range(n):
+        x1, y1 = pts[i].x(), pts[i].y()
+        x2, y2 = pts[(i + 1) % n].x(), pts[(i + 1) % n].y()
+        area += x1 * y2 - x2 * y1
+    if area < 0.0:
+        return list(reversed(pts))
+    return pts
+
+
 def _add_rect_path(path: QPainterPath, gx, gy, w, h, rot):
     hw, hh = w / 2.0, h / 2.0
     c, s = math.cos(rot), math.sin(rot)
@@ -238,7 +260,7 @@ def _add_rect_path(path: QPainterPath, gx, gy, w, h, rot):
         rx = cx0 * c - cy0 * s
         ry = cx0 * s + cy0 * c
         pts.append(QPointF(gx + rx, -gy - ry))
-    path.addPolygon(QPolygonF(pts))
+    path.addPolygon(QPolygonF(_normalize_winding(pts)))
 
 
 def _add_capsule_path(path: QPainterPath, cx, cy, w, h, rot):
@@ -263,7 +285,7 @@ def _add_capsule_path(path: QPainterPath, cx, cy, w, h, rot):
     out = []
     for gx, gy in pts:
         out.append(QPointF(cx + gx * c - gy * s, -cy - gx * s - gy * c))
-    path.addPolygon(QPolygonF(out))
+    path.addPolygon(QPolygonF(_normalize_winding(out)))
 
 
 class PickPlaceMarker(QGraphicsItem):
@@ -336,12 +358,13 @@ class MarkerOverlayItem(QGraphicsItem):
 
     def __init__(self, markers: List[Tuple[float, float, float, float]],
                  show_unselected: bool = True, arrow_floor: float = 0.0,
-                 parent=None) -> None:
+                 arrow_min_px: float = _MIN_ARROW_PX, parent=None) -> None:
         super().__init__(parent)
         self._markers = markers  # (x, -y, rot_deg, half)
         self._show_unselected = show_unselected
         self._selected = -1
         self._arrow_floor = arrow_floor
+        self._arrow_min_px = arrow_min_px
         self._rect = self._compute_rect()
         self._build_geom()
 
@@ -393,8 +416,8 @@ class MarkerOverlayItem(QGraphicsItem):
         scale = abs(painter.worldTransform().m11())
         if scale <= 0.0:
             scale = 1.0
-        min_len = _MIN_ARROW_PX / scale
-        min_wing = _MIN_ARROW_WING_PX / scale
+        min_len = self._arrow_min_px / scale
+        min_wing = self._arrow_min_px * _MIN_ARROW_WING_RATIO / scale
         for i, (mx, my, rot, half) in enumerate(self._markers):
             is_selected = (i == selected)
             if not self._show_unselected and not is_selected:
@@ -438,6 +461,36 @@ class MarkerOverlayItem(QGraphicsItem):
                 painter.drawPolygon(arrow)
             painter.restore()
         painter.restore()
+
+
+def _build_fill_path(
+    flashes,
+    mirror: bool,
+    angle: float,
+    off_x: float,
+    off_y: float,
+    center_x: float,
+    center_y: float,
+    mirror_x: bool = False,
+) -> QPainterPath:
+    """Build a single fill path for a paste/silk layer.
+
+    Positive flashes are unioned into one solid region (WindingFill), and
+    negative flashes are punched out of it. WindingFill keeps overlapping
+    pads solid instead of creating holes/cut-lines (OddEven default).
+    """
+    dark = QPainterPath()
+    dark.setFillRule(Qt.WindingFill)
+    clear = QPainterPath()
+    clear.setFillRule(Qt.WindingFill)
+    for fl in flashes:
+        target = clear if fl.negative else dark
+        _add_flash(target, fl, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
+    final = dark
+    if not clear.isEmpty():
+        final = QPainterPath(dark.subtracted(clear))
+        final.setFillRule(Qt.WindingFill)
+    return final
 
 
 class GerberView(QGraphicsView):
@@ -508,6 +561,10 @@ class GerberView(QGraphicsView):
     def fit(self) -> None:
         rect = self.scene().itemsBoundingRect()
         if not rect.isNull():
+            self.fitInView(rect, Qt.KeepAspectRatio)
+
+    def fit_to_rect(self, rect: QRectF) -> None:
+        if rect is not None and not rect.isNull() and rect.isValid():
             self.fitInView(rect, Qt.KeepAspectRatio)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -629,6 +686,59 @@ class GerberLoadWorker(QThread):
             self.failed.emit(str(e))
 
 
+class GerberPdfWorker(QThread):
+    """Export the current Gerber View state to a PDF in a background thread."""
+
+    finished_ok = Signal(str)
+    finished_err = Signal(str)
+
+    def __init__(
+        self,
+        path: str,
+        outline: RenderData,
+        paste: RenderData,
+        silk: RenderData,
+        markers: List[Tuple[float, float, float, float]],
+        params: Dict[str, Any],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._path = path
+        self._outline = outline
+        self._paste = paste
+        self._silk = silk
+        self._markers = markers
+        self._params = params
+
+    def run(self) -> None:
+        from services.gerber.gerber_pdf_export import export_gerber_pdf
+
+        try:
+            export_gerber_pdf(
+                self._path,
+                self._outline,
+                self._paste,
+                self._silk,
+                self._markers,
+                angle=self._params.get("angle", 0.0),
+                invert_rot=self._params.get("invert_rot", False),
+                flip=self._params.get("flip", False),
+                mirror_x=self._params.get("mirror_x", False),
+                off_x=self._params.get("off_x", 0.0),
+                off_y=self._params.get("off_y", 0.0),
+                show_outline=self._params.get("show_outline", True),
+                show_paste=self._params.get("show_paste", True),
+                show_silk=self._params.get("show_silk", True),
+                show_pickplace=self._params.get("show_pickplace", True),
+                show_crosshair=self._params.get("show_crosshair", True),
+                board_center=self._params.get("board_center", (0.0, 0.0)),
+                is_top=self._params.get("is_top", True),
+            )
+            self.finished_ok.emit(self._path)
+        except Exception as e:  # noqa: BLE001
+            self.finished_err.emit(str(e))
+
+
 class GerberViewer(QWidget):
     settings_saved = Signal(dict)
 
@@ -673,11 +783,17 @@ class GerberViewer(QWidget):
         self._overlay: Optional[MarkerOverlayItem] = None
         self._board_center: Tuple[float, float] = (0.0, 0.0)
         self._cross_half = _CROSS_BOARD_RATIO
+        self._arrow_min_px: float = _MIN_ARROW_PX
+        self._crosshair_scale: float = 1.0
         self._selected_marker_index = -1
         self._component_index: List[int] = []
         self._scene_scale = 1.0
         self._mag_target: Optional[Tuple[float, float]] = None
         self._mag_factor: float = _MAG_FACTOR
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setSingleShot(True)
+        self._redraw_timer.setInterval(150)
+        self._redraw_timer.timeout.connect(self._redraw)
 
         self._build_ui()
         self._apply_layer()
@@ -699,6 +815,8 @@ class GerberViewer(QWidget):
             "pickplace": self._chk_pickplace.isChecked(),
             "crosshair": self._chk_crosshair.isChecked(),
             "mag_factor": self._mag_factor,
+            "arrow_min_px": self._spin_arrow_px.value(),
+            "crosshair_scale": self._spin_cross_scale.value(),
         }
 
     def apply_display_settings(self, settings: Dict[str, Any]) -> None:
@@ -730,6 +848,10 @@ class GerberViewer(QWidget):
                 if self._combo_mag.itemData(i) == target:
                     self._combo_mag.setCurrentIndex(i)
                     break
+        self._spin_arrow_px.setValue(int(settings.get("arrow_min_px", _MIN_ARROW_PX)))
+        self._spin_cross_scale.setValue(float(settings.get("crosshair_scale", 1.0)))
+        self._arrow_min_px = float(self._spin_arrow_px.value())
+        self._crosshair_scale = float(self._spin_cross_scale.value())
 
     def _save_display_settings(self) -> None:
         self.settings_saved.emit(self.display_settings())
@@ -769,9 +891,13 @@ class GerberViewer(QWidget):
         btn_fit.clicked.connect(self._fit_scene)
         btn_reset = QPushButton(tr("Reset"))
         btn_reset.clicked.connect(self._on_reset)
+        self._btn_export_pdf = QPushButton(tr("Export PDF..."))
+        self._btn_export_pdf.clicked.connect(self._export_pdf)
+        self._btn_export_pdf.setEnabled(False)
         btn_row.addWidget(btn_disp)
         btn_row.addWidget(btn_fit)
         btn_row.addWidget(btn_reset)
+        btn_row.addWidget(self._btn_export_pdf)
         panel.addLayout(btn_row)
 
         layer_row = QHBoxLayout()
@@ -791,9 +917,9 @@ class GerberViewer(QWidget):
         panel.addWidget(self._search_input)
 
         self._table_components = QTableWidget()
-        self._table_components.setColumnCount(4)
+        self._table_components.setColumnCount(5)
         self._table_components.setHorizontalHeaderLabels([
-            tr("Designator"), tr("X"), tr("Y"), tr("Rot"),
+            tr("#"), tr("Designator"), tr("X"), tr("Y"), tr("Rot"),
         ])
         self._table_components.setSelectionBehavior(QTableWidget.SelectRows)
         self._table_components.setSelectionMode(QTableWidget.SingleSelection)
@@ -891,73 +1017,173 @@ QGroupBox::title {
         self._combo_rot = QComboBox()
         for angle in (0, 90, 180, 270):
             self._combo_rot.addItem(f"{angle}°", angle)
-        self._combo_rot.currentIndexChanged.connect(self._redraw)
+        self._combo_rot.currentIndexChanged.connect(self._schedule_redraw)
         rot_row.addWidget(self._combo_rot, 1)
         layout.addLayout(rot_row)
 
         self._chk_invert_rot = QCheckBox(tr("Invert Gerber rotation"))
-        self._chk_invert_rot.toggled.connect(self._redraw)
+        self._chk_invert_rot.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_invert_rot)
 
         self._chk_flip = QCheckBox(tr("Flip Gerber (Mirror Y)"))
-        self._chk_flip.toggled.connect(self._redraw)
+        self._chk_flip.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_flip)
 
         self._chk_mirror_x = QCheckBox(tr("Flip Gerber (Mirror X)"))
-        self._chk_mirror_x.toggled.connect(self._redraw)
+        self._chk_mirror_x.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_mirror_x)
 
         off_row = QHBoxLayout()
         off_row.addWidget(QLabel(tr("Offset X:")))
         self._spin_off_x = QDoubleSpinBox()
-        self._spin_off_x.setRange(-100.0, 100.0)
+        self._spin_off_x.setRange(-100000.0, 100000.0)
         self._spin_off_x.setSingleStep(0.05)
         self._spin_off_x.setDecimals(2)
         self._spin_off_x.setValue(0.0)
-        self._spin_off_x.valueChanged.connect(self._redraw)
+        self._spin_off_x.valueChanged.connect(self._schedule_redraw)
         off_row.addWidget(self._spin_off_x, 1)
         off_row.addWidget(QLabel(tr("Y:")))
         self._spin_off_y = QDoubleSpinBox()
-        self._spin_off_y.setRange(-100.0, 100.0)
+        self._spin_off_y.setRange(-100000.0, 100000.0)
         self._spin_off_y.setSingleStep(0.05)
         self._spin_off_y.setDecimals(2)
         self._spin_off_y.setValue(0.0)
-        self._spin_off_y.valueChanged.connect(self._redraw)
+        self._spin_off_y.valueChanged.connect(self._schedule_redraw)
         off_row.addWidget(self._spin_off_y, 1)
         btn_zero = QPushButton("0")
         btn_zero.clicked.connect(self._reset_offset)
         off_row.addWidget(btn_zero)
+        btn_origin = QPushButton(tr("To Origin (0,0)"))
+        btn_origin.clicked.connect(self._bring_gerber_to_origin)
+        off_row.addWidget(btn_origin)
         layout.addLayout(off_row)
 
         self._chk_outline = QCheckBox(tr("Show GKO outline"))
         self._chk_outline.setChecked(True)
-        self._chk_outline.toggled.connect(self._redraw)
+        self._chk_outline.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_outline)
 
         self._chk_paste = QCheckBox(tr("Show Paste (GTP / GBP)"))
         self._chk_paste.setChecked(True)
-        self._chk_paste.toggled.connect(self._redraw)
+        self._chk_paste.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_paste)
 
         self._chk_silk = QCheckBox(tr("Show Silkscreen (GTO / GBO)"))
         self._chk_silk.setChecked(True)
-        self._chk_silk.toggled.connect(self._redraw)
+        self._chk_silk.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_silk)
 
         self._chk_pickplace = QCheckBox(tr("Show PickPlace (aligned)"))
         self._chk_pickplace.setChecked(True)
-        self._chk_pickplace.toggled.connect(self._redraw)
+        self._chk_pickplace.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_pickplace)
 
         self._chk_crosshair = QCheckBox(tr("Show crosshair"))
         self._chk_crosshair.setChecked(True)
-        self._chk_crosshair.toggled.connect(self._redraw)
+        self._chk_crosshair.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_crosshair)
+
+        arrow_row = QHBoxLayout()
+        arrow_row.addWidget(QLabel(tr("Arrow size:")))
+        self._spin_arrow_px = QSpinBox()
+        self._spin_arrow_px.setRange(5, 100)
+        self._spin_arrow_px.setSingleStep(5)
+        self._spin_arrow_px.setValue(int(_MIN_ARROW_PX))
+        self._spin_arrow_px.setSuffix(" px")
+        self._spin_arrow_px.valueChanged.connect(self._on_arrow_size_changed)
+        arrow_row.addWidget(self._spin_arrow_px, 1)
+        layout.addLayout(arrow_row)
+
+        cross_row = QHBoxLayout()
+        cross_row.addWidget(QLabel(tr("Crosshair scale:")))
+        self._spin_cross_scale = QDoubleSpinBox()
+        self._spin_cross_scale.setRange(0.5, 5.0)
+        self._spin_cross_scale.setSingleStep(0.1)
+        self._spin_cross_scale.setDecimals(1)
+        self._spin_cross_scale.setValue(1.0)
+        self._spin_cross_scale.valueChanged.connect(self._on_crosshair_scale_changed)
+        cross_row.addWidget(self._spin_cross_scale, 1)
+        layout.addLayout(cross_row)
 
         return group
 
     def _open_display_dialog(self) -> None:
         self._display_dialog.exec()
+
+    def _on_arrow_size_changed(self, value: int) -> None:
+        self._arrow_min_px = float(value)
+        self._schedule_redraw()
+
+    def _on_crosshair_scale_changed(self, value: float) -> None:
+        self._crosshair_scale = float(value)
+        self._schedule_redraw()
+
+    def _export_pdf(self) -> None:
+        if not self._loaded:
+            return
+        from services.gerber.gerber_pdf_export import export_gerber_pdf
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, tr("Export Gerber PDF"), "gerber_view.pdf",
+            "PDF Files (*.pdf);;All Files (*.*)"
+        )
+        if not file_path:
+            return
+
+        is_top = self._combo_layer.currentIndex() == 0
+        paste = self._top if is_top else self._bottom
+        silk = self._silk if is_top else self._silk_bottom
+        angle = self._combo_rot.currentData() or 0
+        mirror = self._chk_flip.isChecked()
+        mirror_x = self._chk_mirror_x.isChecked()
+        off_x = self._spin_off_x.value()
+        off_y = self._spin_off_y.value()
+        center_x, center_y = self._board_center
+
+        markers: List[Tuple[float, float, float, float]] = []
+        if self._chk_pickplace.isChecked():
+            pads_raw = [
+                (f.cx, f.cy, _flash_size(f))
+                for f in paste.flashes
+            ]
+            for record in self._current_layer_records():
+                x, y, rotation = _record_coord(record)
+                size = _nearest_pad_size(pads_raw, x, y)
+                half = _crosshair_half(size, self._cross_half)
+                markers.append((x, -y, rotation, half))
+
+        params: Dict[str, Any] = {
+            "angle": angle,
+            "invert_rot": self._chk_invert_rot.isChecked(),
+            "flip": mirror,
+            "mirror_x": mirror_x,
+            "off_x": off_x,
+            "off_y": off_y,
+            "show_outline": self._chk_outline.isChecked(),
+            "show_paste": self._chk_paste.isChecked(),
+            "show_silk": self._chk_silk.isChecked(),
+            "show_pickplace": self._chk_pickplace.isChecked(),
+            "show_crosshair": self._chk_crosshair.isChecked(),
+            "board_center": (center_x, center_y),
+            "is_top": is_top,
+        }
+
+        self._btn_export_pdf.setEnabled(False)
+        worker = GerberPdfWorker(
+            file_path, self._outline, paste, silk, markers, params, self
+        )
+        worker.finished_ok.connect(self._on_pdf_export_done)
+        worker.finished_err.connect(self._on_pdf_export_failed)
+        self._pdf_worker = worker
+        worker.start()
+
+    def _on_pdf_export_done(self, path: str) -> None:
+        self._btn_export_pdf.setEnabled(True)
+        self._lbl_status.setText(tr("PDF exported to {path}", path=path))
+
+    def _on_pdf_export_failed(self, message: str) -> None:
+        self._btn_export_pdf.setEnabled(True)
+        QMessageBox.warning(self, tr("Export Failed"), message)
 
     def _start_load(self) -> None:
         if not self._gko_path or not os.path.exists(self._gko_path):
@@ -983,6 +1209,7 @@ QGroupBox::title {
         self._silk = data.get("silk", RenderData())
         self._silk_bottom = data.get("silk_bottom", RenderData())
         self._loaded = True
+        self._btn_export_pdf.setEnabled(True)
         self._board_center = self._compute_board_center()
         self._cross_half = self._board_size() * _CROSS_BOARD_RATIO
         self._apply_layer()
@@ -1014,13 +1241,14 @@ QGroupBox::title {
             if search_text and search_text not in record.designator.lower():
                 continue
             x, y, rotation = _record_coord(record)
+            row = self._table_components.rowCount()
             values = [
+                str(row + 1),
                 record.designator,
                 f"{x:.3f}",
                 f"{y:.3f}",
                 f"{rotation:.0f}°",
             ]
-            row = self._table_components.rowCount()
             self._table_components.insertRow(row)
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
@@ -1143,15 +1371,16 @@ QGroupBox::title {
         if not render_data.flashes:
             return
         center_x, center_y = self._board_center
-        dark = QPainterPath()
-        clear = QPainterPath()
-        for fl in render_data.flashes:
-            target = clear if fl.negative else dark
-            _add_flash(target, fl, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
-        final = dark
-        if not clear.isEmpty():
-            final = QPainterPath(dark.subtracted(clear))
+        final = _build_fill_path(
+            render_data.flashes, mirror, angle, off_x, off_y,
+            center_x, center_y, mirror_x,
+        )
         self._scene.addPath(final, QPen(Qt.NoPen), QBrush(color))
+
+    def _schedule_redraw(self) -> None:
+        if not self._loaded:
+            return
+        self._redraw_timer.start()
 
     def _redraw(self) -> None:
         if not self._loaded:
@@ -1196,24 +1425,64 @@ QGroupBox::title {
             for record in self._current_layer_records():
                 x, y, rotation = _record_coord(record)
                 size = _nearest_pad_size(pads_raw, x, y)
-                half = _crosshair_half(size, self._cross_half)
+                half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
                 markers.append((x, -y, rotation, half))
             try:
                 view_scale = abs(self._view.transform().m11())
             except Exception:
                 view_scale = 1.0
-            arrow_floor = (_MIN_ARROW_PX / view_scale) if view_scale > 0 else 0.0
+            arrow_floor = (self._arrow_min_px / view_scale) if view_scale > 0 else 0.0
             self._overlay = MarkerOverlayItem(
                 markers, show_unselected=self._chk_crosshair.isChecked(),
-                arrow_floor=arrow_floor,
+                arrow_floor=arrow_floor, arrow_min_px=self._arrow_min_px,
             )
             self._scene.addItem(self._overlay)
 
         self._restore_highlight()
         self._refresh_magnifier()
 
+    def _gerber_content_bbox(self) -> Tuple[float, float, float, float]:
+        for data in (self._outline, self._top, self._bottom):
+            if data.lines or data.arcs or data.flashes:
+                return data.bbox()
+        return 0.0, 0.0, 0.0, 0.0
+
+    def _gerber_scene_rect(self) -> QRectF:
+        min_x, min_y, max_x, max_y = self._gerber_content_bbox()
+        angle = self._combo_rot.currentData() or 0
+        if self._chk_invert_rot.isChecked():
+            angle = (360 - angle) % 360
+        mirror = self._chk_flip.isChecked()
+        mirror_x = self._chk_mirror_x.isChecked()
+        off_x = self._spin_off_x.value()
+        off_y = self._spin_off_y.value()
+        center_x, center_y = self._board_center
+        xs, ys = [], []
+        for px, py in ((min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)):
+            tx, ty = apply_transform(px, py, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
+            xs.append(tx)
+            ys.append(-ty)
+        return QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+    def _markers_scene_rect(self) -> Optional[QRectF]:
+        overlay = getattr(self, "_overlay", None)
+        if overlay is None or not overlay._markers:
+            return None
+        rect = overlay._compute_rect()
+        if rect.isNull() or not rect.isValid():
+            return None
+        return rect
+
     def _fit_scene(self) -> None:
-        self._view.fit()
+        rect = self._gerber_scene_rect()
+        markers = self._markers_scene_rect()
+        if markers is not None and not rect.united(markers).isEmpty():
+            if rect.isEmpty() or not rect.contains(markers) and not rect.intersects(markers):
+                rect = rect.united(markers)
+        if not rect.isEmpty():
+            self._view.fit_to_rect(rect)
+        else:
+            self._view.fit()
         scale = self._view.transform().m11()
         if abs(scale - self._scene_scale) > 1e-6:
             self._scene_scale = scale
@@ -1262,6 +1531,30 @@ QGroupBox::title {
         self._spin_off_y.setValue(0.0)
         self._chk_flip.setChecked(False)
         self._chk_mirror_x.setChecked(False)
+
+    def _outline_min_corner(self) -> Tuple[float, float]:
+        if self._outline.lines or self._outline.arcs or self._outline.flashes:
+            min_x, min_y, _max_x, _max_y = self._outline.bbox()
+            return min_x, min_y
+        for data in (self._top, self._bottom):
+            if data.lines or data.arcs or data.flashes:
+                min_x, min_y, _max_x, _max_y = data.bbox()
+                return min_x, min_y
+        return 0.0, 0.0
+
+    def _bring_gerber_to_origin(self) -> None:
+        if not self._loaded:
+            return
+        angle = self._combo_rot.currentData() or 0
+        if self._chk_invert_rot.isChecked():
+            angle = (360 - angle) % 360
+        mirror = self._chk_flip.isChecked()
+        mirror_x = self._chk_mirror_x.isChecked()
+        center_x, center_y = self._board_center
+        min_x, min_y = self._outline_min_corner()
+        tx, ty = apply_transform(min_x, min_y, mirror, angle, 0.0, 0.0, center_x, center_y, mirror_x)
+        self._spin_off_x.setValue(-tx)
+        self._spin_off_y.setValue(-ty)
 
     def _on_reset(self) -> None:
         self._combo_rot.setCurrentIndex(0)
