@@ -16,6 +16,7 @@ class AlignResult:
         n_matched: int = 0,
         n_total: int = 0,
         median_residual: float = -1.0,
+        gko_priority: bool = False,
     ):
         self.offset_x = offset_x
         self.offset_y = offset_y
@@ -23,12 +24,14 @@ class AlignResult:
         self.n_matched = n_matched
         self.n_total = n_total
         self.median_residual = median_residual
+        self.gko_priority = gko_priority
 
     def __repr__(self) -> str:
+        flag = " [GKO_PRIORITY]" if self.gko_priority else ""
         return (
             f"AlignResult(offset=({self.offset_x:.4f}, {self.offset_y:.4f}), "
             f"angle={self.rotation_angle}°, matched={self.n_matched}/{self.n_total}, "
-            f"residual={self.median_residual:.6f}mm)"
+            f"residual={self.median_residual:.6f}mm){flag}"
         )
 
 

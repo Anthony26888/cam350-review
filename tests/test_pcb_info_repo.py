@@ -148,11 +148,11 @@ def test_execute_macro_rotation_90_top(monkeypatch):
     wizard, calls = _stub_wizard(monkeypatch)
     wizard._chosen_rotation_angle = 90
     wizard._rotation_angle = 90
-    wizard._panel_info = _stub_panel(100.0, 200.0, 120.75, 300.0)
+    wizard._panel_info = _stub_panel(50.0, 200.0, 120.75, 300.0)
 
     wizard._execute_macro()
 
-    assert calls["ox"] == 100.0
+    assert calls["ox"] == 50.0
     assert calls["oy"] == 300.0 + 200.0
     assert calls["layer"] == "top"
     assert calls["angle_deg"] == 90

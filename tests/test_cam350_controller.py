@@ -15,6 +15,8 @@ class FakePoint:
 class FakeConfig:
     xTextbox = FakePoint(100, 100)
     yTextbox = FakePoint(200, 200)
+    gotoButton = FakePoint(0, 0)
+    rotateButton = FakePoint(0, 0)
     delay = 150
 
 
@@ -28,6 +30,7 @@ def fake_cam350(monkeypatch):
     fake_calls = {
         "hotkey": [],
         "press": [],
+        "click": [],
         "activate": 0,
         "jump": [],
     }
@@ -55,11 +58,15 @@ def fake_cam350(monkeypatch):
     def fake_press(key):
         fake_calls["press"].append(key)
 
+    def fake_click(x, y):
+        fake_calls["click"].append((x, y))
+
     monkeypatch.setattr(controller, "activate", fake_activate)
     monkeypatch.setattr(controller, "read_value", fake_read)
     monkeypatch.setattr(controller, "jump_to", fake_jump)
     monkeypatch.setattr(cam350_controller.pyautogui, "hotkey", fake_hotkey)
     monkeypatch.setattr(cam350_controller.pyautogui, "press", fake_press)
+    monkeypatch.setattr(cam350_controller.pyautogui, "click", fake_click)
 
     return controller, fake_calls
 
@@ -112,9 +119,9 @@ def test_run_rotation_macro_90_top(fake_cam350):
     result = controller.run_origin_macro(10.5, 20.25, angle_deg=90)
 
     assert result == (10.5, 20.25)
-    assert calls["hotkey"] == [("ctrl", "alt", "r"), ("ctrl", "alt", "x")]
-    assert calls["jump"] == [(10.5, 20.25)]
-    assert calls["press"] == ["enter"]
+    assert calls["hotkey"] == [("ctrl", "alt", "x"), ("ctrl", "alt", "r")]
+    assert calls["jump"] == [(10.5, 20.25), (0.0, 0.0)]
+    assert calls["press"] == ["enter", "esc"]
     assert calls["activate"] == 1
 
 
@@ -126,11 +133,44 @@ def test_run_rotation_macro_90_bottom(fake_cam350):
     assert result == (200.0, 20.25)
     assert calls["hotkey"] == [
         ("ctrl", "alt", "b"),
-        ("ctrl", "alt", "r"),
         ("ctrl", "alt", "x"),
+        ("ctrl", "alt", "r"),
     ]
-    assert calls["jump"] == [(200.0, 20.25)]
-    assert calls["press"] == ["enter"]
+    assert calls["jump"] == [(200.0, 20.25), (0.0, 0.0)]
+    assert calls["press"] == ["enter", "esc"]
+
+
+def test_run_rotation_macro_90_clicks_rotate_button(fake_cam350):
+    controller, calls = fake_cam350
+    controller._config_mgr.config.rotateButton = FakePoint(300, 400)
+
+    controller.run_origin_macro(10.5, 20.25, angle_deg=90)
+
+    assert calls["hotkey"] == [("ctrl", "alt", "x"), ("ctrl", "alt", "r")]
+    assert calls["click"] == [(300, 400)]
+    assert calls["jump"] == [(10.5, 20.25), (0.0, 0.0)]
+
+
+def test_run_rotation_macro_90_no_click_when_not_calibrated(fake_cam350):
+    controller, calls = fake_cam350
+    controller._config_mgr.config.rotateButton = FakePoint(0, 0)
+
+    controller.run_origin_macro(10.5, 20.25, angle_deg=90)
+
+    assert calls["hotkey"] == [("ctrl", "alt", "x"), ("ctrl", "alt", "r")]
+    assert calls["click"] == []
+    assert calls["jump"] == [(10.5, 20.25), (0.0, 0.0)]
+
+
+def test_run_origin_macro_0_no_click_rotate_button(fake_cam350):
+    controller, calls = fake_cam350
+    controller._config_mgr.config.rotateButton = FakePoint(300, 400)
+
+    controller.run_origin_macro(10.5, 20.25, angle_deg=0)
+
+    assert calls["hotkey"] == [("ctrl", "alt", "x")]
+    assert calls["click"] == []
+    assert calls["jump"] == [(10.5, 20.25)]
 
 
 def test_run_rotation_macro_0_no_rotation(fake_cam350):

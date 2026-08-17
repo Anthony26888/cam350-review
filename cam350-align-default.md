@@ -707,6 +707,18 @@ Yfinal = Ynew - panel_origin[1]
   `board_origin[1].y = -74.3778` gần khớp `panel_origin.y`) sẽ có toạ
   độ Y gần 0.
 
+**Ưu tiên GKO khi GTP không khớp (STEP 3.9):** offset dò từ pad
+GTP/GBP (STEP 3B) chỉ được tin khi khớp gốc GKO trong ngưỡng
+`GKO_PRIORITY_TOL = 0.01mm` (`_apply_gko_priority`, `offset_applier.py`).
+Nếu lệch quá ngưỡng **và** khớp pad không đủ tin cậy (tỷ lệ
+`n_matched/n_total < 0.5` hoặc `median_residual > 0.5mm`), offset bị
+ghi đè bằng gốc GKO (`panel_origin` ở chế độ Panel Origin,
+`board_origin` ở chế độ Board Origin) → `new = orig`, tọa độ giữ nguyên
+theo file PickPlace nguồn, tránh dịch nhầm toàn hệ thống khi pad GTP
+lệch hệ thống so với outline (ví dụ thực tế lệch `(-1.1452, +2.54)mm`).
+Khi ghi đè, `AlignResult.gko_priority = True` và wizard hiển thị cảnh
+báo ở bước tổng kết.
+
 --------------------------------------------------
 ## 8. STEP 5 — Hỏi góc xoay Panel
 

@@ -2,6 +2,9 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 
+GKO_PRIORITY_TOL = 0.01
+
+
 def _layer_frame(layer: str) -> str:
     l = layer.strip().lower()
     return "bottom" if l in ("bottom", "bottomlayer") else "top"
@@ -77,8 +80,8 @@ def step6_rotate(
 
     if layer_norm in ("top", "toplayer"):
         if angle_deg == 90:
-            x2 = x
-            y2 = -(board_h - y)
+            x2 = board_h - y
+            y2 = x
             r2 = (r_orig + 90) % 360
         elif angle_deg == 180:
             x2 = board_w - x
@@ -92,9 +95,9 @@ def step6_rotate(
             return
     elif layer_norm in ("bottom", "bottomlayer"):
         if angle_deg == 90:
-            x2 = x
-            y2 = y
-            r2 = r_orig
+            x2 = y
+            y2 = x
+            r2 = (r_orig - 90) % 360
         elif angle_deg == 180:
             x2 = board_w - x
             y2 = board_h - y
@@ -129,6 +132,34 @@ def step7_mirror_bottom(
         comp.new_rotation = comp.orig_rotation
 
 
+def _apply_gko_priority(
+    result,
+    ref_origin: Tuple[float, float],
+) -> bool:
+    """Ưu tiên gốc từ GKO khi offset khớp pad (GTP) mâu thuẫn với nó.
+
+    GTP chỉ được tin khi khớp gốc GKO trong ngưỡng GKO_PRIORITY_TOL mm.
+    Nếu lệch quá ngưỡng và khớp pad không đủ tin cậy (tỷ lệ match thấp
+    hoặc residual cao), ghi đè offset bằng gốc GKO để tọa độ component
+    giữ nguyên (new = orig), tránh dịch nhầm toàn hệ thống.
+    """
+    offset = (result.offset_x, result.offset_y)
+    delta = math.hypot(offset[0] - ref_origin[0], offset[1] - ref_origin[1])
+    if delta <= GKO_PRIORITY_TOL:
+        return False
+
+    n_total = result.n_total or 0
+    match_ratio = (result.n_matched / n_total) if n_total else 0.0
+    unreliable = match_ratio < 0.5 or result.median_residual > 0.5
+    if not unreliable:
+        return False
+
+    result.offset_x = ref_origin[0]
+    result.offset_y = ref_origin[1]
+    result.gko_priority = True
+    return True
+
+
 def apply_all_transforms(
     components: List[ComponentTransform],
     panel_info,
@@ -154,6 +185,12 @@ def apply_all_transforms(
         instance = panel_info.instances[k] if k < len(panel_info.instances) else None
         if instance is None:
             continue
+
+        # STEP 3.9: Ưu tiên gốc GKO khi offset khớp pad (GTP) mâu thuẫn
+        ref_origin = (
+            panel_info.panel_origin if origin_mode == 'panel' else instance.origin
+        )
+        _apply_gko_priority(result, ref_origin)
 
         # STEP 4: Apply offset + rotation
         step4_apply_offset(comp, result.offset_x, result.offset_y, result.rotation_angle)

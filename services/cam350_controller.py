@@ -200,10 +200,14 @@ class Cam350Controller:
         )
 
     def run_origin_macro(self, origin_x: float, origin_y: float, layer: str = "top", angle_deg: int = 0) -> tuple:
-        """Align-origin macro (Step 5). When angle_deg == 90 the board is first
-        rotated 90° (Ctrl+Alt+R); for 'bottom' Ctrl+Alt+B is pressed first to
-        view the Bottom layer, then Ctrl+Alt+X reveals the Space Origin marker,
-        CAM350 is jumped to the given origin (in mm) and confirmed with Enter.
+        """Align-origin macro (Step 5). For angle_deg == 90 the Bottom layer is
+        shown first (Ctrl+Alt+B) when 'bottom', then the Space Origin marker is
+        revealed (Ctrl+Alt+X) and CAM350 is jumped to the given origin (in mm)
+        and confirmed with Enter; then the board is rotated 90° (Ctrl+Alt+R),
+        the rotation-confirm button is clicked if calibrated, CAM350 is jumped
+        back to (0, 0) and the dialog is closed with Esc. For angle_deg == 0 the
+        board is jumped straight to the origin and confirmed with Enter
+        (Ctrl+Alt+B first for 'bottom').
         Returns (origin_x, origin_y)."""
         config = self._config_mgr.config
         if not config.xTextbox.x or not config.yTextbox.x:
@@ -215,20 +219,41 @@ class Cam350Controller:
         time.sleep(0.2)
 
         try:
-            if layer == "bottom":
-                pyautogui.hotkey("ctrl", "alt", "b")
+            if angle_deg == 90:
+                # Space Origin is placed before the 90° rotation, then the board
+                # is rotated and CAM350 returns to the origin and closes with Esc.
+                if layer == "bottom":
+                    pyautogui.hotkey("ctrl", "alt", "b")
+                    time.sleep(0.5)
+
+                pyautogui.hotkey("ctrl", "alt", "x")
                 time.sleep(0.5)
 
-            if angle_deg == 90:
+                self.jump_to(origin_x, origin_y)
+                time.sleep(1.0)
+                pyautogui.press("enter")
+                time.sleep(0.3)
+
                 pyautogui.hotkey("ctrl", "alt", "r")
                 time.sleep(0.5)
+                if config.rotateButton.x or config.rotateButton.y:
+                    pyautogui.click(config.rotateButton.x, config.rotateButton.y)
+                    time.sleep(0.3)
 
-            pyautogui.hotkey("ctrl", "alt", "x")
-            time.sleep(0.5)
+                self.jump_to(0.0, 0.0)
+                time.sleep(1.0)
+                pyautogui.press("esc")
+            else:
+                if layer == "bottom":
+                    pyautogui.hotkey("ctrl", "alt", "b")
+                    time.sleep(0.5)
 
-            self.jump_to(origin_x, origin_y)
-            time.sleep(1.0)
-            pyautogui.press("enter")
+                pyautogui.hotkey("ctrl", "alt", "x")
+                time.sleep(0.5)
+
+                self.jump_to(origin_x, origin_y)
+                time.sleep(1.0)
+                pyautogui.press("enter")
         finally:
             self._release_modifiers()
 

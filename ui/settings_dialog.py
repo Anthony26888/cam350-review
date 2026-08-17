@@ -56,6 +56,9 @@ class SettingsDialog(QDialog):
         self._lbl_goto = QLabel("(0, 0)")
         config_layout.addRow(tr("Go Button:"), self._lbl_goto)
 
+        self._lbl_rotate = QLabel("(0, 0)")
+        config_layout.addRow(tr("Rotate Button:"), self._lbl_rotate)
+
         layout.addWidget(config_group)
 
         actions_group = QGroupBox(tr("Actions"))
@@ -98,6 +101,7 @@ class SettingsDialog(QDialog):
         self._lbl_x.setText(f"({cfg.xTextbox.x}, {cfg.xTextbox.y})")
         self._lbl_y.setText(f"({cfg.yTextbox.x}, {cfg.yTextbox.y})")
         self._lbl_goto.setText(f"({cfg.gotoButton.x}, {cfg.gotoButton.y})")
+        self._lbl_rotate.setText(f"({cfg.rotateButton.x}, {cfg.rotateButton.y})")
 
     @staticmethod
     def _set_combo_data(combo: QComboBox, value: str) -> None:

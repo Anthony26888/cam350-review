@@ -19,7 +19,7 @@ class CalibrationWizard(QWidget):
         super().__init__(parent)
         self._config_mgr = ConfigManager.instance()
         self._step_index: int = 0
-        self._positions: list = [Point(), Point()]
+        self._positions: list = [Point(), Point(), Point()]
         self._window_title: str = ""
         self._countdown: int = 0
 
@@ -115,28 +115,35 @@ class CalibrationWizard(QWidget):
         self._lbl_countdown.setVisible(False)
         self._btn_capture.setEnabled(True)
 
-        if step >= 3:
+        if step >= 4:
             self._finish()
             return
 
-        if step < 2:
-            name, instruction = [
-                (tr("X Textbox"), tr("1. Move mouse over CAM350 X textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved")),
-                (tr("Y Textbox"), tr("1. Move mouse over CAM350 Y textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved")),
+        if step < 3:
+            name, instruction, seconds = [
+                (tr("X Textbox"),
+                 tr("1. Move mouse over CAM350 X textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved"),
+                 3),
+                (tr("Y Textbox"),
+                 tr("1. Move mouse over CAM350 Y textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved"),
+                 3),
+                (tr("Rotate Button"),
+                 tr("1. Rotate the board 90° in CAM350 and move mouse over the rotation-confirm button\n2. Click 'Start Capture'\n3. Wait 10 seconds - position auto-saved"),
+                 10),
             ][step]
-            self._lbl_title.setText(tr("Step {step} of 3: {name}", step=step + 1, name=name))
+            self._lbl_title.setText(tr("Step {step} of 4: {name}", step=step + 1, name=name))
             self._lbl_instruction.setText(instruction)
-            self._btn_capture.setText(tr("Start Capture (3s countdown)"))
+            self._btn_capture.setText(tr("Start Capture ({n}s countdown)", n=seconds))
         else:
-            self._lbl_title.setText(tr("Step 3 of 3: CAM350 Window"))
+            self._lbl_title.setText(tr("Step 4 of 4: CAM350 Window"))
             self._lbl_instruction.setText(tr("Activate CAM350 window, then click 'Detect', or type window title manually:"))
 
         self._refresh_status()
         self._btn_capture.setVisible(True)
-        self._btn_skip.setVisible(step < 2)
-        self._btn_save.setVisible(step == 2)
+        self._btn_skip.setVisible(step < 3)
+        self._btn_save.setVisible(step == 3)
 
-        is_window_step = (step == 2)
+        is_window_step = (step == 3)
         self._lbl_window_title.setVisible(is_window_step)
         self._txt_window_title.setVisible(is_window_step)
         self._btn_detect_title.setVisible(is_window_step)
@@ -146,29 +153,32 @@ class CalibrationWizard(QWidget):
 
     def _refresh_status(self) -> None:
         lines = []
-        for i in range(2):
+        for i in range(3):
             pos = self._positions[i]
             if pos.x or pos.y:
-                label = tr("X Textbox") if i == 0 else tr("Y Textbox")
+                label = ["X Textbox", "Y Textbox", "Rotate Button"][i]
                 lines.append(tr("✓ {label}: ({x}, {y})", label=label, x=pos.x, y=pos.y))
         if self._window_title:
             lines.append(tr("✓ Window: {title}", title=self._window_title))
-        if self._step_index < 2:
+        if self._step_index < 3:
             pos = self._positions[self._step_index]
             if not pos.x and not pos.y:
-                label = tr("X Textbox") if self._step_index == 0 else tr("Y Textbox")
+                label = ["X Textbox", "Y Textbox", "Rotate Button"][self._step_index]
                 lines.append(tr("? {label}: not set", label=label))
-        elif self._step_index == 2 and not self._window_title:
+        elif self._step_index == 3 and not self._window_title:
             lines.append(tr("? Window title: not set"))
 
         self._lbl_position.setText("\n".join(lines) if lines else tr("No positions captured yet."))
 
+    def _countdown_seconds(self) -> int:
+        return 10 if self._step_index == 2 else 3
+
     def _start_countdown(self) -> None:
-        self._countdown = 3
+        self._countdown = self._countdown_seconds()
         self._lbl_countdown.setText(str(self._countdown))
         self._lbl_countdown.setVisible(True)
         self._btn_capture.setEnabled(False)
-        self._btn_capture.setText(tr("Capturing in 3s..."))
+        self._btn_capture.setText(tr("Capturing in {n}s...", n=self._countdown))
         self._countdown_timer.start(1000)
 
     def _tick_countdown(self) -> None:
@@ -217,6 +227,7 @@ class CalibrationWizard(QWidget):
             windowTitle=self._window_title,
             xTextbox=self._positions[0],
             yTextbox=self._positions[1],
+            rotateButton=self._positions[2],
             delay=self._delay_spin.value(),
         )
         QMessageBox.information(self, tr("Success"), tr("Calibration saved successfully."))

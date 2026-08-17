@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Callable
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QMessageBox, QProgressBar, QGroupBox,
-    QFormLayout, QRadioButton, QButtonGroup, QCheckBox,
+    QFormLayout, QRadioButton, QButtonGroup,
     QTextEdit, QWidget, QApplication,
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -23,6 +23,7 @@ from services.gerber.panel_detector import detect_panel, PanelInfo
 from services.gerber.origin_aligner import AlignResult, align_instance
 from services.gerber.offset_applier import (
     ComponentTransform, apply_all_transforms, round_coord, _layer_frame,
+    GKO_PRIORITY_TOL,
 )
 
 
@@ -435,12 +436,14 @@ class OriginAlignWizard(QDialog):
 
         self._rot_layer_group = QGroupBox(tr("Select layer to apply 90° rotation formula"))
         layer_layout = QVBoxLayout(self._rot_layer_group)
-        self._chk_rot_top = QCheckBox(tr("Top layer - 90° formula: (x, -(H-y))"))
-        self._chk_rot_top.setChecked(True)
-        self._chk_rot_bottom = QCheckBox(tr("Bottom layer - 90° formula: (x, y)"))
-        self._chk_rot_bottom.setChecked(False)
-        layer_layout.addWidget(self._chk_rot_top)
-        layer_layout.addWidget(self._chk_rot_bottom)
+        self._rb_rot_top = QRadioButton(tr("Top layer - 90° formula: (H-y, x)"))
+        self._rb_rot_bottom = QRadioButton(tr("Bottom layer - 90° formula: (y, x)"))
+        self._rot_layer_btns = QButtonGroup(self)
+        self._rot_layer_btns.addButton(self._rb_rot_top)
+        self._rot_layer_btns.addButton(self._rb_rot_bottom)
+        self._rb_rot_top.setChecked(True)
+        layer_layout.addWidget(self._rb_rot_top)
+        layer_layout.addWidget(self._rb_rot_bottom)
         self._content_area.addWidget(self._rot_layer_group)
 
         def _toggle_rot_layers(checked: bool) -> None:
@@ -750,6 +753,10 @@ class OriginAlignWizard(QDialog):
                 lines.append(tr("  [{layer}] Offset Rotation: {v:.0f}°", layer=layer_label, v=r.rotation_angle))
                 lines.append(tr("  [{layer}] Matched: {m}/{total}, Residual: {r:.6f} mm",
                                 layer=layer_label, m=r.n_matched, total=r.n_total, r=r.median_residual))
+                if r.gko_priority:
+                    lines.append(tr("  [{layer}] WARNING: pad offset (GTP) lệch gốc GKO > {tol} mm; "
+                                    "đã ưu tiên GKO — tọa độ giữ nguyên theo file nguồn.",
+                                    layer=layer_label, tol=GKO_PRIORITY_TOL))
             lines.append(f"")
 
         total_unmodified = sum(
@@ -822,9 +829,9 @@ class OriginAlignWizard(QDialog):
         elif self._step_index == 2:
             self._chosen_rotation_angle = self._rot_group.checkedId() if self._rot_group else 0
             self._chosen_mil_to_mm = self._rb_unit_mil.isChecked()
-            if getattr(self, "_chk_rot_top", None) is not None:
-                self._chosen_rot_layers["top"] = self._chk_rot_top.isChecked()
-                self._chosen_rot_layers["bottom"] = self._chk_rot_bottom.isChecked()
+            if getattr(self, "_rb_rot_top", None) is not None:
+                self._chosen_rot_layers["top"] = self._rb_rot_top.isChecked()
+                self._chosen_rot_layers["bottom"] = self._rb_rot_bottom.isChecked()
             self._show_step(3)
             return
         elif self._step_index == 3:

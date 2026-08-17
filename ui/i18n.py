@@ -199,6 +199,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "X Textbox:": "Ô X:",
         "Y Textbox:": "Ô Y:",
         "Go Button:": "Nút Go:",
+        "Rotate Button:": "Nút xoay 90°:",
         "Theme:": "Giao diện:",
         "Light": "Sáng",
         "Dark": "Tối",
@@ -224,19 +225,20 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Delay Settings": "Cài đặt độ trễ",
         "Jump delay:": "Độ trễ nhảy:",
         " ms": " ms",
-        "Start Capture (3s countdown)": "Bắt đầu thu (đếm ngược 3s)",
+        "Start Capture ({n}s countdown)": "Bắt đầu thu (đếm ngược {n}s)",
         "Skip": "Bỏ qua",
         "Save && Close": "Lưu && Đóng",
         "Window title:": "Tiêu đề cửa sổ:",
         "e.g. CAM350 V15": "VD: CAM350 V15",
         "Detect": "Phát hiện",
         "No positions captured yet.": "Chưa có vị trí nào được thu.",
-        "Step {step} of 3: {name}": "Bước {step} trong 3: {name}",
-        "Step 3 of 3: CAM350 Window": "Bước 3/3: Cửa sổ CAM350",
+        "Step {step} of 4: {name}": "Bước {step} trong 4: {name}",
+        "Step 4 of 4: CAM350 Window": "Bước 4/4: Cửa sổ CAM350",
         "Activate CAM350 window, then click 'Detect', or type window title manually:":
             "Kích hoạt cửa sổ CAM350, rồi bấm 'Detect', hoặc gõ tiêu đề cửa sổ bằng tay:",
         "X Textbox": "Ô X",
         "Y Textbox": "Ô Y",
+        "Rotate Button": "Nút xoay 90°",
         "✓ {label}: ({x}, {y})": "✓ {label}: ({x}, {y})",
         "✓ Window: {title}": "✓ Cửa sổ: {title}",
         "? {label}: not set": "? {label}: chưa đặt",
@@ -245,7 +247,8 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "1. Di chuyển chuột lên ô X của CAM350\n2. Bấm 'Start Capture'\n3. Chờ 3 giây - vị trí sẽ tự động lưu",
         "1. Move mouse over CAM350 Y textbox\n2. Click 'Start Capture'\n3. Wait 3 seconds - position auto-saved":
             "1. Di chuyển chuột lên ô Y của CAM350\n2. Bấm 'Start Capture'\n3. Chờ 3 giây - vị trí sẽ tự động lưu",
-        "Capturing in 3s...": "Đang thu trong 3s...",
+        "1. Rotate the board 90° in CAM350 and move mouse over the rotation-confirm button\n2. Click 'Start Capture'\n3. Wait 10 seconds - position auto-saved":
+            "1. Xoay board 90° trong CAM350 và di chuột lên nút xác nhận xoay\n2. Bấm 'Start Capture'\n3. Chờ 10 giây - vị trí sẽ tự động lưu",
         "Capturing in {n}s...": "Đang thu trong {n}s...",
         "No active window detected.": "Không phát hiện cửa sổ hoạt động.",
         "Calibration Complete": "Hoàn tất hiệu chuẩn",
@@ -305,8 +308,8 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Rotate Panel/Board": "Xoay Panel/Board",
         "0° (no rotation) - default": "0° (không xoay) - mặc định",
         "Select layer to apply 90° rotation formula": "Chọn lớp để áp công thức xoay 90°",
-        "Top layer - 90° formula: (x, -(H-y))": "Lớp trên - công thức 90°: (x, -(H-y))",
-        "Bottom layer - 90° formula: (x, y)": "Lớp dưới - công thức 90°: (x, y)",
+        "Top layer - 90° formula: (H-y, x)": "Lớp trên - công thức 90°: (H-y, x)",
+        "Bottom layer - 90° formula: (y, x)": "Lớp dưới - công thức 90°: (y, x)",
         "PickPlace coordinate units": "Đơn vị toạ độ PickPlace",
         "mm (millimeters) - default": "mm (milimét) - mặc định",
         "mil (convert to mm: * 0.0254)": "mil (đổi sang mm: * 0.0254)",
@@ -372,6 +375,10 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "  [{layer}] Offset Rotation: {v:.0f}°": "  [{layer}] Offset rotation: {v:.0f}°",
         "  [{layer}] Matched: {m}/{total}, Residual: {r:.6f} mm":
             "  [{layer}] Khớp: {m}/{total}, Sai số còn lại: {r:.6f} mm",
+        "  [{layer}] WARNING: pad offset (GTP) lệch gốc GKO > {tol} mm; "
+        "đã ưu tiên GKO — tọa độ giữ nguyên theo file nguồn.":
+            "  [{layer}] CẢNH BÁO: offset pad (GTP) lệch gốc GKO > {tol} mm; "
+            "đã ưu tiên GKO — tọa độ giữ nguyên theo file nguồn.",
         "Combined": "Kết hợp",
         "Total components: {count}": "Tổng linh kiện: {count}",
         "Aligned: {count}": "Đã canh: {count}",

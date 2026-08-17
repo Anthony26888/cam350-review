@@ -34,6 +34,7 @@ class AppConfig:
     xTextbox: Point = field(default_factory=Point)
     yTextbox: Point = field(default_factory=Point)
     gotoButton: Point = field(default_factory=Point)
+    rotateButton: Point = field(default_factory=Point)
     delay: int = 150
     lastFile: str = ""
     lastReviewId: int = 0
@@ -56,6 +57,7 @@ class AppConfig:
             "xTextbox": self.xTextbox.to_dict(),
             "yTextbox": self.yTextbox.to_dict(),
             "gotoButton": self.gotoButton.to_dict(),
+            "rotateButton": self.rotateButton.to_dict(),
             "delay": self.delay,
             "lastFile": self.lastFile,
             "lastReviewId": self.lastReviewId,
@@ -80,6 +82,7 @@ class AppConfig:
             xTextbox=Point.from_dict(data.get("xTextbox", {})),
             yTextbox=Point.from_dict(data.get("yTextbox", {})),
             gotoButton=Point.from_dict(data.get("gotoButton", {})),
+            rotateButton=Point.from_dict(data.get("rotateButton", {})),
             delay=data.get("delay", 150),
             lastFile=data.get("lastFile", ""),
             lastReviewId=data.get("lastReviewId", 0),
