@@ -1,27 +1,33 @@
 import math
 import os
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QPoint, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QPolygonF,
-    QWheelEvent, QFont, QTransform, QPixmap, QMouseEvent, QIcon,
+    QWheelEvent, QFont, QFontMetricsF, QTransform, QPixmap, QMouseEvent, QIcon,
 )
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGraphicsView, QGraphicsScene, QGraphicsItem, QComboBox,
+    QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsPathItem,
+    QComboBox,
     QCheckBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QDoubleSpinBox, QSpinBox, QWidget, QDialog,
-    QSizePolicy, QFrame, QFileDialog,
+    QSizePolicy, QFrame, QColorDialog, QGridLayout, QMenu,
+    QProgressBar, QApplication,
 )
 
 from models.review import ReviewRecord
 from ui.i18n import tr
+from ui.rotation_edit_dialog import RotationEditDialog
 from services.gerber.gerber_render import (
     RenderData, LineShape, ArcShape, FlashShape, parse_render,
 )
 from services.gerber.gerber_render_lib import parse_layer
-from services.gerber.gerber_transform import apply_transform, transform_rot
+from services.gerber.gerber_transform import (
+    apply_transform, apply_inverse_transform, transform_rot,
+)
 from utils.path_utils import resource_path
 
 OUTLINE_COLOR = QColor("#F8FAFC")
@@ -30,11 +36,41 @@ BOTTOM_PASTE_COLOR = QColor(251, 191, 36, 210)
 SILK_COLOR = QColor(240, 171, 252, 220)
 CROSS_COLOR = QColor("#EF4444")
 HIGHLIGHT_COLOR = QColor("#39FF14")
+CHECKED_COLOR = QColor("#22C55E")
+GRID_COLOR = QColor(100, 116, 139, 160)
 BACKGROUND = QColor("#0B1220")
+MEASURE_COLOR = QColor("#38BDF8")
 
 _CROSS_BOARD_RATIO = 0.01
 _MIN_ARROW_PX = 10.0
 _MIN_ARROW_WING_RATIO = 0.3
+
+_ICON_CHECKED: Optional[QIcon] = None
+_ICON_UNCHECKED: Optional[QIcon] = None
+
+
+def _build_status_icon(checked: bool) -> QIcon:
+    pm = QPixmap(16, 16)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    if checked:
+        pen = QPen(QColor("#22C55E"), 2.2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(3.0, 8.5)
+        path.lineTo(6.5, 12.0)
+        path.lineTo(13.0, 4.0)
+        p.drawPath(path)
+    else:
+        p.setBrush(QColor("#F97316"))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(4.0, 4.0, 8.0, 8.0)
+    p.end()
+    return QIcon(pm)
 
 
 def _layer_key(layer: str) -> str:
@@ -91,6 +127,44 @@ def _nearest_pad_size(pads_raw, x: float, y: float) -> Optional[float]:
     return best
 
 
+class PadGrid:
+    """Spatial hash for nearest-pad queries.
+
+    Pads are bucketed into a uniform grid; a query scans only the cells that
+    can possibly contain a pad within its tolerance (max(1, size)), turning
+    the per-record linear scan (O(n)) into a near-constant lookup.
+    """
+
+    _CELL = 5.0
+
+    def __init__(self, pads: List[Tuple[float, float, float]]) -> None:
+        self._max_tol = 1.0
+        for _px, _py, size in pads:
+            tol = max(1.0, size)
+            if tol > self._max_tol:
+                self._max_tol = tol
+        self._radius = max(1, int(math.ceil(self._max_tol / self._CELL)))
+        self._cells: Dict[Tuple[int, int], List[Tuple[float, float, float]]] = {}
+        for px, py, size in pads:
+            key = (int(px // self._CELL), int(py // self._CELL))
+            self._cells.setdefault(key, []).append((px, py, size))
+
+    def nearest(self, x: float, y: float) -> Optional[float]:
+        best: Optional[float] = None
+        best_d: Optional[float] = None
+        cx, cy = int(x // self._CELL), int(y // self._CELL)
+        r = self._radius
+        for i in range(cx - r, cx + r + 1):
+            for j in range(cy - r, cy + r + 1):
+                for px, py, size in self._cells.get((i, j), ()):
+                    d = math.hypot(px - x, py - y)
+                    tol = max(1.0, size)
+                    if d <= tol and (best_d is None or d < best_d):
+                        best_d = d
+                        best = size
+        return best
+
+
 def _crosshair_half(size: Optional[float], fallback: float) -> float:
     if size is None:
         return fallback
@@ -99,6 +173,7 @@ def _crosshair_half(size: Optional[float], fallback: float) -> float:
 
 _MAG_FACTOR = 6.0
 _MAG_FACTORS = (3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 25.0)
+_ROT_EDIT_MAG_FACTOR = 20.0   # zoom level while editing rotation
 _MAG_MIN_SCALE = 1.0
 
 
@@ -186,7 +261,7 @@ def _add_flash(
             lx2, ly2 = _t_loc(x2, y2)
             ang = math.atan2(ly2 - ly1, lx2 - lx1)
             n2 = width / 2.0
-            dx, dy = math.cos(ang) * n2, math.sin(ang) * n2
+            dx, dy = -math.sin(ang) * n2, math.cos(ang) * n2
             quad = [
                 QPointF(gx + lx1 + dx, -gy - ly1 - dy),
                 QPointF(gx + lx1 - dx, -gy - ly1 + dy),
@@ -358,13 +433,29 @@ class MarkerOverlayItem(QGraphicsItem):
 
     def __init__(self, markers: List[Tuple[float, float, float, float]],
                  show_unselected: bool = True, arrow_floor: float = 0.0,
-                 arrow_min_px: float = _MIN_ARROW_PX, parent=None) -> None:
+                 arrow_min_px: float = _MIN_ARROW_PX,
+                 cross_color: Optional[QColor] = None,
+                 highlight_color: Optional[QColor] = None,
+                 checked_color: Optional[QColor] = None,
+                 checked_indices=None,
+                 flagged_indices=None,
+                 flag_color: Optional[QColor] = None,
+                 show_frame: bool = True, parent=None) -> None:
         super().__init__(parent)
         self._markers = markers  # (x, -y, rot_deg, half)
         self._show_unselected = show_unselected
-        self._selected = -1
+        self._selected_indices: set = set()
+        self._checked_indices: set = set(checked_indices or ())
+        self._flagged_indices: set = set(flagged_indices or ())
         self._arrow_floor = arrow_floor
         self._arrow_min_px = arrow_min_px
+        self._cross_color = cross_color if cross_color is not None else CROSS_COLOR
+        self._highlight_color = highlight_color if highlight_color is not None else HIGHLIGHT_COLOR
+        self._checked_color = checked_color if checked_color is not None else CHECKED_COLOR
+        self._flag_color = flag_color if flag_color is not None else QColor("#F59E0B")
+        self._show_frame = show_frame
+        # Expose option.exposedRect so paint() can skip off-screen markers
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
         self._rect = self._compute_rect()
         self._build_geom()
 
@@ -392,8 +483,25 @@ class MarkerOverlayItem(QGraphicsItem):
             self._cross[h] = cross
 
     def set_selected(self, index: int) -> None:
-        if index != self._selected:
-            self._selected = index
+        indices = {index} if index >= 0 else set()
+        self.set_selected_indices(indices)
+
+    def set_selected_indices(self, indices) -> None:
+        selected = set(indices)
+        if selected != self._selected_indices:
+            self._selected_indices = selected
+            self.update()
+
+    def set_checked_indices(self, indices) -> None:
+        checked = set(indices)
+        if checked != self._checked_indices:
+            self._checked_indices = checked
+            self.update()
+
+    def set_flagged_indices(self, indices) -> None:
+        flagged = set(indices)
+        if flagged != self._flagged_indices:
+            self._flagged_indices = flagged
             self.update()
 
     def set_markers(self, markers: List[Tuple[float, float, float, float]]) -> None:
@@ -405,12 +513,25 @@ class MarkerOverlayItem(QGraphicsItem):
     def boundingRect(self) -> QRectF:
         return self._rect
 
+    @staticmethod
+    def _outside_exposed(mx: float, my: float, radius: float,
+                         exposed) -> bool:
+        """True when a marker (plus its arrow/frame extent) cannot intersect
+        the exposed viewport rect — lets paint() skip it entirely."""
+        if exposed is None:
+            return False
+        return (mx + radius < exposed.left()
+                or mx - radius > exposed.right()
+                or my + radius < exposed.top()
+                or my - radius > exposed.bottom())
+
     def paint(self, painter: QPainter, option=None, widget=None) -> None:
         if not self._markers:
             return
         pen = QPen(QColor(Qt.black), 2.5)
         pen.setCosmetic(True)
-        selected = self._selected
+        selected_indices = self._selected_indices
+        exposed = getattr(option, "exposedRect", None)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         scale = abs(painter.worldTransform().m11())
@@ -419,13 +540,21 @@ class MarkerOverlayItem(QGraphicsItem):
         min_len = self._arrow_min_px / scale
         min_wing = self._arrow_min_px * _MIN_ARROW_WING_RATIO / scale
         for i, (mx, my, rot, half) in enumerate(self._markers):
-            is_selected = (i == selected)
+            is_selected = i in selected_indices
             if not self._show_unselected and not is_selected:
                 continue
-            color = HIGHLIGHT_COLOR if is_selected else CROSS_COLOR
+            if i in self._checked_indices:
+                color = self._checked_color
+            else:
+                color = self._highlight_color if is_selected else self._cross_color
             alen = max(0.4 * half, min_len)
             tip = half + alen
             wing = min(max(0.25 * half, min_wing), alen)
+            # Cull markers whose whole glyph lies outside the exposed rect
+            ext = half * 1.85 if self._show_frame else 0.0
+            radius = (tip if tip > ext else ext) + 1.5
+            if self._outside_exposed(mx, my, radius, exposed):
+                continue
             arrow = QPolygonF([
                 QPointF(-tip, 0.0),
                 QPointF(-half, -wing),
@@ -433,33 +562,129 @@ class MarkerOverlayItem(QGraphicsItem):
             ])
             painter.save()
             painter.translate(mx, my)
-            if is_selected:
+            if i in self._flagged_indices:
+                hal = half * 1.15
+                painter.setBrush(Qt.NoBrush)
+                flag_pen = QPen(self._flag_color, 1.6)
+                flag_pen.setCosmetic(True)
+                flag_pen.setStyle(Qt.DashLine)
+                painter.setPen(flag_pen)
+                painter.drawRect(QRectF(-hal, -hal, 2 * hal, 2 * hal))
+            if is_selected and self._show_frame:
                 hal = half * 1.8
                 painter.setBrush(Qt.NoBrush)
-                frame_pen = QPen(HIGHLIGHT_COLOR, 1.5)
+                frame_pen = QPen(self._highlight_color, 1.5)
                 frame_pen.setCosmetic(True)
                 painter.setPen(frame_pen)
                 painter.drawRect(QRectF(-hal, -hal, 2 * hal, 2 * hal))
-                painter.rotate(-rot)
-                pen.setColor(color)
-                pen.setWidthF(3.0)
-                painter.setPen(pen)
-                painter.drawPath(self._cross[half])
-                painter.setBrush(color)
-                painter.setPen(Qt.NoPen)
-                painter.drawPolygon(arrow)
-                painter.setBrush(Qt.NoBrush)
-            else:
-                painter.rotate(-rot)
-                pen.setColor(color)
-                pen.setWidthF(2.5)
-                painter.setPen(pen)
-                painter.setBrush(Qt.NoBrush)
-                painter.drawPath(self._cross[half])
-                painter.setBrush(color)
-                painter.setPen(Qt.NoPen)
-                painter.drawPolygon(arrow)
+            painter.rotate(-rot)
+            pen.setColor(color)
+            pen.setWidthF(3.0 if is_selected else 2.5)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(self._cross[half])
+            painter.setBrush(color)
+            painter.setPen(Qt.NoPen)
+            painter.drawPolygon(arrow)
+            painter.setBrush(Qt.NoBrush)
             painter.restore()
+        painter.restore()
+
+
+class MeasurementItem(QGraphicsItem):
+    """Dimension annotation: line + end ticks + a mm distance label.
+
+    The end ticks scale with the view so they stay a fixed number of pixels,
+    and the label is drawn in device pixels at the midpoint so its text stays
+    readable at any zoom.
+    """
+
+    _TICK_PX = 6.0
+    _LABEL_PX = 13
+    _GAP_PX = 4.0
+    _HALO_PADDING = 3.0
+
+    def __init__(self, p1: QPointF, p2: QPointF, dist_mm: float,
+                 color: QColor, parent=None) -> None:
+        super().__init__(parent)
+        self._p1 = QPointF(p1)
+        self._p2 = QPointF(p2)
+        self._dist = dist_mm
+        self._color = QColor(color)
+        self._rect = self._compute_rect()
+        self.setZValue(80)
+        self.setToolTip(tr("Distance: {d:.3f} mm", d=dist_mm))
+
+    def _compute_rect(self) -> QRectF:
+        rect = QRectF(self._p1, self._p2).normalized()
+        span = max(rect.width(), rect.height())
+        # The label is drawn in device pixels, so at low zoom its extent in
+        # scene units is huge. Pad generously so boundingRect always covers it.
+        pad = max(span * 0.5, 3000.0)
+        return rect.adjusted(-pad, -pad, pad, pad)
+
+    def boundingRect(self) -> QRectF:
+        return self._rect
+
+    def paint(self, painter: QPainter, option=None, widget=None) -> None:
+        scale = abs(painter.worldTransform().m11())
+        if scale <= 0.0:
+            scale = 1.0
+        tick = self._TICK_PX / scale
+
+        pen = QPen(self._color, 2.0)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(self._p1, self._p2)
+
+        dx = self._p2.x() - self._p1.x()
+        dy = self._p2.y() - self._p1.y()
+        length = math.hypot(dx, dy)
+        if length > 1e-9:
+            px, py = -dy / length, dx / length
+            for p in (self._p1, self._p2):
+                painter.drawLine(
+                    p.x() - px * tick, p.y() - py * tick,
+                    p.x() + px * tick, p.y() + py * tick,
+                )
+        else:
+            px, py = 1.0, 0.0
+            painter.drawLine(self._p1.x() - tick, self._p1.y(),
+                             self._p1.x() + tick, self._p1.y())
+
+        mid = QPointF((self._p1.x() + self._p2.x()) / 2.0,
+                      (self._p1.y() + self._p2.y()) / 2.0)
+        if length <= 1e-9:
+            ox, oy = 0.0, -1.0
+        elif abs(dy) > abs(dx):
+            ox, oy = 1.0, 0.0
+        else:
+            ox, oy = 0.0, -1.0
+        gap = self._GAP_PX / scale
+        label_scene = mid + QPointF(ox * gap, oy * gap)
+
+        screen = painter.worldTransform().map(label_scene)
+        text = tr("{d:.3f} mm", d=self._dist)
+        font = QFont()
+        font.setPixelSize(self._LABEL_PX)
+        painter.save()
+        painter.resetTransform()
+        painter.translate(screen.x(), screen.y())
+        painter.setFont(font)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        fm = QFontMetricsF(font)
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        halo_p = self._HALO_PADDING
+        rect = QRectF(-tw / 2.0 - halo_p, -th / 2.0 - halo_p,
+                      tw + 2 * halo_p, th + 2 * halo_p)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(11, 18, 32, 200))
+        painter.drawRoundedRect(rect, 3.0, 3.0)
+        painter.setPen(QPen(self._color, 1.0))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawText(rect, Qt.AlignCenter, text)
         painter.restore()
 
 
@@ -497,18 +722,27 @@ class GerberView(QGraphicsView):
     cursor_moved = Signal(float, float)
     cursor_left = Signal()
     zoom_end = Signal()
+    grid_cell_clicked = Signal(float, float)
+    measure_clicked = Signal(float, float)
+    measure_cancel = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setBackgroundBrush(BACKGROUND)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setDragMode(QGraphicsView.NoDrag)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setMouseTracking(True)
+        # Large-gerber smoothness: cheaper rasterization paths
+        self.setOptimizationFlags(
+            QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing
+            | QGraphicsView.OptimizationFlag.DontSavePainterState
+        )
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
 
-        self._drag_pixmap: Optional[QPixmap] = None
-        self._drag_start: Optional[QPoint] = None
-        self._drag_delta: QPoint = QPoint(0, 0)
+        self._panning = False
+        self._grid_active = False
+        self._measure_mode = False
 
         self._fast_render = False
         self._fast_timer: Optional[QTimer] = None
@@ -518,10 +752,15 @@ class GerberView(QGraphicsView):
         self._zoom_anchor: QPoint = QPoint(0, 0)
         self._zoom_active = False
 
+        # Pan gesture: blit a frozen snapshot instead of scrolling the scene
+        self._pan_pixmap: Optional[QPixmap] = None
+        self._pan_offset = QPoint(0, 0)
+
     def _set_fast_render(self) -> None:
         if self._fast_render:
             return
         self._fast_render = True
+        self.setRenderHint(QPainter.Antialiasing, False)
         self.setRenderHint(QPainter.SmoothPixmapTransform, False)
 
     def _restore_smooth_render(self) -> None:
@@ -529,6 +768,7 @@ class GerberView(QGraphicsView):
             return
         self._fast_render = False
         self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self.setRenderHint(QPainter.Antialiasing, True)
         if self._zoom_pixmap is not None and self._zoom_ratio != 1.0:
             self.scale(self._zoom_ratio, self._zoom_ratio)
         self._zoom_pixmap = None
@@ -547,6 +787,9 @@ class GerberView(QGraphicsView):
         self._fast_timer.start()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        if self._grid_active:
+            event.ignore()
+            return
         self._set_fast_render()
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
         if self._zoom_pixmap is None:
@@ -567,23 +810,44 @@ class GerberView(QGraphicsView):
         if rect is not None and not rect.isNull() and rect.isValid():
             self.fitInView(rect, Qt.KeepAspectRatio)
 
+    def set_measure_mode(self, active: bool) -> None:
+        """Enter/exit measure mode: clicks place measurement points."""
+        self._measure_mode = bool(active)
+        self.setDragMode(
+            QGraphicsView.NoDrag if active else QGraphicsView.ScrollHandDrag
+        )
+        self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
+        self.viewport().update()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.LeftButton:
-            self._drag_pixmap = self.viewport().grab()
-            self._drag_start = event.position().toPoint()
-            self._drag_delta = QPoint(0, 0)
-            self._set_fast_render()
-            self.setCursor(Qt.ClosedHandCursor)
+        if self._grid_active:
+            return
+        if self._measure_mode:
+            if event.button() == Qt.LeftButton:
+                sp = self.mapToScene(event.position().toPoint())
+                self.measure_clicked.emit(sp.x(), sp.y())
+                event.accept()
+            elif event.button() == Qt.RightButton:
+                self.measure_cancel.emit()
+                event.accept()
+            return
+        if event.button() == Qt.LeftButton and not self._fast_render:
+            # Freeze the viewport once; drag blits the snapshot (~1 ms/frame)
+            self._panning = True
+            self._pan_pixmap = self.viewport().grab()
+            self._pan_offset = QPoint(0, 0)
+            self._pan_press = event.position().toPoint()
             event.accept()
             return
+        if event.button() == Qt.LeftButton:
+            self._panning = True
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         sp = self.mapToScene(event.position().toPoint())
         self.cursor_moved.emit(sp.x(), sp.y())
-        if self._drag_start is not None:
-            pos = event.position().toPoint()
-            self._drag_delta = pos - self._drag_start
+        if self._panning and self._pan_pixmap is not None:
+            self._pan_offset = event.position().toPoint() - self._pan_press
             self.viewport().update()
             event.accept()
             return
@@ -594,36 +858,40 @@ class GerberView(QGraphicsView):
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._drag_start is not None and event.button() == Qt.LeftButton:
-            self._finish_drag()
+        if self._grid_active:
+            if event.button() == Qt.LeftButton:
+                sp = self.mapToScene(event.position().toPoint())
+                self.grid_cell_clicked.emit(sp.x(), sp.y())
+                event.accept()
+            return
+        if self._measure_mode:
             event.accept()
             return
+        if event.button() == Qt.LeftButton and self._pan_pixmap is not None:
+            # Apply the whole gesture as a single scroll, then restore real render
+            off = self._pan_offset
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value() - off.x())
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().value() - off.y())
+            self._pan_pixmap = None
+            self._pan_offset = QPoint(0, 0)
+            self._panning = False
+            self.viewport().update()
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton:
+            self._panning = False
         super().mouseReleaseEvent(event)
 
-    def _finish_drag(self) -> None:
-        dx = self._drag_delta.x()
-        dy = self._drag_delta.y()
-        self._drag_pixmap = None
-        self._drag_start = None
-        self._drag_delta = QPoint(0, 0)
-        self.unsetCursor()
-        if dx == 0 and dy == 0:
-            return
-        hbar = self.horizontalScrollBar()
-        vbar = self.verticalScrollBar()
-        hbar.setValue(hbar.value() - dx)
-        vbar.setValue(vbar.value() - dy)
-        self._restore_smooth_render()
-        self.viewport().update()
-
-    def paintEvent(self, event: object) -> None:
-        if self._drag_pixmap is not None and self._drag_start is not None:
-            painter = QPainter(self.viewport())
-            painter.fillRect(self.viewport().rect(), self.backgroundBrush())
-            painter.drawPixmap(self._drag_start + self._drag_delta, self._drag_pixmap)
-            painter.end()
+    def keyPressEvent(self, event) -> None:
+        if self._measure_mode and event.key() == Qt.Key_Escape:
+            self.measure_cancel.emit()
             event.accept()
             return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event: object) -> None:
         if self._zoom_pixmap is not None and self._zoom_ratio != 1.0:
             pm = self._zoom_pixmap
             size = pm.deviceIndependentSize()
@@ -637,6 +905,13 @@ class GerberView(QGraphicsView):
                 QRectF(0.0, 0.0, size.width(), size.height()), pm,
                 QRectF(0.0, 0.0, size.width(), size.height()),
             )
+            painter.end()
+            event.accept()
+            return
+        if self._pan_pixmap is not None:
+            painter = QPainter(self.viewport())
+            painter.fillRect(self.viewport().rect(), self.backgroundBrush())
+            painter.drawPixmap(self._pan_offset, self._pan_pixmap)
             painter.end()
             event.accept()
             return
@@ -686,61 +961,23 @@ class GerberLoadWorker(QThread):
             self.failed.emit(str(e))
 
 
-class GerberPdfWorker(QThread):
-    """Export the current Gerber View state to a PDF in a background thread."""
+class MagnifierView(QGraphicsView):
+    clicked = Signal(float, float)
 
-    finished_ok = Signal(str)
-    finished_err = Signal(str)
-
-    def __init__(
-        self,
-        path: str,
-        outline: RenderData,
-        paste: RenderData,
-        silk: RenderData,
-        markers: List[Tuple[float, float, float, float]],
-        params: Dict[str, Any],
-        parent=None,
-    ) -> None:
-        super().__init__(parent)
-        self._path = path
-        self._outline = outline
-        self._paste = paste
-        self._silk = silk
-        self._markers = markers
-        self._params = params
-
-    def run(self) -> None:
-        from services.gerber.gerber_pdf_export import export_gerber_pdf
-
-        try:
-            export_gerber_pdf(
-                self._path,
-                self._outline,
-                self._paste,
-                self._silk,
-                self._markers,
-                angle=self._params.get("angle", 0.0),
-                invert_rot=self._params.get("invert_rot", False),
-                flip=self._params.get("flip", False),
-                mirror_x=self._params.get("mirror_x", False),
-                off_x=self._params.get("off_x", 0.0),
-                off_y=self._params.get("off_y", 0.0),
-                show_outline=self._params.get("show_outline", True),
-                show_paste=self._params.get("show_paste", True),
-                show_silk=self._params.get("show_silk", True),
-                show_pickplace=self._params.get("show_pickplace", True),
-                show_crosshair=self._params.get("show_crosshair", True),
-                board_center=self._params.get("board_center", (0.0, 0.0)),
-                is_top=self._params.get("is_top", True),
-            )
-            self.finished_ok.emit(self._path)
-        except Exception as e:  # noqa: BLE001
-            self.finished_err.emit(str(e))
-
-
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.LeftButton:
+            sp = self.mapToScene(event.position().toPoint())
+            self.clicked.emit(sp.x(), sp.y())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 class GerberViewer(QWidget):
+
     settings_saved = Signal(dict)
+
+    checked_changed = Signal(int)
+
+    rotation_edited = Signal(int)
 
     def __init__(
         self,
@@ -780,20 +1017,54 @@ class GerberViewer(QWidget):
         self._silk_bottom: RenderData = RenderData()
         self._loaded = False
         self._pads: List[Tuple[float, float, float]] = []
+        self._pad_grid_cache: Dict[bool, PadGrid] = {}
+        self._scene_key: Optional[tuple] = None
+        self._line_items: Dict[str, List] = {}
+        self._fill_items: Dict[str, Optional[object]] = {}
         self._overlay: Optional[MarkerOverlayItem] = None
+        self._goto_pos: Optional[Tuple[float, float]] = None
+        self._goto_crosshair: Optional[QGraphicsPathItem] = None
+        self._grid_active = False
+        self._grid_available = False
+        self._grid_opacity = 255
+        self._grid_width = 2.0
+        self._grid_item: Optional[QGraphicsPathItem] = None
+        self._grid_rect: Optional[QRectF] = None
+        self._measure_mode = False
+        self._measure_start: Optional[Tuple[float, float]] = None
+        self._measure_preview: Optional[QGraphicsPathItem] = None
+        self._measurements: List[Tuple[float, float, float, float]] = []
+        self._measurement_items: List[MeasurementItem] = []
+        self._mag_cell_rect: Optional[QRectF] = None
         self._board_center: Tuple[float, float] = (0.0, 0.0)
         self._cross_half = _CROSS_BOARD_RATIO
         self._arrow_min_px: float = _MIN_ARROW_PX
         self._crosshair_scale: float = 1.0
         self._selected_marker_index = -1
+        self._selected_marker_indices: set = set()
+        self._flagged_indices: set = set()
+        self._rotation_preview: Optional[Tuple[int, float]] = None
+        self._rotation_dialog = None
+        self._rotation_ctx = None
         self._component_index: List[int] = []
+        self._group_by_mpn = False
+        self._group_rows: List[List[int]] = []
         self._scene_scale = 1.0
         self._mag_target: Optional[Tuple[float, float]] = None
         self._mag_factor: float = _MAG_FACTOR
-        self._redraw_timer = QTimer(self)
-        self._redraw_timer.setSingleShot(True)
-        self._redraw_timer.setInterval(150)
-        self._redraw_timer.timeout.connect(self._redraw)
+        self._rot_mag_saved: Optional[float] = None
+        self._rotation_lock_xy: Optional[Tuple[float, float]] = None
+        self._show_frame = True
+        self._colors: Dict[str, QColor] = {
+            "outline": OUTLINE_COLOR,
+            "paste_top": TOP_PASTE_COLOR,
+            "paste_bottom": BOTTOM_PASTE_COLOR,
+            "silk": SILK_COLOR,
+            "cross": CROSS_COLOR,
+            "highlight": HIGHLIGHT_COLOR,
+        }
+        self._color_buttons: Dict[str, QPushButton] = {}
+        self._color_pending: Dict[str, str] = {}
 
         self._build_ui()
         self._apply_layer()
@@ -801,7 +1072,7 @@ class GerberViewer(QWidget):
         self._start_load()
 
     def display_settings(self) -> Dict[str, Any]:
-        return {
+        settings = {
             "layer": self._combo_layer.currentIndex(),
             "rotation": self._combo_rot.currentData() or 0,
             "invert_rot": self._chk_invert_rot.isChecked(),
@@ -814,10 +1085,16 @@ class GerberViewer(QWidget):
             "silk": self._chk_silk.isChecked(),
             "pickplace": self._chk_pickplace.isChecked(),
             "crosshair": self._chk_crosshair.isChecked(),
+            "frame": self._chk_frame.isChecked(),
             "mag_factor": self._mag_factor,
             "arrow_min_px": self._spin_arrow_px.value(),
             "crosshair_scale": self._spin_cross_scale.value(),
+            "grid_opacity": self._grid_opacity,
+            "grid_width": self._grid_width,
         }
+        for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
+            settings[f"{key}_color"] = self._current_color(key).name(QColor.HexArgb)
+        return settings
 
     def apply_display_settings(self, settings: Dict[str, Any]) -> None:
         if not isinstance(settings, dict) or not settings:
@@ -842,6 +1119,8 @@ class GerberViewer(QWidget):
         self._chk_silk.setChecked(bool(settings.get("silk", True)))
         self._chk_pickplace.setChecked(bool(settings.get("pickplace", True)))
         self._chk_crosshair.setChecked(bool(settings.get("crosshair", True)))
+        self._chk_frame.setChecked(bool(settings.get("frame", True)))
+        self._show_frame = self._chk_frame.isChecked()
         if "mag_factor" in settings:
             target = float(settings.get("mag_factor", _MAG_FACTOR))
             for i in range(self._combo_mag.count()):
@@ -852,11 +1131,38 @@ class GerberViewer(QWidget):
         self._spin_cross_scale.setValue(float(settings.get("crosshair_scale", 1.0)))
         self._arrow_min_px = float(self._spin_arrow_px.value())
         self._crosshair_scale = float(self._spin_cross_scale.value())
+        self._spin_grid_opacity.setValue(int(settings.get("grid_opacity", 255)))
+        self._spin_grid_width.setValue(float(settings.get("grid_width", 2.0)))
+        self._grid_opacity = self._spin_grid_opacity.value()
+        self._grid_width = self._spin_grid_width.value()
+        for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
+            hex_val = settings.get(f"{key}_color")
+            if isinstance(hex_val, str):
+                color = QColor(hex_val)
+                if color.isValid():
+                    self._colors[key] = color
+        self._sync_color_buttons()
 
     def _save_display_settings(self) -> None:
+        self._btn_save_disp.setEnabled(False)
+        self._progress_save.setVisible(True)
+        self._lbl_saving.setVisible(True)
+        for key, hex_val in self._color_pending.items():
+            color = QColor(hex_val)
+            if color.isValid():
+                self._colors[key] = color
+        self._color_pending.clear()
+        self._sync_color_buttons()
+        self._redraw()
         self.settings_saved.emit(self.display_settings())
         self._lbl_status.setText(tr("Display settings saved to session."))
         self._display_dialog.accept()
+
+    def _on_display_rejected(self) -> None:
+        snapshot = getattr(self, "_display_snapshot", None)
+        if snapshot is not None:
+            self._color_pending.clear()
+            self.apply_display_settings(snapshot)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -889,15 +1195,12 @@ class GerberViewer(QWidget):
         btn_disp.clicked.connect(self._open_display_dialog)
         btn_fit = QPushButton(tr("Fit View"))
         btn_fit.clicked.connect(self._fit_scene)
-        btn_reset = QPushButton(tr("Reset"))
-        btn_reset.clicked.connect(self._on_reset)
-        self._btn_export_pdf = QPushButton(tr("Export PDF..."))
-        self._btn_export_pdf.clicked.connect(self._export_pdf)
-        self._btn_export_pdf.setEnabled(False)
+        btn_reload = QPushButton(tr("Reload"))
+        btn_reload.setToolTip(tr("Reload latest component data from the main window"))
+        btn_reload.clicked.connect(self._on_reload_records)
         btn_row.addWidget(btn_disp)
         btn_row.addWidget(btn_fit)
-        btn_row.addWidget(btn_reset)
-        btn_row.addWidget(self._btn_export_pdf)
+        btn_row.addWidget(btn_reload)
         panel.addLayout(btn_row)
 
         layer_row = QHBoxLayout()
@@ -909,11 +1212,24 @@ class GerberViewer(QWidget):
         layer_row.addWidget(self._combo_layer, 1)
         panel.addLayout(layer_row)
 
-        panel.addWidget(QLabel(tr("Components:")))
+        comp_row = QHBoxLayout()
+        comp_row.addWidget(QLabel(tr("Components:")))
+        comp_row.addStretch(1)
+        self._chk_group_mpn = QCheckBox(tr("Group by MPN"))
+        self._chk_group_mpn.setToolTip(
+            tr("Group components by MPN and highlight all designators on double-click")
+        )
+        self._chk_group_mpn.toggled.connect(self._on_group_mpn_toggled)
+        comp_row.addWidget(self._chk_group_mpn)
+        panel.addLayout(comp_row)
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText(tr("Search component..."))
         self._search_input.setClearButtonEnabled(True)
-        self._search_input.textChanged.connect(self._apply_layer)
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(150)
+        self._search_debounce.timeout.connect(self._apply_layer)
+        self._search_input.textChanged.connect(self._on_search_changed)
         panel.addWidget(self._search_input)
 
         self._table_components = QTableWidget()
@@ -927,8 +1243,12 @@ class GerberViewer(QWidget):
         self._table_components.verticalHeader().setVisible(False)
         self._table_components.horizontalHeader().setStretchLastSection(True)
         self._table_components.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self._table_components.setWordWrap(True)
+        self._table_components.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self._table_components.currentCellChanged.connect(self._on_row_changed)
         self._table_components.cellDoubleClicked.connect(self._on_component_double_clicked)
+        self._table_components.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table_components.customContextMenuRequested.connect(self._on_component_menu)
         panel.addWidget(self._table_components, 1)
 
         self._lbl_status = QLabel(tr("No data yet."))
@@ -968,7 +1288,7 @@ QGroupBox::title {
         self._combo_mag.currentIndexChanged.connect(self._on_mag_factor_changed)
         mag_row.addWidget(self._combo_mag, 1)
         mag_layout.addLayout(mag_row)
-        self._mag_view = QGraphicsView()
+        self._mag_view = MagnifierView()
         self._mag_view.setFrameShape(QFrame.NoFrame)
         self._mag_view.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self._mag_view.setBackgroundBrush(BACKGROUND)
@@ -989,16 +1309,31 @@ QGroupBox::title {
         panel.addWidget(self._mag_group)
 
         self._view.cursor_moved.connect(self._update_magnifier)
+        self._view.cursor_moved.connect(self._update_coord_label)
+        self._view.cursor_left.connect(self._clear_coord_label)
         self._view.cursor_left.connect(self._refresh_magnifier)
         self._view.zoom_end.connect(self._refresh_magnifier)
+        self._view.grid_cell_clicked.connect(self._on_grid_cell_clicked)
+        self._view.measure_clicked.connect(self._on_measure_clicked)
+        self._view.measure_cancel.connect(self._on_measure_cancel)
+        self._view.cursor_moved.connect(self._on_measure_move)
+        self._mag_view.clicked.connect(self._on_mag_clicked)
 
         self._display_dialog = QDialog(self)
         self._display_dialog.setWindowTitle(tr("Display settings"))
         display_layout = QVBoxLayout(self._display_dialog)
         display_layout.addWidget(self._build_display_group())
-        btn_save_disp = QPushButton(tr("Save display settings"))
-        btn_save_disp.clicked.connect(self._save_display_settings)
-        display_layout.addWidget(btn_save_disp)
+        self._progress_save = QProgressBar()
+        self._progress_save.setRange(0, 0)
+        self._progress_save.setVisible(False)
+        display_layout.addWidget(self._progress_save)
+        self._lbl_saving = QLabel(tr("Saving..."))
+        self._lbl_saving.setVisible(False)
+        display_layout.addWidget(self._lbl_saving)
+        self._btn_save_disp = QPushButton(tr("Save display settings"))
+        self._btn_save_disp.clicked.connect(self._save_display_settings)
+        display_layout.addWidget(self._btn_save_disp)
+        self._display_dialog.rejected.connect(self._on_display_rejected)
 
         panel_widget = QWidget()
         panel_widget.setLayout(panel)
@@ -1006,6 +1341,42 @@ QGroupBox::title {
         body.addWidget(panel_widget)
 
         layout.addLayout(body, 1)
+
+        coord_bar = QHBoxLayout()
+        self._lbl_coord = QLabel(tr("X: --  Y: --"))
+        coord_bar.addWidget(self._lbl_coord)
+        coord_bar.addStretch(1)
+        self._btn_measure = QPushButton(tr("Measure"))
+        self._btn_measure.setCheckable(True)
+        self._btn_measure.setEnabled(False)
+        self._btn_measure.setToolTip(
+            tr("Click two points to measure the distance. "
+               "Right-click or Esc cancels the current measurement.")
+        )
+        self._btn_measure.toggled.connect(self._on_measure_toggled)
+        coord_bar.addWidget(self._btn_measure)
+        self._btn_clear_measure = QPushButton(tr("Clear"))
+        self._btn_clear_measure.setEnabled(False)
+        self._btn_clear_measure.clicked.connect(self._clear_measurements)
+        coord_bar.addWidget(self._btn_clear_measure)
+        coord_bar.addWidget(QLabel(tr("X:")))
+        self._spin_goto_x = QDoubleSpinBox()
+        self._spin_goto_x.setRange(-100000.0, 100000.0)
+        self._spin_goto_x.setSingleStep(0.05)
+        self._spin_goto_x.setDecimals(2)
+        self._spin_goto_x.returnPressed.connect(self._goto_coord)
+        coord_bar.addWidget(self._spin_goto_x)
+        coord_bar.addWidget(QLabel(tr("Y:")))
+        self._spin_goto_y = QDoubleSpinBox()
+        self._spin_goto_y.setRange(-100000.0, 100000.0)
+        self._spin_goto_y.setSingleStep(0.05)
+        self._spin_goto_y.setDecimals(2)
+        self._spin_goto_y.returnPressed.connect(self._goto_coord)
+        coord_bar.addWidget(self._spin_goto_y)
+        self._btn_goto = QPushButton(tr("Go"))
+        self._btn_goto.clicked.connect(self._goto_coord)
+        coord_bar.addWidget(self._btn_goto)
+        layout.addLayout(coord_bar)
 
     def _build_display_group(self) -> QGroupBox:
         group = QGroupBox(tr("Display"))
@@ -1017,20 +1388,16 @@ QGroupBox::title {
         self._combo_rot = QComboBox()
         for angle in (0, 90, 180, 270):
             self._combo_rot.addItem(f"{angle}°", angle)
-        self._combo_rot.currentIndexChanged.connect(self._schedule_redraw)
         rot_row.addWidget(self._combo_rot, 1)
         layout.addLayout(rot_row)
 
         self._chk_invert_rot = QCheckBox(tr("Invert Gerber rotation"))
-        self._chk_invert_rot.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_invert_rot)
 
         self._chk_flip = QCheckBox(tr("Flip Gerber (Mirror Y)"))
-        self._chk_flip.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_flip)
 
         self._chk_mirror_x = QCheckBox(tr("Flip Gerber (Mirror X)"))
-        self._chk_mirror_x.toggled.connect(self._schedule_redraw)
         layout.addWidget(self._chk_mirror_x)
 
         off_row = QHBoxLayout()
@@ -1040,7 +1407,6 @@ QGroupBox::title {
         self._spin_off_x.setSingleStep(0.05)
         self._spin_off_x.setDecimals(2)
         self._spin_off_x.setValue(0.0)
-        self._spin_off_x.valueChanged.connect(self._schedule_redraw)
         off_row.addWidget(self._spin_off_x, 1)
         off_row.addWidget(QLabel(tr("Y:")))
         self._spin_off_y = QDoubleSpinBox()
@@ -1048,7 +1414,6 @@ QGroupBox::title {
         self._spin_off_y.setSingleStep(0.05)
         self._spin_off_y.setDecimals(2)
         self._spin_off_y.setValue(0.0)
-        self._spin_off_y.valueChanged.connect(self._schedule_redraw)
         off_row.addWidget(self._spin_off_y, 1)
         btn_zero = QPushButton("0")
         btn_zero.clicked.connect(self._reset_offset)
@@ -1060,28 +1425,35 @@ QGroupBox::title {
 
         self._chk_outline = QCheckBox(tr("Show GKO outline"))
         self._chk_outline.setChecked(True)
-        self._chk_outline.toggled.connect(self._schedule_redraw)
-        layout.addWidget(self._chk_outline)
-
         self._chk_paste = QCheckBox(tr("Show Paste (GTP / GBP)"))
         self._chk_paste.setChecked(True)
-        self._chk_paste.toggled.connect(self._schedule_redraw)
-        layout.addWidget(self._chk_paste)
-
         self._chk_silk = QCheckBox(tr("Show Silkscreen (GTO / GBO)"))
         self._chk_silk.setChecked(True)
-        self._chk_silk.toggled.connect(self._schedule_redraw)
-        layout.addWidget(self._chk_silk)
-
         self._chk_pickplace = QCheckBox(tr("Show PickPlace (aligned)"))
         self._chk_pickplace.setChecked(True)
-        self._chk_pickplace.toggled.connect(self._schedule_redraw)
-        layout.addWidget(self._chk_pickplace)
-
         self._chk_crosshair = QCheckBox(tr("Show crosshair"))
         self._chk_crosshair.setChecked(True)
-        self._chk_crosshair.toggled.connect(self._schedule_redraw)
-        layout.addWidget(self._chk_crosshair)
+        self._chk_frame = QCheckBox(tr("Show frame"))
+        self._chk_frame.setChecked(True)
+        self._chk_frame.toggled.connect(self._on_frame_toggled)
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        grid.addWidget(self._chk_outline, 0, 0)
+        grid.addWidget(self._make_color_swatch("outline"), 0, 1)
+        grid.addWidget(self._chk_paste, 0, 3)
+        grid.addWidget(self._make_color_swatch("paste_top"), 0, 4)
+        grid.addWidget(self._make_color_swatch("paste_bottom"), 0, 5)
+        grid.addWidget(self._chk_silk, 1, 0)
+        grid.addWidget(self._make_color_swatch("silk"), 1, 1)
+        grid.addWidget(self._chk_pickplace, 1, 3)
+        grid.addWidget(self._make_color_swatch("cross"), 1, 4)
+        grid.addWidget(self._chk_crosshair, 2, 0)
+        grid.addWidget(self._chk_frame, 2, 3)
+        grid.addWidget(self._make_color_swatch("highlight"), 2, 4)
+        grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(5, 1)
+        layout.addLayout(grid)
 
         arrow_row = QHBoxLayout()
         arrow_row.addWidget(QLabel(tr("Arrow size:")))
@@ -1105,85 +1477,120 @@ QGroupBox::title {
         cross_row.addWidget(self._spin_cross_scale, 1)
         layout.addLayout(cross_row)
 
+        grid_row = QHBoxLayout()
+        self._chk_grid = QCheckBox(tr("Show grid"))
+        self._chk_grid.setEnabled(False)
+        self._chk_grid.toggled.connect(self._on_grid_toggled)
+        grid_row.addWidget(self._chk_grid)
+        grid_row.addWidget(QLabel(tr("Col:")))
+        self._spin_grid_cols = QSpinBox()
+        self._spin_grid_cols.setRange(1, 50)
+        self._spin_grid_cols.setValue(3)
+        self._spin_grid_cols.valueChanged.connect(self._on_grid_params_changed)
+        grid_row.addWidget(self._spin_grid_cols)
+        grid_row.addWidget(QLabel(tr("Row:")))
+        self._spin_grid_rows = QSpinBox()
+        self._spin_grid_rows.setRange(1, 50)
+        self._spin_grid_rows.setValue(3)
+        self._spin_grid_rows.valueChanged.connect(self._on_grid_params_changed)
+        grid_row.addWidget(self._spin_grid_rows)
+        grid_row.addStretch(1)
+        layout.addLayout(grid_row)
+
+        grid_style_row = QHBoxLayout()
+        grid_style_row.addWidget(QLabel(tr("Grid opacity:")))
+        self._spin_grid_opacity = QSpinBox()
+        self._spin_grid_opacity.setRange(20, 255)
+        self._spin_grid_opacity.setValue(self._grid_opacity)
+        self._spin_grid_opacity.setSingleStep(5)
+        self._spin_grid_opacity.valueChanged.connect(self._on_grid_style_changed)
+        grid_style_row.addWidget(self._spin_grid_opacity)
+        grid_style_row.addWidget(QLabel(tr("Grid width:")))
+        self._spin_grid_width = QDoubleSpinBox()
+        self._spin_grid_width.setRange(1.0, 4.0)
+        self._spin_grid_width.setValue(self._grid_width)
+        self._spin_grid_width.setSingleStep(0.5)
+        self._spin_grid_width.setDecimals(1)
+        self._spin_grid_width.valueChanged.connect(self._on_grid_style_changed)
+        grid_style_row.addWidget(self._spin_grid_width)
+        grid_style_row.addStretch(1)
+        layout.addLayout(grid_style_row)
+
         return group
 
+    def _make_color_swatch(self, key: str) -> QPushButton:
+        button = QPushButton()
+        button.setFixedSize(40, 22)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setToolTip(self._color_swatch_tooltip(key))
+        button.clicked.connect(lambda: self._pick_color(key))
+        self._color_buttons[key] = button
+        self._update_swatch(key)
+        return button
+
+    def _color_swatch_tooltip(self, key: str) -> str:
+        color = self._current_color(key)
+        return f"{tr('Color')}: {color.name(QColor.HexArgb)}"
+
+    def _current_color(self, key: str) -> QColor:
+        hex_val = self._color_pending.get(key)
+        if hex_val:
+            color = QColor(hex_val)
+            if color.isValid():
+                return color
+        return self._colors[key]
+
+    def _update_swatch(self, key: str) -> None:
+        button = self._color_buttons.get(key)
+        if button is None:
+            return
+        color = self._current_color(key)
+        button.setStyleSheet(
+            f"QPushButton {{ background-color: {color.name(QColor.HexArgb)};"
+            f" border: 1px solid #888; border-radius: 3px; }}"
+        )
+        button.setToolTip(self._color_swatch_tooltip(key))
+
+    def _sync_color_buttons(self) -> None:
+        for key in self._color_buttons:
+            self._update_swatch(key)
+
+    def _pick_color(self, key: str) -> None:
+        initial = self._current_color(key)
+        color = QColorDialog.getColor(
+            initial, self, tr("Choose {0} color").format(self._color_label(key)),
+            QColorDialog.ShowAlphaChannel,
+        )
+        if color.isValid():
+            self._color_pending[key] = color.name(QColor.HexArgb)
+            self._update_swatch(key)
+
+    def _color_label(self, key: str) -> str:
+        labels = {
+            "outline": tr("Outline"),
+            "paste_top": tr("Paste Top"),
+            "paste_bottom": tr("Paste Bottom"),
+            "silk": tr("Silkscreen"),
+            "cross": tr("Crosshair"),
+            "highlight": tr("Highlight"),
+        }
+        return labels.get(key, key)
+
     def _open_display_dialog(self) -> None:
+        self._display_snapshot = self.display_settings()
+        self._btn_save_disp.setEnabled(True)
+        self._progress_save.setVisible(False)
+        self._lbl_saving.setVisible(False)
         self._display_dialog.exec()
 
     def _on_arrow_size_changed(self, value: int) -> None:
         self._arrow_min_px = float(value)
-        self._schedule_redraw()
 
     def _on_crosshair_scale_changed(self, value: float) -> None:
         self._crosshair_scale = float(value)
-        self._schedule_redraw()
 
-    def _export_pdf(self) -> None:
-        if not self._loaded:
-            return
-        from services.gerber.gerber_pdf_export import export_gerber_pdf
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, tr("Export Gerber PDF"), "gerber_view.pdf",
-            "PDF Files (*.pdf);;All Files (*.*)"
-        )
-        if not file_path:
-            return
-
-        is_top = self._combo_layer.currentIndex() == 0
-        paste = self._top if is_top else self._bottom
-        silk = self._silk if is_top else self._silk_bottom
-        angle = self._combo_rot.currentData() or 0
-        mirror = self._chk_flip.isChecked()
-        mirror_x = self._chk_mirror_x.isChecked()
-        off_x = self._spin_off_x.value()
-        off_y = self._spin_off_y.value()
-        center_x, center_y = self._board_center
-
-        markers: List[Tuple[float, float, float, float]] = []
-        if self._chk_pickplace.isChecked():
-            pads_raw = [
-                (f.cx, f.cy, _flash_size(f))
-                for f in paste.flashes
-            ]
-            for record in self._current_layer_records():
-                x, y, rotation = _record_coord(record)
-                size = _nearest_pad_size(pads_raw, x, y)
-                half = _crosshair_half(size, self._cross_half)
-                markers.append((x, -y, rotation, half))
-
-        params: Dict[str, Any] = {
-            "angle": angle,
-            "invert_rot": self._chk_invert_rot.isChecked(),
-            "flip": mirror,
-            "mirror_x": mirror_x,
-            "off_x": off_x,
-            "off_y": off_y,
-            "show_outline": self._chk_outline.isChecked(),
-            "show_paste": self._chk_paste.isChecked(),
-            "show_silk": self._chk_silk.isChecked(),
-            "show_pickplace": self._chk_pickplace.isChecked(),
-            "show_crosshair": self._chk_crosshair.isChecked(),
-            "board_center": (center_x, center_y),
-            "is_top": is_top,
-        }
-
-        self._btn_export_pdf.setEnabled(False)
-        worker = GerberPdfWorker(
-            file_path, self._outline, paste, silk, markers, params, self
-        )
-        worker.finished_ok.connect(self._on_pdf_export_done)
-        worker.finished_err.connect(self._on_pdf_export_failed)
-        self._pdf_worker = worker
-        worker.start()
-
-    def _on_pdf_export_done(self, path: str) -> None:
-        self._btn_export_pdf.setEnabled(True)
-        self._lbl_status.setText(tr("PDF exported to {path}", path=path))
-
-    def _on_pdf_export_failed(self, message: str) -> None:
-        self._btn_export_pdf.setEnabled(True)
-        QMessageBox.warning(self, tr("Export Failed"), message)
+    def _on_frame_toggled(self, checked: bool) -> None:
+        self._show_frame = bool(checked)
 
     def _start_load(self) -> None:
         if not self._gko_path or not os.path.exists(self._gko_path):
@@ -1209,7 +1616,6 @@ QGroupBox::title {
         self._silk = data.get("silk", RenderData())
         self._silk_bottom = data.get("silk_bottom", RenderData())
         self._loaded = True
-        self._btn_export_pdf.setEnabled(True)
         self._board_center = self._compute_board_center()
         self._cross_half = self._board_size() * _CROSS_BOARD_RATIO
         self._apply_layer()
@@ -1223,6 +1629,7 @@ QGroupBox::title {
                tf=len(self._top.flashes), bf=len(self._bottom.flashes),
                st=len(self._silk.lines), sb=len(self._silk_bottom.lines))
         )
+        self._btn_measure.setEnabled(True)
 
     def _on_load_failed(self, message: str) -> None:
         self._lbl_title.setText(tr("Error reading Gerber file"))
@@ -1232,30 +1639,115 @@ QGroupBox::title {
         self._apply_layer()
         self._redraw()
 
+    def _on_search_changed(self, _text: str = "") -> None:
+        self._search_debounce.start()
+
     def _apply_layer(self) -> None:
         records = self._current_layer_records()
         search_text = self._search_input.text().strip().lower()
-        self._table_components.setRowCount(0)
-        self._component_index = []
+        self._table_components.setUpdatesEnabled(False)
+        try:
+            self._table_components.setRowCount(0)
+            self._component_index = []
+            self._group_rows = []
+            if self._group_by_mpn:
+                self._fill_grouped_table(records, search_text)
+                self._table_components.setColumnCount(5)
+                self._table_components.setHorizontalHeaderLabels([
+                    tr("#"), tr("MPN"), tr("Designator"), tr("Qty"), tr("Status"),
+                ])
+                self._table_components.horizontalHeader().setSectionResizeMode(
+                    2, QHeaderView.Interactive
+                )
+                self._table_components.setColumnWidth(2, 200)
+            else:
+                self._table_components.setColumnCount(6)
+                self._table_components.setHorizontalHeaderLabels([
+                    tr("#"), tr("Designator"), tr("X"), tr("Y"), tr("Rot"), tr("Status"),
+                ])
+                self._table_components.horizontalHeader().setSectionResizeMode(
+                    QHeaderView.ResizeToContents
+                )
+                for i, record in enumerate(records):
+                    if search_text and search_text not in record.designator.lower():
+                        continue
+                    x, y, rotation = _record_coord(record)
+                    row = self._table_components.rowCount()
+                    values = [
+                        str(row + 1),
+                        record.designator,
+                        f"{x:.3f}",
+                        f"{y:.3f}",
+                        f"{rotation:.0f}°",
+                    ]
+                    self._table_components.insertRow(row)
+                    for col, val in enumerate(values):
+                        item = QTableWidgetItem(val)
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                        self._table_components.setItem(row, col, item)
+                    status_item = QTableWidgetItem()
+                    status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+                    status_item.setIcon(self._status_icon(record.checked))
+                    self._table_components.setItem(row, len(values), status_item)
+                    self._component_index.append(i)
+        finally:
+            self._table_components.setUpdatesEnabled(True)
+        self._restore_highlight()
+
+    def _fill_grouped_table(
+        self, records: List[ReviewRecord], search_text: str
+    ) -> None:
+        groups: Dict[str, List[int]] = {}
+        order: List[str] = []
         for i, record in enumerate(records):
             if search_text and search_text not in record.designator.lower():
                 continue
-            x, y, rotation = _record_coord(record)
+            mpn = (record.mpn or "").strip() or record.designator
+            if mpn not in groups:
+                groups[mpn] = []
+                order.append(mpn)
+            groups[mpn].append(i)
+        for mpn in order:
+            indices = groups[mpn]
             row = self._table_components.rowCount()
+            designators = [records[i].designator for i in indices]
             values = [
                 str(row + 1),
-                record.designator,
-                f"{x:.3f}",
-                f"{y:.3f}",
-                f"{rotation:.0f}°",
+                mpn,
+                ", ".join(designators),
+                str(len(designators)),
+                "",
             ]
             self._table_components.insertRow(row)
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self._table_components.setItem(row, col, item)
-            self._component_index.append(i)
-        self._restore_highlight()
+            rep = records[indices[0]]
+            status_item = QTableWidgetItem()
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            status_item.setIcon(self._status_icon(rep.checked))
+            self._table_components.setItem(row, len(values), status_item)
+            self._component_index.append(indices[0])
+            self._group_rows.append(indices)
+
+    def _on_group_mpn_toggled(self, checked: bool) -> None:
+        self._group_by_mpn = bool(checked)
+        self._selected_marker_index = -1
+        self._selected_marker_indices = set()
+        self._apply_layer()
+
+    def refresh_records(self, records: List[ReviewRecord]) -> None:
+        self._records = records
+        layer_count = len(self._current_layer_records())
+        if self._selected_marker_index >= layer_count:
+            self._selected_marker_index = -1
+        self._selected_marker_indices = {
+            i for i in self._selected_marker_indices if i < layer_count
+        }
+        self._apply_layer()
+        if getattr(self, "_loaded", False):
+            self._rebuild_marker_overlay()
 
     def _current_layer_records(self) -> List[ReviewRecord]:
         layer = "top" if self._combo_layer.currentIndex() == 0 else "bottom"
@@ -1264,22 +1756,420 @@ QGroupBox::title {
     def _restore_highlight(self) -> None:
         overlay = getattr(self, "_overlay", None)
         if overlay is not None:
-            overlay.set_selected(self._selected_marker_index)
+            overlay.set_selected_indices(self._selected_marker_indices)
+
+    def _checked_layer_indices(self) -> set:
+        return {
+            i for i, r in enumerate(self._current_layer_records()) if r.checked
+        }
+
+    def _record_index_in_records(self, record: ReviewRecord) -> int:
+        for i, r in enumerate(self._records):
+            if r is record:
+                return i
+        return -1
+
+    @staticmethod
+    def _component_info_text(record: ReviewRecord) -> str:
+        return tr(
+            "Designator: {des}\nMPN: {mpn}\nRemark: {remark}",
+            des=record.designator or "-",
+            mpn=record.mpn or "-",
+            remark=record.remark or "-",
+        )
+
+    @staticmethod
+    def _status_icon(checked: bool) -> QIcon:
+        global _ICON_CHECKED, _ICON_UNCHECKED
+        if _ICON_CHECKED is None:
+            _ICON_CHECKED = _build_status_icon(True)
+        if _ICON_UNCHECKED is None:
+            _ICON_UNCHECKED = _build_status_icon(False)
+        return _ICON_CHECKED if checked else _ICON_UNCHECKED
+
+    def _refresh_component_status(self) -> None:
+        layer = self._current_layer_records()
+        col = self._table_components.columnCount() - 1
+        for row, idx in enumerate(self._component_index):
+            if not (0 <= idx < len(layer)):
+                continue
+            item = self._table_components.item(row, col)
+            if item is not None:
+                item.setIcon(self._status_icon(layer[idx].checked))
+
+    def _refresh_component_status_row(self, layer_idx: int) -> None:
+        layer = self._current_layer_records()
+        col = self._table_components.columnCount() - 1
+        for row, idx in enumerate(self._component_index):
+            in_group = (
+                self._group_by_mpn
+                and row < len(self._group_rows)
+                and layer_idx in self._group_rows[row]
+            )
+            if idx == layer_idx or in_group:
+                item = self._table_components.item(row, col)
+                if item is not None and 0 <= idx < len(layer):
+                    item.setIcon(self._status_icon(layer[idx].checked))
+                return
+        self._refresh_component_status()
+
+    def _set_component_status_cell(self, row: int, checked: bool) -> None:
+        col = self._table_components.columnCount() - 1
+        item = self._table_components.item(row, col)
+        if item is not None:
+            item.setIcon(self._status_icon(checked))
 
     def _current_paste(self) -> RenderData:
         return self._top if self._combo_layer.currentIndex() == 0 else self._bottom
 
+    def _update_coord_label(self, x: float, y: float) -> None:
+        if not self._loaded:
+            return
+        self._lbl_coord.setText(tr("X: {gx:.2f}  Y: {gy:.2f}", gx=x, gy=-y))
+
+    def _clear_coord_label(self) -> None:
+        self._lbl_coord.setText(tr("X: --  Y: --"))
+
+    def _goto_coord(self) -> None:
+        if not self._loaded:
+            return
+        gx = self._spin_goto_x.value()
+        gy = self._spin_goto_y.value()
+        self._goto_pos = (gx, -gy)
+        self._update_goto_crosshair()
+        self._view.centerOn(gx, -gy)
+        self._update_magnifier(gx, -gy)
+
+    def _update_goto_crosshair(self) -> None:
+        if self._goto_crosshair is not None:
+            try:
+                self._scene.removeItem(self._goto_crosshair)
+            except RuntimeError:
+                pass
+            self._goto_crosshair = None
+        if self._goto_pos is None or not self._loaded:
+            return
+        gx, gy = self._goto_pos
+        half = self._cross_half * self._crosshair_scale
+        if half <= 0:
+            half = 0.5
+        path = QPainterPath()
+        path.moveTo(gx - half, gy)
+        path.lineTo(gx + half, gy)
+        path.moveTo(gx, gy - half)
+        path.lineTo(gx, gy + half)
+        pen = QPen(self._colors["highlight"], 2.0)
+        pen.setCosmetic(True)
+        self._goto_crosshair = self._scene.addPath(path, pen)
+        self._goto_crosshair.setZValue(100)
+
+    def _on_grid_toggled(self, checked: bool) -> None:
+        if checked and not self._grid_available:
+            self._chk_grid.setChecked(False)
+            return
+        self._grid_active = checked
+        self._view._grid_active = checked
+        self._view.setDragMode(
+            QGraphicsView.NoDrag if checked else QGraphicsView.ScrollHandDrag
+        )
+        if not checked:
+            self._mag_cell_rect = None
+        self._update_grid()
+
+    def _on_grid_params_changed(self) -> None:
+        if not self._grid_active or not self._grid_available:
+            return
+        self._update_grid()
+
+    def _on_grid_style_changed(self) -> None:
+        self._grid_opacity = self._spin_grid_opacity.value()
+        self._grid_width = self._spin_grid_width.value()
+        self._update_grid()
+
+    def _update_grid(self) -> None:
+        if self._grid_item is not None:
+            try:
+                self._scene.removeItem(self._grid_item)
+            except RuntimeError:
+                pass
+            self._grid_item = None
+        self._grid_rect = None
+        if not self._grid_active or not self._loaded:
+            return
+        rect = self._gerber_scene_rect()
+        if rect.isEmpty() or rect.isNull() or not rect.isValid():
+            return
+        cols = max(1, self._spin_grid_cols.value())
+        rows = max(1, self._spin_grid_rows.value())
+        path = QPainterPath()
+        for i in range(cols + 1):
+            x = rect.left() + rect.width() * i / cols
+            path.moveTo(x, rect.top())
+            path.lineTo(x, rect.bottom())
+        for j in range(rows + 1):
+            y = rect.top() + rect.height() * j / rows
+            path.moveTo(rect.left(), y)
+            path.lineTo(rect.right(), y)
+        color = QColor(GRID_COLOR)
+        color.setAlpha(self._grid_opacity)
+        pen = QPen(color)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        pen.setWidthF(self._grid_width)
+        self._grid_item = self._scene.addPath(path, pen)
+        self._grid_item.setZValue(60)
+        self._grid_rect = rect
+
+    def _on_grid_cell_clicked(self, x: float, y: float) -> None:
+        if not self._grid_active or not self._loaded:
+            return
+        rect = self._grid_rect
+        if rect is None or rect.isEmpty():
+            return
+        cols = max(1, self._spin_grid_cols.value())
+        rows = max(1, self._spin_grid_rows.value())
+        cw = rect.width() / cols
+        ch = rect.height() / rows
+        col = int((x - rect.left()) / cw) if cw > 0 else 0
+        row = int((y - rect.top()) / ch) if ch > 0 else 0
+        col = max(0, min(cols - 1, col))
+        row = max(0, min(rows - 1, row))
+        cell = QRectF(
+            rect.left() + col * cw, rect.top() + row * ch,
+            cw, ch,
+        )
+        self._mag_cell_rect = cell
+        self._mag_target = (cell.center().x(), cell.center().y())
+        self._refresh_magnifier()
+        self._update_coord_label(x, y)
+
+    def _on_mag_clicked(self, sx: float, sy: float) -> None:
+        if not self._grid_active or not self._loaded:
+            return
+        records = self._current_layer_records()
+        if not records:
+            return
+        grid = self._pad_grid(self._combo_layer.currentIndex() == 0)
+        best = -1
+        best_d = float("inf")
+        outer = max(self._cross_half * self._crosshair_scale, 0.25)
+        outer_d = outer * outer
+        for i, record in enumerate(records):
+            x, y, _rot = _record_coord(record)
+            dx = sx - x
+            dy = sy + y
+            d2 = dx * dx + dy * dy
+            if d2 > outer_d:
+                continue
+            size = grid.nearest(x, y)
+            half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
+            tol = max(half, 0.25)
+            if d2 <= tol * tol and d2 < best_d:
+                best_d = d2
+                best = i
+        if best < 0:
+            return
+        record = records[best]
+        info = self._component_info_text(record)
+        if record.checked:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Cancel the check for this component?") + "\n\n" + info,
+            )
+            if ret != QMessageBox.Yes:
+                return
+            record.checked = False
+        else:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Confirm component exists?") + "\n\n" + info,
+            )
+            if ret != QMessageBox.Yes:
+                return
+            record.checked = True
+        if self._overlay is not None:
+            self._overlay.set_checked_indices(self._checked_layer_indices())
+        self._refresh_component_status_row(best)
+        self.checked_changed.emit(self._record_index_in_records(record))
+
+    def _display_transform(self) -> Tuple[float, bool, bool, float, float]:
+        angle = self._combo_rot.currentData() or 0
+        if self._chk_invert_rot.isChecked():
+            angle = (360 - angle) % 360
+        return (
+            angle,
+            self._chk_flip.isChecked(),
+            self._chk_mirror_x.isChecked(),
+            self._spin_off_x.value(),
+            self._spin_off_y.value(),
+        )
+
+    def _scene_to_gerber(self, sx: float, sy: float) -> Tuple[float, float]:
+        angle, mirror, mirror_x, off_x, off_y = self._display_transform()
+        cx, cy = self._board_center
+        return apply_inverse_transform(
+            sx, -sy, mirror, angle, off_x, off_y, cx, cy, mirror_x,
+        )
+
+    def _gerber_to_scene(self, gx: float, gy: float) -> Tuple[float, float]:
+        angle, mirror, mirror_x, off_x, off_y = self._display_transform()
+        cx, cy = self._board_center
+        tx, ty = apply_transform(gx, gy, mirror, angle, off_x, off_y, cx, cy, mirror_x)
+        return tx, -ty
+
+    def _on_measure_toggled(self, checked: bool) -> None:
+        if not self._loaded and checked:
+            self._btn_measure.blockSignals(True)
+            self._btn_measure.setChecked(False)
+            self._btn_measure.blockSignals(False)
+            return
+        self._measure_mode = bool(checked)
+        if self._measure_mode:
+            if self._grid_active:
+                self._chk_grid.setChecked(False)
+            self._measure_start = None
+            self._remove_measure_preview()
+            self._lbl_status.setText(tr("Measure mode: click the start point."))
+            self._view.set_measure_mode(True)
+            self._view.setFocus(Qt.MouseFocusReason)
+        else:
+            self._view.set_measure_mode(False)
+            self._on_measure_cancel()
+
+    def _on_measure_clicked(self, sx: float, sy: float) -> None:
+        if not self._loaded or not self._measure_mode:
+            return
+        gx, gy = self._scene_to_gerber(sx, sy)
+        if self._measure_start is None:
+            self._measure_start = (gx, gy)
+            self._lbl_status.setText(tr("Measure mode: click the end point."))
+        else:
+            x1, y1 = self._measure_start
+            self._measure_start = None
+            self._remove_measure_preview()
+            self._add_measurement(x1, y1, gx, gy)
+
+    def _on_measure_cancel(self) -> None:
+        self._measure_start = None
+        self._remove_measure_preview()
+        if self._measure_mode:
+            self._lbl_status.setText(tr("Measure mode: click the start point."))
+
+    def _on_measure_move(self, sx: float, sy: float) -> None:
+        if not self._measure_mode or self._measure_start is None:
+            return
+        x1, y1 = self._measure_start
+        gx, gy = self._scene_to_gerber(sx, sy)
+        dist = math.hypot(gx - x1, gy - y1)
+        sx1, sy1 = self._gerber_to_scene(x1, y1)
+        path = QPainterPath()
+        path.moveTo(sx1, sy1)
+        path.lineTo(sx, sy)
+        if self._measure_preview is None:
+            pen = QPen(MEASURE_COLOR, 1.5)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.DashLine)
+            self._measure_preview = self._scene.addPath(path, pen)
+            self._measure_preview.setZValue(79)
+        else:
+            try:
+                self._measure_preview.setPath(path)
+            except RuntimeError:
+                self._measure_preview = None
+                return
+        self._lbl_status.setText(tr("Distance: {d:.3f} mm", d=dist))
+
+    def _remove_measure_preview(self) -> None:
+        if self._measure_preview is not None:
+            try:
+                self._scene.removeItem(self._measure_preview)
+            except RuntimeError:
+                pass
+            self._measure_preview = None
+
+    def _add_measurement(self, x1: float, y1: float,
+                         x2: float, y2: float) -> None:
+        sx1, sy1 = self._gerber_to_scene(x1, y1)
+        sx2, sy2 = self._gerber_to_scene(x2, y2)
+        dist = math.hypot(x2 - x1, y2 - y1)
+        item = MeasurementItem(
+            QPointF(sx1, sy1), QPointF(sx2, sy2), dist, MEASURE_COLOR,
+        )
+        self._scene.addItem(item)
+        self._measurements.append((x1, y1, x2, y2))
+        self._measurement_items.append(item)
+        self._btn_clear_measure.setEnabled(True)
+        self._lbl_status.setText(tr("Distance: {d:.3f} mm", d=dist))
+
+    def _clear_measurements(self) -> None:
+        self._measure_start = None
+        self._remove_measure_preview()
+        for item in self._measurement_items:
+            try:
+                self._scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self._measurement_items = []
+        self._measurements = []
+        self._btn_clear_measure.setEnabled(False)
+        if self._measure_mode:
+            self._lbl_status.setText(tr("Measure mode: click the start point."))
+
+    def _rebuild_measurements(self) -> None:
+        for item in self._measurement_items:
+            try:
+                self._scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self._measurement_items = []
+        for x1, y1, x2, y2 in self._measurements:
+            sx1, sy1 = self._gerber_to_scene(x1, y1)
+            sx2, sy2 = self._gerber_to_scene(x2, y2)
+            item = MeasurementItem(
+                QPointF(sx1, sy1), QPointF(sx2, sy2),
+                math.hypot(x2 - x1, y2 - y1), MEASURE_COLOR,
+            )
+            self._scene.addItem(item)
+            self._measurement_items.append(item)
+        self._btn_clear_measure.setEnabled(bool(self._measurements))
+
     def _update_magnifier(self, x: float, y: float) -> None:
         if not self._loaded:
             return
+        # While rotation edit dialog is open, magnifier stays locked on the component
+        if self._rotation_lock_xy is not None:
+            return
+        if self._grid_active:
+            return
         if getattr(self._view, "_zoom_active", False):
             return
+        if getattr(self._view, "_panning", False):
+            return
+        self._mag_cell_rect = None
         self._mag_target = (x, y)
+        self._refresh_magnifier()
+
+    def _set_mag_factor(self, factor: float) -> None:
+        """Set magnification factor, sync combo, and refresh."""
+        self._mag_factor = factor
+        # Sync combo box without triggering handler loop
+        self._combo_mag.blockSignals(True)
+        for i in range(self._combo_mag.count()):
+            data = self._combo_mag.itemData(i)
+            if data is not None and abs(float(data) - factor) < 1e-9:
+                self._combo_mag.setCurrentIndex(i)
+                break
+        self._combo_mag.blockSignals(False)
+        self._mag_group.setTitle(tr("Details (Zoom {f:g}x)", f=self._mag_factor))
+        if not self._grid_active:
+            self._mag_cell_rect = None
         self._refresh_magnifier()
 
     def _on_mag_factor_changed(self) -> None:
         self._mag_factor = float(self._combo_mag.currentData() or _MAG_FACTOR)
         self._mag_group.setTitle(tr("Details (Zoom {f:g}x)", f=self._mag_factor))
+        if not self._grid_active:
+            self._mag_cell_rect = None
         self._refresh_magnifier()
 
     def _refresh_magnifier(self) -> None:
@@ -1288,17 +2178,37 @@ QGroupBox::title {
         vp = self._mag_view.viewport()
         vw = max(vp.width(), 1)
         vh = max(vp.height(), 1)
-        scale = _magnifier_scale(self._board_size(), vw, vh, self._mag_factor)
         x, y = self._mag_target
+        # While rotation edit is active, use factor-based zoom on the locked point
+        if self._rotation_lock_xy is None and self._mag_cell_rect is not None:
+            cell = self._mag_cell_rect
+            if cell.width() > 0 and cell.height() > 0:
+                sx = vw / cell.width()
+                sy = vh / cell.height()
+                cx, cy = cell.center().x(), cell.center().y()
+                dx = vw / 2.0 - sx * cx
+                dy = vh / 2.0 - sy * cy
+                self._mag_view.setTransform(QTransform(sx, 0, 0, sy, dx, dy))
+                self._mag_view.horizontalScrollBar().setValue(0)
+                self._mag_view.verticalScrollBar().setValue(0)
+                return
+        scale = _magnifier_scale(self._board_size(), vw, vh, self._mag_factor)
         self._mag_view.setTransform(QTransform().fromScale(scale, scale))
         self._mag_view.centerOn(x, y)
 
     def _on_row_changed(self, current_row: int, _col: int = 0,
                         _prev_row: int = -1, _prev_col: int = -1) -> None:
-        if 0 <= current_row < len(self._component_index):
+        if self._group_by_mpn and 0 <= current_row < len(self._group_rows):
+            self._selected_marker_indices = set(self._group_rows[current_row])
+            self._selected_marker_index = (
+                self._component_index[current_row] if self._component_index else -1
+            )
+        elif 0 <= current_row < len(self._component_index):
             self._selected_marker_index = self._component_index[current_row]
+            self._selected_marker_indices = {self._selected_marker_index}
         else:
             self._selected_marker_index = -1
+            self._selected_marker_indices = set()
         self._restore_highlight()
         if self._selected_marker_index >= 0:
             records = self._current_layer_records()
@@ -1309,12 +2219,114 @@ QGroupBox::title {
     def _on_component_double_clicked(self, row: int, _col: int) -> None:
         if not (0 <= row < len(self._component_index)):
             return
+        if self._group_by_mpn:
+            self._selected_marker_indices = set(self._group_rows[row])
+            self._restore_highlight()
         idx = self._component_index[row]
         records = self._current_layer_records()
         if not (0 <= idx < len(records)):
             return
         x, y, _rotation = _record_coord(records[idx])
         self._update_magnifier(x, -y)
+
+    def _on_component_menu(self, pos) -> None:
+        if self._group_by_mpn:
+            return
+        table = self._table_components
+        row = table.rowAt(pos.y())
+        if not (0 <= row < len(self._component_index)):
+            return
+        table.selectRow(row)
+        menu = QMenu(self)
+        act_edit = menu.addAction(tr("Edit Rotation"))
+        chosen = menu.exec(table.viewport().mapToGlobal(pos))
+        if chosen == act_edit:
+            self._edit_rotation_for_row(row)
+
+    def _edit_rotation_for_row(self, row: int) -> None:
+        if self._group_by_mpn or not (0 <= row < len(self._component_index)):
+            return
+        idx = self._component_index[row]
+        records = self._current_layer_records()
+        if not (0 <= idx < len(records)):
+            return
+        record = records[idx]
+        x, y, cur_rot = _record_coord(record)
+
+        # If a dialog is already open, close it first
+        if self._rotation_dialog is not None:
+            try:
+                self._rotation_dialog.close()
+            except RuntimeError:
+                pass
+            self._rotation_dialog = None
+
+        # Auto-jump view to the component being edited
+        self._center_view_on(x, -y)
+
+        # Boost magnifier zoom for detailed inspection during rotation edit
+        self._rot_mag_saved = self._mag_factor
+        self._set_mag_factor(_ROT_EDIT_MAG_FACTOR)
+        # Lock magnifier on this component while editing
+        self._rotation_lock_xy = (x, -y)
+
+        dlg = RotationEditDialog(record, parent=self,
+                                 preview_cb=lambda v: self.show_rotation_preview(idx, v))
+        dlg.accepted.connect(self._on_rotation_edit_accepted)
+        dlg.finished.connect(self._on_rotation_edit_closed)
+        self._rotation_ctx = (record, row, cur_rot)
+        self._rotation_dialog = dlg
+        dlg.show()
+
+    def _center_view_on(self, x: float, y: float) -> None:
+        """Center both main view and magnifier on the given coordinates."""
+        try:
+            self._view.centerOn(QPointF(x, y))
+        except RuntimeError:
+            pass
+        try:
+            if self._mag_view is not None:
+                self._mag_view.centerOn(QPointF(x, y))
+        except RuntimeError:
+            pass
+        self._mag_target = (x, y)
+
+    def _on_rotation_edit_accepted(self) -> None:
+        dlg = self._rotation_dialog
+        if dlg is None:
+            return
+        record, row, cur_rot = self._rotation_ctx
+        new_rot = float(dlg.new_rotation())
+        ic_mode = dlg.is_ic_mode()
+        changed_val = abs(new_rot - cur_rot) >= 1e-9
+        changed_conv = bool(record.is_ic_rotation) != ic_mode
+        if not changed_val and not changed_conv:
+            return  # nothing numeric or direction-wise to persist
+        record.is_ic_rotation = ic_mode
+        record.status = "Edited"
+        record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if changed_val:
+            record.new_rotation = new_rot
+        rot_item = self._table_components.item(row, 4)
+        if rot_item is not None:
+            shown = float(
+                record.new_rotation
+                if record.new_rotation is not None
+                else record.old_rotation
+            )
+            rot_item.setText(f"{shown:.0f}\u00b0")
+        self._rebuild_marker_overlay()
+        self.rotation_edited.emit(self._record_index_in_records(record))
+
+    def _on_rotation_edit_closed(self) -> None:
+        self.clear_rotation_preview()
+        # Release magnifier lock and restore zoom level
+        self._rotation_lock_xy = None
+        if self._rot_mag_saved is not None:
+            self._set_mag_factor(self._rot_mag_saved)
+            self._rot_mag_saved = None
+        self._rotation_dialog = None
+        self._rotation_ctx = None
 
     def _render_lines(
         self,
@@ -1325,9 +2337,11 @@ QGroupBox::title {
         off_x: float,
         off_y: float,
         mirror_x: bool = False,
-    ) -> None:
+        key: str = "",
+    ) -> List[QGraphicsPathItem]:
         if not render_data.lines and not render_data.arcs:
-            return
+            self._line_items[key] = []
+            return []
         center_x, center_y = self._board_center
         try:
             scale = abs(self._view.transform().m11())
@@ -1353,10 +2367,13 @@ QGroupBox::title {
                 path = QPainterPath()
                 buckets[w] = path
             _append_arc_path(path, ar, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
+        items: List[QGraphicsPathItem] = []
         for w, path in buckets.items():
             pen = QPen(color, w)
             pen.setCosmetic(False)
-            self._scene.addPath(path, pen)
+            items.append(self._scene.addPath(path, pen))
+        self._line_items[key] = items
+        return items
 
     def _render_fills(
         self,
@@ -1367,26 +2384,23 @@ QGroupBox::title {
         off_x: float,
         off_y: float,
         mirror_x: bool = False,
-    ) -> None:
+        key: str = "",
+    ) -> Optional[QGraphicsPathItem]:
         if not render_data.flashes:
-            return
+            self._fill_items[key] = None
+            return None
         center_x, center_y = self._board_center
         final = _build_fill_path(
             render_data.flashes, mirror, angle, off_x, off_y,
             center_x, center_y, mirror_x,
         )
-        self._scene.addPath(final, QPen(Qt.NoPen), QBrush(color))
-
-    def _schedule_redraw(self) -> None:
-        if not self._loaded:
-            return
-        self._redraw_timer.start()
+        item = self._scene.addPath(final, QPen(Qt.NoPen), QBrush(color))
+        self._fill_items[key] = item
+        return item
 
     def _redraw(self) -> None:
         if not self._loaded:
             return
-        self._scene.clear()
-        self._overlay = None
 
         angle = self._combo_rot.currentData() or 0
         if self._chk_invert_rot.isChecked():
@@ -1395,51 +2409,197 @@ QGroupBox::title {
         mirror_x = self._chk_mirror_x.isChecked()
         off_x = self._spin_off_x.value()
         off_y = self._spin_off_y.value()
-
         is_top = self._combo_layer.currentIndex() == 0
+        try:
+            key_scale = round(abs(self._view.transform().m11()), 4)
+        except Exception:
+            key_scale = self._scene_scale
+        key = (is_top, angle, mirror, mirror_x, round(off_x, 4), round(off_y, 4), key_scale)
+
+        if self._scene_key != key:
+            self._scene_key = key
+            self._rebuild_scene(angle, mirror, mirror_x, off_x, off_y, is_top)
+        else:
+            self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top)
+
+        self._restore_highlight()
+        self._refresh_magnifier()
+
+    def _rebuild_scene(
+        self, angle: float, mirror: bool, mirror_x: bool,
+        off_x: float, off_y: float, is_top: bool,
+    ) -> None:
+        self._scene.clear()
+        self._overlay = None
+        self._goto_crosshair = None
+        self._grid_item = None
+        self._measure_preview = None
+        self._line_items = {}
+        self._fill_items = {}
+        self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top)
+        self._update_goto_crosshair()
+        self._update_grid()
+        self._rebuild_measurements()
+
+    def _marker_tuples(self) -> List[Tuple[float, float, float, float]]:
+        """Build marker tuples (x, -y, rotation, half) for current layer records.
+
+        IC-convention records draw at (rot + 45) so the arrow matches the knob
+        needle direction used while editing; the live preview override (set
+        from the dialog) always wins.
+        """
+        if not self._chk_pickplace.isChecked():
+            return []
+        grid = self._pad_grid(self._combo_layer.currentIndex() == 0)
+        markers = []
+        for i, record in enumerate(self._current_layer_records()):
+            x, y, rotation = _record_coord(record)
+            if getattr(record, "is_ic_rotation", False):
+                rotation = (rotation + 45.0) % 360.0
+            if self._rotation_preview is not None and self._rotation_preview[0] == i:
+                rotation = self._rotation_preview[1]
+            size = grid.nearest(x, y)
+            half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
+            markers.append((x, -y, rotation, half))
+        return markers
+
+    def _rebuild_marker_overlay(self) -> None:
+        markers = self._marker_tuples()
+        if not markers:
+            if self._overlay is not None:
+                self._scene.removeItem(self._overlay)
+                self._overlay = None
+            return
+        try:
+            view_scale = abs(self._view.transform().m11())
+        except Exception:
+            view_scale = 1.0
+        arrow_floor = (self._arrow_min_px / view_scale) if view_scale > 0 else 0.0
+        if self._overlay is not None:
+            self._scene.removeItem(self._overlay)
+        self._overlay = MarkerOverlayItem(
+            markers, show_unselected=self._chk_crosshair.isChecked(),
+            arrow_floor=arrow_floor, arrow_min_px=self._arrow_min_px,
+            cross_color=self._colors["cross"],
+            highlight_color=self._colors["highlight"],
+            checked_color=CHECKED_COLOR,
+            checked_indices=self._checked_layer_indices(),
+            flagged_indices=self._flagged_indices,
+            show_frame=self._show_frame,
+        )
+        self._scene.addItem(self._overlay)
+        self._restore_highlight()
+
+    def show_rotation_preview(self, index: int, value: float) -> None:
+        """Show live rotation preview for a marker at given layer index."""
+        self._rotation_preview = (index, float(value))
+        if self._overlay is not None:
+            try:
+                self._overlay.set_markers(self._marker_tuples())
+            except RuntimeError:
+                pass
+
+    def clear_rotation_preview(self) -> None:
+        """Clear any active rotation preview and restore markers."""
+        if self._rotation_preview is not None:
+            self._rotation_preview = None
+            if self._overlay is not None:
+                try:
+                    self._overlay.set_markers(self._marker_tuples())
+                except RuntimeError:
+                    pass
+
+    def set_flagged_indices(self, indices) -> None:
+        flagged = set(indices)
+        if flagged != self._flagged_indices:
+            self._flagged_indices = flagged
+            self._rebuild_marker_overlay()
+
+    def _apply_style(
+        self, angle: float, mirror: bool, mirror_x: bool,
+        off_x: float, off_y: float, is_top: bool,
+    ) -> None:
         paste = self._top if is_top else self._bottom
         silk = self._silk if is_top else self._silk_bottom
 
         if self._chk_outline.isChecked():
-            self._render_lines(self._outline, OUTLINE_COLOR, angle, mirror, off_x, off_y, mirror_x)
+            if "outline" not in self._line_items:
+                self._render_lines(
+                    self._outline, self._colors["outline"], angle, mirror,
+                    off_x, off_y, mirror_x, "outline",
+                )
         if self._chk_silk.isChecked():
-            self._render_lines(silk, SILK_COLOR, angle, mirror, off_x, off_y, mirror_x)
-            self._render_fills(silk, SILK_COLOR, angle, mirror, off_x, off_y, mirror_x)
+            if "silk" not in self._line_items:
+                self._render_lines(
+                    silk, self._colors["silk"], angle, mirror,
+                    off_x, off_y, mirror_x, "silk",
+                )
+            if "silk" not in self._fill_items:
+                self._render_fills(
+                    silk, self._colors["silk"], angle, mirror,
+                    off_x, off_y, mirror_x, "silk",
+                )
         if self._chk_paste.isChecked():
-            self._render_fills(paste, TOP_PASTE_COLOR if is_top else BOTTOM_PASTE_COLOR, angle, mirror, off_x, off_y, mirror_x)
+            paste_color = self._colors["paste_top"] if is_top else self._colors["paste_bottom"]
+            if "paste" not in self._line_items:
+                self._render_lines(
+                    paste, paste_color, angle, mirror,
+                    off_x, off_y, mirror_x, "paste",
+                )
+            if "paste" not in self._fill_items:
+                self._render_fills(
+                    paste, paste_color, angle, mirror,
+                    off_x, off_y, mirror_x, "paste",
+                )
+
+        self._update_layer_visibility("outline", self._chk_outline.isChecked(), self._colors["outline"])
+        self._update_layer_visibility("silk", self._chk_silk.isChecked(), self._colors["silk"])
+        self._update_fill_visibility("silk", self._chk_silk.isChecked(), self._colors["silk"])
+        paste_color = self._colors["paste_top"] if is_top else self._colors["paste_bottom"]
+        self._update_layer_visibility("paste", self._chk_paste.isChecked(), paste_color)
+        self._update_fill_visibility("paste", self._chk_paste.isChecked(), paste_color)
 
         if self._chk_pickplace.isChecked():
-            center_x, center_y = self._board_center
-            pads_raw = [
-                (f.cx, f.cy, _flash_size(f))
-                for f in paste.flashes
-            ]
-            self._pads = [
-                (
-                    *apply_transform(px, py, mirror, angle, off_x, off_y, center_x, center_y, mirror_x),
-                    size,
-                )
-                for px, py, size in pads_raw
-            ]
-            markers = []
-            for record in self._current_layer_records():
-                x, y, rotation = _record_coord(record)
-                size = _nearest_pad_size(pads_raw, x, y)
-                half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
-                markers.append((x, -y, rotation, half))
-            try:
-                view_scale = abs(self._view.transform().m11())
-            except Exception:
-                view_scale = 1.0
-            arrow_floor = (self._arrow_min_px / view_scale) if view_scale > 0 else 0.0
-            self._overlay = MarkerOverlayItem(
-                markers, show_unselected=self._chk_crosshair.isChecked(),
-                arrow_floor=arrow_floor, arrow_min_px=self._arrow_min_px,
-            )
-            self._scene.addItem(self._overlay)
+            self._rebuild_marker_overlay()
+        elif self._overlay is not None:
+            self._scene.removeItem(self._overlay)
+            self._overlay = None
 
-        self._restore_highlight()
-        self._refresh_magnifier()
+    def _update_layer_visibility(self, key: str, visible: bool, color: QColor) -> None:
+        items = self._line_items.get(key)
+        if not items:
+            return
+        valid_items = []
+        for item in items:
+            try:
+                item.setVisible(visible)
+                pen = item.pen()
+                pen.setColor(color)
+                item.setPen(pen)
+                valid_items.append(item)
+            except RuntimeError:
+                pass
+        if len(valid_items) != len(items):
+            self._line_items[key] = valid_items
+
+    def _update_fill_visibility(self, key: str, visible: bool, color: QColor) -> None:
+        item = self._fill_items.get(key)
+        if item is None:
+            return
+        try:
+            item.setVisible(visible)
+            item.setBrush(QBrush(color))
+        except RuntimeError:
+            self._fill_items[key] = None
+
+    def _pad_grid(self, is_top: bool) -> PadGrid:
+        grid = self._pad_grid_cache.get(is_top)
+        if grid is None:
+            paste = self._top if is_top else self._bottom
+            pads = [(f.cx, f.cy, _flash_size(f)) for f in paste.flashes]
+            grid = PadGrid(pads)
+            self._pad_grid_cache[is_top] = grid
+        return grid
 
     def _gerber_content_bbox(self) -> Tuple[float, float, float, float]:
         for data in (self._outline, self._top, self._bottom):
@@ -1487,6 +2647,8 @@ QGroupBox::title {
         if abs(scale - self._scene_scale) > 1e-6:
             self._scene_scale = scale
             self._redraw()
+        self._grid_available = True
+        self._chk_grid.setEnabled(True)
 
     def _compute_board_center(self) -> Tuple[float, float]:
         xs, ys = [], []
@@ -1556,21 +2718,15 @@ QGroupBox::title {
         self._spin_off_x.setValue(-tx)
         self._spin_off_y.setValue(-ty)
 
-    def _on_reset(self) -> None:
-        self._combo_rot.setCurrentIndex(0)
-        self._chk_invert_rot.setChecked(False)
-        self._chk_outline.setChecked(True)
-        self._chk_paste.setChecked(True)
-        self._chk_silk.setChecked(True)
-        self._chk_pickplace.setChecked(True)
-        self._chk_crosshair.setChecked(True)
-        self._search_input.clear()
-        self._reset_offset()
-        for i in range(self._combo_mag.count()):
-            if abs(self._combo_mag.itemData(i) - _MAG_FACTOR) < 1e-9:
-                self._combo_mag.setCurrentIndex(i)
-                break
-        self._fit_scene()
+    def _on_reload_records(self) -> None:
+        """Re-sync the component table and markers from the live record list.
+
+        The viewer shares the same list object with the main window, so any
+        change made there (rotation edit, batch edit, delete, undo, ...)
+        is reflected here immediately.
+        """
+        self._rotation_preview = None
+        self.refresh_records(self._records)
 
 
 def build_pads(render_data: RenderData) -> List[Tuple[float, float, float]]:

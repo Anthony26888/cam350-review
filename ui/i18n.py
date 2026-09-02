@@ -266,7 +266,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "No numeric value found in CAM350 {axis} field. Position ({x}, {y}), clipboard content was: {content}":
             "Không tìm thấy giá trị số trong ô {axis} của CAM350. Vị trí ({x}, {y}), nội dung clipboard: {content}",
         # Align origin wizard
-        "Step 1/6: Select Gerber Files": "Bước 1/6: Chọn file Gerber",
+        "Step 1/7: Select Gerber Files": "Bước 1/7: Chọn file Gerber",
         "Gerber Files": "File Gerber",
         "GKO (Outline) *:": "GKO (Outline) *:",
         "GTP (Top Paste):": "GTP (Paste lớp trên):",
@@ -286,7 +286,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Please select the GKO (Outline) file.": "Vui lòng chọn file GKO (Outline).",
         "Analyzing Gerber...": "Đang phân tích Gerber...",
         "Cannot read GKO: {e}": "Không đọc được GKO: {e}",
-        "Step 2/6: Panel Detection Result": "Bước 2/6: Kết quả phát hiện Panel",
+        "Step 2/7: Panel Detection Result": "Bước 2/7: Kết quả phát hiện Panel",
         "Panel Type A (step-repeat)": "Panel loại A (step-repeat)",
         "Panel Type B (multiple blocks)": "Panel loại B (nhiều khối)",
         "Single board": "Board đơn",
@@ -304,7 +304,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "    w={w:.4f} mm ({wm:.2f} mil)  h={h:.4f} mm ({hm:.2f} mil)",
         "Panel detected. The next step lets you choose the origin mode.":
             "Đã phát hiện panel. Bước tiếp theo cho phép bạn chọn chế độ gốc.",
-        "Step 3/6: Rotation and Unit Options": "Bước 3/6: Xoay và đơn vị",
+        "Step 3/7: Rotation and Unit Options": "Bước 3/7: Xoay và đơn vị",
         "Rotate Panel/Board": "Xoay Panel/Board",
         "0° (no rotation) - default": "0° (không xoay) - mặc định",
         "Select layer to apply 90° rotation formula": "Chọn lớp để áp công thức xoay 90°",
@@ -313,7 +313,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "PickPlace coordinate units": "Đơn vị toạ độ PickPlace",
         "mm (millimeters) - default": "mm (milimét) - mặc định",
         "mil (convert to mm: * 0.0254)": "mil (đổi sang mm: * 0.0254)",
-        "Step 4/6: Computing offsets...": "Bước 4/6: Đang tính offset...",
+        "Step 4/7: Computing offsets...": "Bước 4/7: Đang tính offset...",
         "Starting computation...": "Đang bắt đầu tính toán...",
         "Detecting panel from GKO...": "Đang phát hiện panel từ GKO...",
         "Detected: {kind}, {count} instance(s)": "Đã phát hiện: {kind}, {count} bản",
@@ -325,10 +325,10 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Creating transforms...": "Đang tạo phép biến đổi...",
         "Calculation complete.": "Tính toán hoàn tất.",
         "Error: {e}": "Lỗi: {e}",
-        "Step 4/6: Updating data...": "Bước 4/6: Đang cập nhật dữ liệu...",
+        "Step 4/7: Updating data...": "Bước 4/7: Đang cập nhật dữ liệu...",
         "Updated {count}/{total}": "Đã cập nhật {count}/{total}",
         "Done! {count} components aligned.": "Hoàn tất! Đã canh {count} linh kiện.",
-        "Step 5/6: Get Panel Origin from CAM350 (Macro)": "Bước 5/6: Lấy Gốc Panel từ CAM350 (Macro)",
+        "Step 5/7: Get Panel Origin from CAM350 (Macro)": "Bước 5/7: Lấy Gốc Panel từ CAM350 (Macro)",
         "Layer": "Lớp",
         "Top layer (default)": "Lớp trên (mặc định)",
         "Bottom layer": "Lớp dưới (Bottom)",
@@ -350,7 +350,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "Đang chạy macro trên CAM350... (lớp={layer}, góc={angle}°, nhảy=({ox}, {oy}))",
         "No Panel Origin data from Step 2.": "Không có dữ liệu Gốc Panel từ Bước 2.",
         "Macro failed: {error}": "Macro thất bại: {error}",
-        "Step 6/6: Alignment Result": "Bước 6/6: Kết quả canh",
+        "Step 7/7: Alignment Result": "Bước 7/7: Kết quả canh",
         "Panel Origin": "Gốc Panel",
         "Board Origin": "Gốc Board",
         "Yes (×0.0254)": "Có (×0.0254)",
@@ -434,6 +434,15 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "Outline: {ol} đường, {of} pad | Trên: {tf} pad | Dưới: {bf} pad | Silk Trên: {st} đường | Silk Dưới: {sb} đường",
         "Error reading Gerber file": "Lỗi đọc file Gerber",
         "Cannot read Gerber:\n{message}": "Không đọc được Gerber:\n{message}",
+        "Measure": "Đo kích thước",
+        "Clear": "Xóa",
+        "Click two points to measure the distance. Right-click or Esc cancels the current measurement.":
+            "Click 2 điểm để đo khoảng cách. Click chuột phải hoặc Esc để hủy phép đo đang vẽ.",
+        "Measure mode: click the start point.":
+            "Chế độ đo: click điểm bắt đầu.",
+        "Measure mode: click the end point.":
+            "Chế độ đo: click điểm kết thúc.",
+        "Distance: {d:.3f} mm": "Khoảng cách: {d:.3f} mm",
         # PCB Info dialog
         "Hotkey {hk}: point the mouse at the desired position in CAM350 then press the hotkey to read coordinates.\nThe macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills Boc 2, the 3rd time fills Boc 3. The Save button appears after enough data.":
             "Hotkey {hk}: di chuyển chuột đến vị trí mong muốn trong CAM350 rồi nhấn hotkey để đọc toạ độ.\nMacro tự điền X Boc 1 & Y Boc 1, lần thứ 2 điền Boc 2, lần thứ 3 điền Boc 3. Nút Save hiện ra khi đủ dữ liệu.",
@@ -504,6 +513,77 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Evaluation mode (license check disabled)": "Chế độ đánh giá (đã tắt kiểm tra giấy phép)",
         "Licensed to {customer} | Expires {expiry} | {days} days remaining":
             "Cấp cho {customer} | Hết hạn {expiry} | còn {days} ngày",
+        # Pre-screen check (Align wizard step 6/7)
+        "Step 6/7: Pre-screen Check": "Bước 6/7: Kiểm tra Pre-screen",
+        "▶ Run Check": "▶ Chạy kiểm tra",
+        "Not run yet. Press Run Check to scan the board.":
+            "Chưa chạy. Nhấn Chạy kiểm tra để quét toàn bộ board.",
+        "Starting pre-screen...": "Đang bắt đầu kiểm tra...",
+        "Reading GKO (outline)...": "Đang đọc GKO (outline)...",
+        "Reading GTP (Top Paste)...": "Đang đọc GTP (Paste lớp trên)...",
+        "Reading GBP (Bottom Paste)...": "Đang đọc GBP (Paste lớp dưới)...",
+        "Running pre-screen checks...": "Đang chạy các kiểm tra...",
+        "Pre-screen failed: {message}": "Kiểm tra Pre-screen lỗi: {message}",
+        "✅ No issues found.": "✅ Không phát hiện bất thường.",
+        "🔁 ROT : {n}": "🔁 ROT : {n}",
+        "📍 PAD : {n}": "📍 PAD : {n}",
+        "📌 DUP : {n}": "📌 DUP : {n}",
+        "⬛ OUT : {n}": "⬛ OUT : {n}",
+        "Total: {total} / {rec_count} components":
+            "Tổng: {total} / {rec_count} linh kiện",
+        "Legend": "Chú thích",
+        "🔁 ROT = Rotation — unusual rotation":
+            "🔁 ROT = Rotation — góc xoay bất thường",
+        "(differs more than {dev:g}\u00b0 from the majority of the same MPN)":
+            "(lệch quá {dev:g}\u00b0 so với đa số cùng MPN)",
+        "📍 PAD = Pad — PickPlace block offset vs paste":
+            "📍 PAD = Pad — PickPlace lệch khối so với paste",
+        "(median nearest-pad distance above {tol:g} mm)":
+            "(trung vị khoảng cách tới pad gần nhất vượt {tol:g} mm)",
+        "median nearest-pad distance {v:.2f} mm exceeds tolerance {tol:g} mm":
+            "trung vị khoảng cách tới pad gần nhất {v:.2f} mm vượt ngưỡng {tol:g} mm",
+        "📎 Paste match (median): {v} mm over {n} components":
+            "📎 Độ khớp paste (trung vị): {v} mm trên {n} con",
+        "📎 Paste match: no paste data":
+            "📎 Độ khớp paste: không có dữ liệu paste",
+        "Updating component table...":
+            "Đang cập nhật bảng thành phần...",
+        "Please wait":
+            "Vui lòng đợi",
+        "📌 DUP = Duplicate — two components share coordinates":
+            "📌 DUP = Duplicate — hai linh kiện trùng tọa độ",
+        "(within {tol:g} mm)": "(trong phạm vi {tol:g} mm)",
+        "⬛ OUT = Out of outline — component outside board outline":
+            "⬛ OUT = Out of outline — linh kiện nằm ngoài outline board",
+        "(more than {margin:g} mm beyond the board edge)":
+            "(vượt quá {margin:g} mm so với biên board)",
+        "💡 Details: check the Flags column in the main table and dashed orange frames in Gerber View.":
+            "💡 Xem chi tiết: cột Flags ở bảng chính và khung cam nét đứt trong Gerber View.",
+        "Dismiss flag": "Bỏ qua cảnh báo",
+        "duplicate coordinates with {des}": "trùng tọa độ với {des}",
+        "rotation {rot:.0f}\u00b0 differs from MPN majority {maj:.0f}\u00b0 ({mpn})":
+            "góc xoay {rot:.0f}\u00b0 khác đa số cùng MPN ({maj:.0f}\u00b0, {mpn})",
+        "nearest paste pad is {dist:.3f} mm away (> {tol:g} mm)":
+            "paste gần nhất cách {dist:.3f} mm (> {tol:g} mm)",
+        "outside board outline (+{margin:g} mm)":
+            "nằm ngoài outline board (+{margin:g} mm)",
+        "⚠ Pre-screen: {total} issue(s) ({rot} ROT · {pad} PAD · {dup} DUP · {out} OUT)":
+            "⚠ Pre-screen: {total} cảnh báo ({rot} ROT · {pad} PAD · {dup} DUP · {out} OUT)",
+        "⚠ Layer {layer}: alignment unreliable — PAD/OUT results may be inaccurate.":
+            "⚠ Lớp {layer}: align không tin cậy — kết quả PAD/OUT có thể không chính xác.",
+        "Run Check": "Kiểm tra lại",
+        "Reload": "Nạp lại",
+        "Reload latest component data from the main window":
+            "Nạp lại dữ liệu component mới nhất từ cửa sổ chính",
+        "Pre-screen Check": "Kiểm tra Pre-screen",
+        "Gerber outline file (GKO) is missing — run Align PickPlace Origin again.":
+            "Thiếu file outline (GKO) — hãy chạy Align PickPlace Origin lại.",
+        "Re-run the pre-screen check on the current data":
+            "Chạy lại pre-screen trên dữ liệu hiện tại",
+        "\U0001F504 Re-running pre-screen check...":
+            "\U0001F504 Đang kiểm tra lại pre-screen...",
+        "Run Align PickPlace Origin once to enable Run Check.":
+            "Hãy chạy Align PickPlace Origin một lần để bật nút Run Check.",
     },
 }
 

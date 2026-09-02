@@ -42,6 +42,37 @@ def apply_transform(
     return x + off_x, y + off_y
 
 
+def apply_inverse_transform(
+    x: float,
+    y: float,
+    mirror: bool,
+    angle: float,
+    off_x: float,
+    off_y: float,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+    mirror_x: bool = False,
+) -> Tuple[float, float]:
+    """Invert apply_transform: offset -> rotate back -> flip back.
+
+    Given a point already in display (transformed) gerber space, recover the
+    original gerber coordinate. Mirrors are self-inverse and rotation is
+    reversed. Used to store measurement anchors in source coordinates so they
+    stay glued to the board when the display transform changes.
+    """
+    x -= off_x
+    y -= off_y
+    theta = math.radians(-angle)
+    c, s = math.cos(theta), math.sin(theta)
+    rx = x * c - y * s
+    ry = x * s + y * c
+    if mirror:
+        rx = 2.0 * center_x - rx
+    if mirror_x:
+        ry = 2.0 * center_y - ry
+    return rx, ry
+
+
 def transform_rot(rot: float, mirror: bool, angle: float, mirror_x: bool = False) -> float:
     """Return the effective aperture rotation after flips + rotate.
 
