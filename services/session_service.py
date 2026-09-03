@@ -34,6 +34,8 @@ class SessionData:
         self.gerber_view: Optional[Dict[str, Any]] = None
         self.column_mapping: Optional[Dict[str, str]] = None
         self.gerber_files: Optional[Dict[str, str]] = None
+        self.prescreen_dismissed: List[str] = []
+        self.prescreen_ctx: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -50,6 +52,8 @@ class SessionData:
             "gerber_view": self.gerber_view,
             "column_mapping": self.column_mapping,
             "gerber_files": self.gerber_files,
+            "prescreen_dismissed": self.prescreen_dismissed,
+            "prescreen_ctx": self.prescreen_ctx,
         }
 
     @staticmethod
@@ -68,6 +72,8 @@ class SessionData:
         obj.gerber_view = data.get("gerber_view") or None
         obj.column_mapping = data.get("column_mapping") or None
         obj.gerber_files = data.get("gerber_files") or None
+        obj.prescreen_dismissed = list(data.get("prescreen_dismissed") or [])
+        obj.prescreen_ctx = data.get("prescreen_ctx") or None
         return obj
 
 
@@ -92,7 +98,9 @@ class SessionService:
                 "remark": r.remark,
                 "review_time": r.review_time,
                 "datasheet": r.datasheet,
+                "checked": r.checked,
                 "row_index": r.row_index,
+                "is_ic_rotation": bool(r.is_ic_rotation),
             })
         return result
 
@@ -115,7 +123,9 @@ class SessionService:
                 remark=item.get("remark", ""),
                 review_time=item.get("review_time"),
                 datasheet=item.get("datasheet", ""),
+                checked=bool(item.get("checked", False)),
                 row_index=item.get("row_index", 0),
+                is_ic_rotation=bool(item.get("is_ic_rotation", False)),
             ))
         return records
 
@@ -134,6 +144,8 @@ class SessionService:
         gerber_view: Optional[Dict[str, Any]] = None,
         column_mapping: Optional[Dict[str, str]] = None,
         gerber_files: Optional[Dict[str, str]] = None,
+        prescreen_dismissed: Optional[List[str]] = None,
+        prescreen_ctx: Optional[Dict[str, Any]] = None,
     ) -> None:
         data = SessionData()
         data.source_file = source_file
@@ -148,6 +160,8 @@ class SessionService:
         data.gerber_view = gerber_view
         data.column_mapping = column_mapping
         data.gerber_files = gerber_files
+        data.prescreen_dismissed = list(prescreen_dismissed or [])
+        data.prescreen_ctx = prescreen_ctx or None
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, indent=2, ensure_ascii=False)

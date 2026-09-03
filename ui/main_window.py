@@ -1,6 +1,7 @@
 import math
 import os
 import json
+import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
 
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
     QLabel, QSplitter, QMenuBar, QMenu, QToolBar,
     QApplication, QDialog, QProgressDialog, QStyle,
 )
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QPointF
 from PySide6.QtGui import (
     QAction, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen,
 )
@@ -25,6 +26,8 @@ from services.cam350_controller import Cam350Controller
 from services.export_service import ExportService
 from services.datasheet_service import DatasheetService
 from services.session_service import SessionService
+from services.prescreen import dismiss_key_for, pack_prescreen_ctx, summarize, unpack_prescreen_ctx
+from utils.perf_log import Timer, log_event
 from ui.table_widget import TableWidget
 from ui.review_panel import ReviewPanel
 from ui.edit_dialog import EditDialog
@@ -32,7 +35,7 @@ from ui.batch_edit_dialog import BatchEditDialog
 from ui.mapping_dialog import ColumnMappingDialog
 from ui.settings_dialog import SettingsDialog
 from ui.calibration_wizard import CalibrationWizard
-from ui.origin_align_wizard import OriginAlignWizard
+from ui.origin_align_wizard import OriginAlignWizard, PrescreenCheckDialog
 from ui.gerber_viewer import GerberViewer
 from ui.i18n import tr
 from utils.path_utils import resource_path
@@ -143,6 +146,30 @@ def _export_icon() -> QIcon:
     return _paint_icon(_d)
 
 
+def _prescreen_icon() -> QIcon:
+    """Magnifier with a green tick — distinct from the reload (Align) icon."""
+    def _d(p, s):
+        # magnifier lens
+        r = s * 0.30
+        cx, cy = s * 0.40, s * 0.40
+        pen = QPen(QColor("#0D9488"), 1.8)
+        p.setPen(pen)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        # handle
+        p.drawLine(QPointF(cx + r * 0.72, cy + r * 0.72),
+                   QPointF(s - 2.5, s - 2.5))
+        # green tick inside the lens
+        tick = QPen(QColor("#22C55E"), 1.9)
+        tick.setCapStyle(Qt.RoundCap)
+        tick.setJoinStyle(Qt.RoundJoin)
+        p.setPen(tick)
+        p.drawLine(QPointF(cx - r * 0.45, cy + r * 0.05),
+                   QPointF(cx - r * 0.10, cy + r * 0.42))
+        p.drawLine(QPointF(cx - r * 0.10, cy + r * 0.42),
+                   QPointF(cx + r * 0.50, cy - r * 0.35))
+    return _paint_icon(_d)
+
+
 class DatasheetWorker(QThread):
     finished_search = Signal(str, str)
     error = Signal(str)
@@ -197,6 +224,11 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._jump_popup: Optional[JumpPopup] = None
         self._toolbar: Optional[QToolBar] = None
+        self._prescreen_dismissed: set = set()
+        self._pending_align_writes: List[ReviewRecord] = []
+        self._prescreen_bundle: Optional[tuple] = None
+        self._prescreen_ctx_packed: Optional[Dict[str, Any]] = None
+        self._prescreen_dialog: Optional[PrescreenCheckDialog] = None
 
         self._undo_stack: List[List[Dict[str, Any]]] = []
         self._redo_stack: List[List[Dict[str, Any]]] = []
@@ -223,6 +255,8 @@ class MainWindow(QMainWindow):
         new_action = QAction(tr("New Session"), self)
         new_action.setShortcut(QKeySequence.New)
         new_action.triggered.connect(self._new_session)
+        new_action.setEnabled(False)
+        self._new_action = new_action
         file_menu.addAction(new_action)
 
         open_session_action = QAction(tr("Open Session..."), self)
@@ -233,11 +267,15 @@ class MainWindow(QMainWindow):
         save_action = QAction(tr("Save Session"), self)
         save_action.setShortcut(QKeySequence.Save)
         save_action.triggered.connect(self._save_session)
+        save_action.setEnabled(False)
+        self._save_action = save_action
         file_menu.addAction(save_action)
 
         save_as_action = QAction(tr("Save Session As..."), self)
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         save_as_action.triggered.connect(self._save_session_as)
+        save_as_action.setEnabled(False)
+        self._save_as_action = save_as_action
         file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
@@ -254,10 +292,14 @@ class MainWindow(QMainWindow):
         export_menu = file_menu.addMenu(tr("&Export"))
         export_report_action = QAction(tr("Export Review Report"), self)
         export_report_action.triggered.connect(self._export_report)
+        export_report_action.setEnabled(False)
+        self._export_report_action = export_report_action
         export_menu.addAction(export_report_action)
 
         export_fixed_action = QAction(tr("Export PickPlace Fixed"), self)
         export_fixed_action.triggered.connect(self._export_fixed)
+        export_fixed_action.setEnabled(False)
+        self._export_fixed_action = export_fixed_action
         export_menu.addAction(export_fixed_action)
 
         file_menu.addSeparator()
@@ -282,6 +324,8 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu(tr("&Tools"))
         align_action = QAction(tr("Align PickPlace Origin..."), self)
         align_action.triggered.connect(self._align_origin)
+        align_action.setEnabled(False)
+        self._align_action = align_action
         tools_menu.addAction(align_action)
 
         gerber_check_action = QAction(tr("Gerber View..."), self)
@@ -293,6 +337,8 @@ class MainWindow(QMainWindow):
 
         pcb_info_action = QAction(tr("PCB Info..."), self)
         pcb_info_action.triggered.connect(self._open_pcb_info)
+        pcb_info_action.setEnabled(False)
+        self._pcb_info_action = pcb_info_action
         tools_menu.addAction(pcb_info_action)
 
         tools_menu.addSeparator()
@@ -340,6 +386,8 @@ class MainWindow(QMainWindow):
             lambda: spi(QStyle.StandardPixmap.SP_FileIcon),
         )
         btn_new.clicked.connect(self._new_session)
+        btn_new.setEnabled(False)
+        self._btn_new = btn_new
 
         btn_open_session = _register(
             _std_button(tr("Open Session (Ctrl+O)"), lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton)),
@@ -352,6 +400,8 @@ class MainWindow(QMainWindow):
             lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton),
         )
         btn_save.clicked.connect(self._save_session)
+        btn_save.setEnabled(False)
+        self._btn_save = btn_save
 
         self._btn_open = _register(_std_button(tr("Open PickPlace Excel"), _grid_icon), _grid_icon)
         self._btn_open.clicked.connect(self._open_file)
@@ -362,6 +412,14 @@ class MainWindow(QMainWindow):
         )
         self._btn_align.clicked.connect(self._align_origin)
         self._btn_align.setEnabled(False)
+
+        self._btn_run_check = _register(
+            _std_button(tr("Run Check"), _prescreen_icon),
+            _prescreen_icon,
+        )
+        self._btn_run_check.setToolTip(tr("Re-run the pre-screen check on the current data"))
+        self._btn_run_check.clicked.connect(self._open_prescreen_dialog)
+        self._btn_run_check.setEnabled(False)
 
         self._btn_gerber_check = _register(_std_button(tr("Gerber View"), _board_icon), _board_icon)
         self._btn_gerber_check.clicked.connect(self._open_gerber_check)
@@ -384,6 +442,7 @@ class MainWindow(QMainWindow):
 
         self._btn_pcb_info = _register(_std_button(tr("PCB Info"), _chip_icon), _chip_icon)
         self._btn_pcb_info.clicked.connect(self._open_pcb_info)
+        self._btn_pcb_info.setEnabled(False)
 
         self._btn_ok_checked = _register(
             _std_button(tr("OK Checked"), lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton)),
@@ -391,6 +450,7 @@ class MainWindow(QMainWindow):
         )
         self._btn_ok_checked.setObjectName("success")
         self._btn_ok_checked.setEnabled(False)
+        self._btn_ok_checked.clicked.connect(self._mark_checked_ok)
 
         self._btn_delete = _register(
             _std_button(tr("Delete Selected"), lambda: spi(QStyle.StandardPixmap.SP_TrashIcon)),
@@ -398,6 +458,7 @@ class MainWindow(QMainWindow):
         )
         self._btn_delete.setObjectName("danger")
         self._btn_delete.setEnabled(False)
+        self._btn_delete.clicked.connect(self._delete_selected)
 
         self._btn_settings = _register(_std_button(tr("Settings"), _gear_icon), _gear_icon)
         self._btn_settings.clicked.connect(self._open_settings)
@@ -410,6 +471,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_open)
         toolbar.addWidget(self._btn_align)
+        toolbar.addWidget(self._btn_run_check)
         toolbar.addWidget(self._btn_gerber_check)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_export_report)
@@ -432,6 +494,7 @@ class MainWindow(QMainWindow):
         self._table_widget.record_selected.connect(self._on_record_selected)
         self._table_widget.jump_requested.connect(self._on_table_jump)
         self._table_widget.filter_changed.connect(self._on_filter_changed)
+        self._table_widget.flag_dismiss_requested.connect(self._on_flag_dismiss)
 
         self._review_panel = ReviewPanel()
         self._review_panel.previous_requested.connect(self._previous)
@@ -480,12 +543,58 @@ class MainWindow(QMainWindow):
 
         self._status_label.setText(tr("No session to restore. Open a PickPlace file or load a session."))
 
+    def _close_gerber_viewer(self) -> None:
+        viewer = getattr(self, "_gerber_viewer", None)
+        if viewer is None:
+            return
+        try:
+            viewer.close()
+        except RuntimeError:
+            pass
+        self._gerber_viewer = None
+
+    def _close_jump_popup(self) -> None:
+        popup = getattr(self, "_jump_popup", None)
+        if popup is None:
+            return
+        try:
+            popup.close()
+        except RuntimeError:
+            pass
+        self._jump_popup = None
+
+    def _sync_after_mutation(self, focus_index: int = -1) -> None:
+        self._table_widget.set_records(self._records)
+        self._review_panel.set_record_list(self._records)
+        self._update_progress()
+        if self._records and 0 <= focus_index < len(self._records):
+            self._select_and_display(focus_index)
+            if self._jump_popup is not None and self._jump_popup.isVisible():
+                self._jump_popup.show_at(self._records, focus_index)
+            elif self._jump_popup is not None:
+                self._jump_popup.set_records(self._records, focus_index)
+        elif self._jump_popup is not None and self._jump_popup.isVisible():
+            self._jump_popup.close()
+        viewer = getattr(self, "_gerber_viewer", None)
+        if viewer is not None:
+            try:
+                viewer.refresh_records(self._records)
+            except RuntimeError:
+                pass
+
     def _clear_all(self) -> None:
         self._dirty = False
         self._repo.delete_all()
         self._records = []
         self._pickplace_data = None
-        self._gerber_viewer = None
+        self._prescreen_dismissed = set()
+        self._prescreen_bundle = None
+        self._prescreen_ctx_packed = None
+        self._close_prescreen_dialog()
+        if hasattr(self, "_btn_run_check"):
+            self._btn_run_check.setEnabled(False)
+        self._close_gerber_viewer()
+        self._close_jump_popup()
         self._current_index = -1
         self._session_file = None
         self._table_widget.set_records([])
@@ -497,8 +606,12 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(False)
         self._btn_delete.setEnabled(False)
         self._btn_align.setEnabled(False)
+        self._btn_pcb_info.setEnabled(False)
+        self._btn_new.setEnabled(False)
+        self._btn_save.setEnabled(False)
         self._clear_gerber_config()
         self._update_gerber_view_button()
+        self._sync_action_states()
         self._update_progress()
         self._status_label.setText(tr("Ready"))
         from database.pcb_info_repo import PcbInfoRepo
@@ -528,6 +641,15 @@ class MainWindow(QMainWindow):
         enabled = bool(self._records)
         self._btn_gerber_check.setEnabled(enabled)
         self._gerber_check_action.setEnabled(enabled)
+
+    def _sync_action_states(self) -> None:
+        self._align_action.setEnabled(self._btn_align.isEnabled())
+        self._export_report_action.setEnabled(self._btn_export_report.isEnabled())
+        self._export_fixed_action.setEnabled(self._btn_export_fixed.isEnabled())
+        self._pcb_info_action.setEnabled(self._btn_pcb_info.isEnabled())
+        self._new_action.setEnabled(self._btn_new.isEnabled())
+        self._save_action.setEnabled(self._btn_save.isEnabled())
+        self._save_as_action.setEnabled(self._btn_save.isEnabled())
 
     @staticmethod
     def _restore_pcb_info(session) -> None:
@@ -699,6 +821,9 @@ class MainWindow(QMainWindow):
         self._restore_pcb_info(session)
         self._restore_session_gerber(session)
         self._gerber_view_settings = dict(session.gerber_view or {})
+        self._prescreen_dismissed = set(getattr(session, "prescreen_dismissed", None) or ())
+        self._close_prescreen_dialog()
+        self._restore_prescreen_bundle(session)
 
         if session.source_file:
             try:
@@ -722,7 +847,13 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
         self._btn_align.setEnabled(True)
+        self._btn_pcb_info.setEnabled(True)
+        self._btn_new.setEnabled(True)
+        self._btn_save.setEnabled(True)
+        if hasattr(self, "_btn_run_check"):
+            self._btn_run_check.setEnabled(True)
         self._update_gerber_view_button()
+        self._sync_action_states()
 
         if self._records:
             target = min(session.current_index, len(self._records) - 1)
@@ -764,6 +895,8 @@ class MainWindow(QMainWindow):
             gerber_view=self._current_gerber_view_settings(),
             column_mapping=self._pickplace_data.column_mapping if self._pickplace_data else None,
             gerber_files=gerber_files,
+            prescreen_dismissed=sorted(self._prescreen_dismissed),
+            prescreen_ctx=self._prescreen_ctx_packed,
         )
         self._session_file = file_path
         self._config_mgr.update(lastSessionFile=file_path)
@@ -793,6 +926,8 @@ class MainWindow(QMainWindow):
                 gerber_view=self._current_gerber_view_settings(),
                 column_mapping=self._pickplace_data.column_mapping if self._pickplace_data else None,
                 gerber_files=gerber_files,
+                prescreen_dismissed=sorted(self._prescreen_dismissed),
+                prescreen_ctx=self._prescreen_ctx_packed,
             )
             self._config_mgr.update(lastSessionFile=self._session_file)
             self._dirty = False
@@ -874,7 +1009,13 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
         self._btn_align.setEnabled(True)
+        self._btn_pcb_info.setEnabled(True)
+        self._btn_new.setEnabled(True)
+        self._btn_save.setEnabled(True)
+        if hasattr(self, "_btn_run_check"):
+            self._btn_run_check.setEnabled(True)
         self._update_gerber_view_button()
+        self._sync_action_states()
 
         if self._records:
             self._select_and_display(0)
@@ -971,29 +1112,22 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self._records):
             return
         record = self._records[index]
-        reply = QMessageBox.question(
-            self, tr("Delete Record"),
-            tr("Delete {des}?", des=record.designator),
-            QMessageBox.Yes | QMessageBox.No,
-        )
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("Delete Record"))
+        box.setText(tr("Delete {des}?", des=record.designator))
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        reply = box.exec()
         if reply != QMessageBox.Yes:
             return
         self._push_undo()
         self._repo.delete_by_id(record.id)
         self._records.pop(index)
-        self._table_widget.set_records(self._records)
-        self._review_panel.set_record_list(self._records)
-        self._update_progress()
-        self._status_label.setText(tr("Deleted {des}", des=record.designator))
         if not self._records:
-            if self._jump_popup:
-                self._jump_popup.close()
             self._clear_all()
-        else:
-            new_index = min(index, len(self._records) - 1)
-            self._select_and_display(new_index)
-            if self._jump_popup:
-                self._jump_popup.show_at(self._records, new_index)
+            return
+        self._sync_after_mutation(min(index, len(self._records) - 1))
+        self._status_label.setText(tr("Deleted {des}", des=record.designator))
 
     def _jump_cam350(self) -> None:
         self._show_jump_popup()
@@ -1099,6 +1233,7 @@ class MainWindow(QMainWindow):
     def _set_exporting(self, exporting: bool) -> None:
         self._btn_export_report.setEnabled(not exporting)
         self._btn_export_fixed.setEnabled(not exporting)
+        self._sync_action_states()
         if exporting:
             self._status_label.setText(tr("Exporting..."))
 
@@ -1271,24 +1406,25 @@ class MainWindow(QMainWindow):
             record.status = "Deleted"
             self._repo.update(record)
             self._records.pop(idx)
-        self._table_widget.set_records(self._records)
-        self._review_panel.set_record_list(self._records)
-        self._update_progress()
+        self._table_widget.clear_checked()
         if not self._records:
-            self._current_index = -1
+            self._sync_after_mutation(-1)
             self._session_file = None
-            self._review_panel.set_record_list([])
             self._btn_export_report.setEnabled(True)
             self._btn_export_fixed.setEnabled(False)
             self._btn_batch_edit.setEnabled(False)
             self._btn_ok_checked.setEnabled(False)
             self._btn_delete.setEnabled(False)
             self._btn_align.setEnabled(False)
+            self._btn_pcb_info.setEnabled(False)
+            self._btn_new.setEnabled(False)
+            self._btn_save.setEnabled(False)
             self._update_gerber_view_button()
+            self._sync_action_states()
             self._status_label.setText(tr("All records deleted"))
         else:
             new_index = min(self._current_index, len(self._records) - 1)
-            self._select_and_display(new_index)
+            self._sync_after_mutation(new_index)
             self._status_label.setText(tr("Deleted {n} records", n=len(indices)))
 
     def _show_about(self) -> None:
@@ -1308,8 +1444,17 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
+        try:
+            from utils._build_info import BUILD_TIME, GIT_HASH
+            version_label = f"{APP_VERSION} <span style='color:#888;'>(build {BUILD_TIME}"
+            if GIT_HASH:
+                version_label += f" · {GIT_HASH}"
+            version_label += ")</span>"
+        except Exception:
+            version_label = APP_VERSION
+
         info = QLabel(
-            "<p><b>Version:</b> " + APP_VERSION + "</p>"
+            "<p><b>Version:</b> " + version_label + "</p>"
             "<p><b>License:</b> " + license_summary().replace("|", "<br>") + "</p>"
             "<p><b>Description:</b> A tool for reviewing and editing PickPlace data, "
             "aligning component origins, and exporting fixed position files for CAM350.</p>"
@@ -1381,9 +1526,13 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.setEnabled(has_records)
         self._btn_delete.setEnabled(has_records)
         self._btn_align.setEnabled(has_records)
+        self._btn_pcb_info.setEnabled(has_records)
+        self._btn_new.setEnabled(has_records)
+        self._btn_save.setEnabled(has_records)
         self._undo_action.setEnabled(bool(undo_stack))
         self._redo_action.setEnabled(bool(redo_stack))
         self._update_gerber_view_button()
+        self._sync_action_states()
 
         self._table_widget.set_records(records)
         self._review_panel.set_record_list(records)
@@ -1412,68 +1561,238 @@ class MainWindow(QMainWindow):
 
         self._push_undo()
         wizard = OriginAlignWizard(
-            self._pickplace_data, self._records, self._apply_align_record, self
+            self._pickplace_data, self._records, self._apply_align_record, self,
+            dismissed=self._prescreen_dismissed,
+            flush_cb=self._flush_align_writes,
         )
         wizard.exec()
-        self._update_progress()
-        self._update_gerber_view_button()
-        self._review_panel.set_record_list(self._records)
-        if self._current_index >= 0 and self._current_index < len(self._records):
-            self._review_panel.display_record(
-                self._records[self._current_index],
-                self._current_index, len(self._records),
+
+        def _post_wizard() -> None:
+            total_t = Timer()
+            t = Timer()
+            # Capture align context so the toolbar Run Check can re-run later
+            gko, gtp, gbp, ctx = wizard.get_prescreen_context()
+            if ctx is not None:
+                self._prescreen_bundle = (gko, gtp, gbp, ctx)
+                self._prescreen_ctx_packed = pack_prescreen_ctx(ctx)
+                if hasattr(self, "_btn_run_check"):
+                    self._btn_run_check.setEnabled(True)
+            self._apply_prescreen_result(wizard.get_prescreen_result())
+            prescreen_ms = t.ms()
+
+            t = Timer()
+            self._update_progress()
+            progress_ms = t.ms()
+
+            t = Timer()
+            self._update_gerber_view_button()
+            gerber_btn_ms = t.ms()
+
+            t = Timer()
+            self._review_panel.set_record_list(self._records)
+            if self._current_index >= 0 and self._current_index < len(self._records):
+                self._review_panel.display_record(
+                    self._records[self._current_index],
+                    self._current_index, len(self._records),
+                )
+            panel_ms = t.ms()
+
+            log_event(
+                "align_finish",
+                total_ms=total_t.ms(),
+                prescreen_apply_ms=prescreen_ms,
+                progress_ms=progress_ms,
+                gerber_btn_ms=gerber_btn_ms,
+                panel_ms=panel_ms,
+                rows=len(self._records),
             )
+
+        QTimer.singleShot(0, lambda: self._run_with_busy_dialog(
+            tr("Updating component table..."),
+            _post_wizard,
+        ))
+
+    def _run_with_busy_dialog(self, text: str, fn: Callable[[], None],
+                              dialog_factory: Optional[Callable] = None) -> None:
+        """Run `fn` behind a modal busy indicator so the app never looks hung."""
+        from PySide6.QtWidgets import QProgressDialog
+
+        if dialog_factory is not None:
+            dlg = dialog_factory(text)
+        else:
+            dlg = QProgressDialog(text, "", 0, 0, self)
+            dlg.setWindowTitle(tr("Please wait"))
+            dlg.setCancelButton(None)
+            dlg.setWindowModality(Qt.ApplicationModal)
+            dlg.setMinimumDuration(0)
+            dlg.setValue(0)
+
+        QApplication.processEvents()
+        try:
+            fn()
+        finally:
+            try:
+                dlg.reset()
+                dlg.close()
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _apply_prescreen_result(self, issues) -> None:
+        if issues is None:
+            return
+        for r in self._records:
+            r.prescreen_flags = []
+        flagged = set()
+        flag_count = 0
+        for iss in issues:
+            if 0 <= iss.index < len(self._records):
+                rec = self._records[iss.index]
+                if iss.kind not in rec.prescreen_flags:
+                    rec.prescreen_flags.append(iss.kind)
+                    flag_count += 1
+                flagged.add(iss.index)
+        t = Timer()
+        self._table_widget.update_all_rows()
+        table_ms = t.ms()
+        counts = summarize(issues)
+        total = counts["TOTAL"]
+        if total:
+            self._status_label.setText(tr(
+                "⚠ Pre-screen: {total} issue(s) ({rot} ROT · {pad} PAD · {dup} DUP · {out} OUT)",
+                total=total, rot=counts["ROT"], pad=counts["PAD"],
+                dup=counts["DUP"], out=counts["OUT"],
+            ))
+        else:
+            self._status_label.setText(tr("✅ No issues found."))
+        t = Timer()
+        self._sync_viewer_flags()
+        viewer_ms = t.ms()
+        log_event("prescreen_apply", table_ms=table_ms, viewer_sync_ms=viewer_ms,
+                  flags=flag_count)
+
+    def _current_flagged_indices(self) -> set:
+        return {i for i, r in enumerate(self._records) if r.prescreen_flags}
+
+    def _sync_viewer_flags(self) -> None:
+        viewer = self._gerber_viewer
+        if viewer is None:
+            return
+        try:
+            viewer.set_flagged_indices(self._current_flagged_indices())
+        except RuntimeError:
+            pass
+
+    def _on_flag_dismiss(self, record_index: int) -> None:
+        if not (0 <= record_index < len(self._records)):
+            return
+        rec = self._records[record_index]
+        for kind in list(rec.prescreen_flags):
+            self._prescreen_dismissed.add(dismiss_key_for(kind, rec))
+        rec.prescreen_flags = []
+        self._table_widget.update_record_row(record_index)
+        self._dirty = True
+        self._sync_viewer_flags()
+
+    def _restore_prescreen_bundle(self, session) -> None:
+        """Rebuild the Run Check bundle from a saved session (if it has one).
+
+        Sessions saved before this feature carry no prescreen_ctx; the button
+        then stays disabled until the user runs Align PickPlace Origin once.
+        """
+        self._prescreen_bundle = None
+        self._prescreen_ctx_packed = None
+        if hasattr(self, "_btn_run_check"):
+            self._btn_run_check.setEnabled(False)
+        packed = getattr(session, "prescreen_ctx", None)
+        if not packed:
+            return
+        ctx = unpack_prescreen_ctx(packed)
+        if ctx is None:
+            return
+        cfg = self._config_mgr.config
+        gko = getattr(cfg, "gerberGko", "")
+        if not gko or not os.path.exists(gko):
+            return
+        self._prescreen_bundle = (
+            gko,
+            getattr(cfg, "gerberGtp", ""),
+            getattr(cfg, "gerberGbp", ""),
+            ctx,
+        )
+        self._prescreen_ctx_packed = packed
+        if hasattr(self, "_btn_run_check"):
+            self._btn_run_check.setEnabled(True)
+
+    def _open_prescreen_dialog(self) -> None:
+        """Open (or focus) the standalone Pre-screen Check panel."""
+        if not self._records:
+            QMessageBox.warning(self, tr("Warning"),
+                                tr("No data. Open a PickPlace file or load a session first."))
+            return
+        dlg = self._prescreen_dialog
+        if dlg is not None:
+            try:
+                if dlg.isVisible():
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    return
+            except RuntimeError:
+                pass
+            self._prescreen_dialog = None
+        dlg = PrescreenCheckDialog(
+            self._records,
+            lambda: self._prescreen_bundle,
+            self._prescreen_dismissed,
+            parent=self,
+        )
+        dlg.checks_finished.connect(self._apply_prescreen_issues)
+        dlg.finished.connect(self._on_prescreen_dialog_closed)
+        self._prescreen_dialog = dlg
+        dlg.show()
+
+    def _apply_prescreen_issues(self, issues) -> None:
+        self._apply_prescreen_result(issues)
+        log_event("prescreen_rerun", issues=len(issues or ()), rows=len(self._records))
+
+    def _on_prescreen_dialog_closed(self, *_args) -> None:
+        self._prescreen_dialog = None
+
+    def _close_prescreen_dialog(self) -> None:
+        dlg = getattr(self, "_prescreen_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.close()
+            except RuntimeError:
+                pass
+            self._prescreen_dialog = None
 
     def _open_gerber_check(self) -> None:
         if not self._records:
             QMessageBox.warning(self, tr("Warning"), tr("No data. Open a PickPlace file or load a session first."))
             return
 
-        cfg = self._config_mgr.config
-        gko = cfg.gerberGko if os.path.exists(cfg.gerberGko) else ""
-        gtp = cfg.gerberGtp if os.path.exists(cfg.gerberGtp) else ""
-        gbp = cfg.gerberGbp if os.path.exists(cfg.gerberGbp) else ""
-        gto = cfg.gerberGto if os.path.exists(cfg.gerberGto) else ""
-        gbo = cfg.gerberGbo if os.path.exists(cfg.gerberGbo) else ""
+        from ui.gerber_file_dialog import GerberFileDialog
 
-        if not gko:
-            gko, _ = QFileDialog.getOpenFileName(
-                self, tr("Select GKO file (Outline)"), "",
-                "Gerber Files (*.gko *.GKO *.gbr *.GBR);;All Files (*.*)"
-            )
-            if not gko:
-                return
-            self._config_mgr.update(gerberGko=gko)
-        if not gtp:
-            gtp, _ = QFileDialog.getOpenFileName(
-                self, tr("Select GTP file (Top Paste - optional)"), "",
-                "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)"
-            )
-            self._config_mgr.update(gerberGtp=gtp)
-        if not gbp:
-            gbp, _ = QFileDialog.getOpenFileName(
-                self, tr("Select GBP file (Bottom Paste - optional)"), "",
-                "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)"
-            )
-            self._config_mgr.update(gerberGbp=gbp)
-        if not gto:
-            gto, _ = QFileDialog.getOpenFileName(
-                self, tr("Select GTO file (Silkscreen - optional)"), "",
-                "Gerber Files (*.gto *.GTO *.gbr *.GBR);;All Files (*.*)"
-            )
-            self._config_mgr.update(gerberGto=gto)
-        if not gbo:
-            gbo, _ = QFileDialog.getOpenFileName(
-                self, tr("Select GBO file (Bottom Silkscreen - optional)"), "",
-                "Gerber Files (*.gbo *.GBO *.gbr *.GBR);;All Files (*.*)"
-            )
-            self._config_mgr.update(gerberGbo=gbo)
+        paths = self._existing_gerber_paths()
+        dlg = GerberFileDialog(paths, self._config_mgr, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        paths = dlg.selected_paths()
+
+        gko = paths.get("gerberGko", "")
+        gtp = paths.get("gerberGtp", "")
+        gbp = paths.get("gerberGbp", "")
+        gto = paths.get("gerberGto", "")
+        gbo = paths.get("gerberGbo", "")
 
         viewer = GerberViewer(
             self._records, gko, gtp, gbp, gto, gbo,
             display_settings=self._gerber_view_settings,
         )
         viewer.settings_saved.connect(self._on_gerber_view_settings_saved)
+        viewer.checked_changed.connect(self._on_gerber_component_checked)
+        viewer.rotation_edited.connect(self._on_gerber_rotation_edited)
         frame = self.frameGeometry()
         view_frame = viewer.frameGeometry()
         view_frame.moveCenter(frame.center())
@@ -1485,6 +1804,19 @@ class MainWindow(QMainWindow):
     def _on_gerber_viewer_closed(self, *_args: Any) -> None:
         if self._gerber_viewer is not None:
             self._gerber_viewer = None
+
+    def _on_gerber_component_checked(self, record_index: int) -> None:
+        if 0 <= record_index < len(self._records):
+            self._repo.update(self._records[record_index])
+            self._table_widget.update_record_checked(record_index)
+
+    def _on_gerber_rotation_edited(self, record_index: int) -> None:
+        if 0 <= record_index < len(self._records):
+            rec = self._records[record_index]
+            self._repo.update(rec)
+            self._table_widget.update_record_row(record_index)
+            self._update_progress()
+            self._status_label.setText(tr("{des}: Edited", des=rec.designator))
 
     def _current_gerber_view_settings(self) -> Dict[str, Any]:
         viewer = getattr(self, "_gerber_viewer", None)
@@ -1514,8 +1846,24 @@ class MainWindow(QMainWindow):
         if record.status == "Pending":
             record.status = "Aligned"
         record.review_time = timestamp
-        self._repo.update(record)
+        # Defer the DB write: wizard flushes everything in ONE transaction
+        # at the end of the apply loop (avoids hundreds of fsync commits).
+        if record not in self._pending_align_writes:
+            self._pending_align_writes.append(record)
         self._table_widget.update_record_row(self._records.index(record))
+
+    def _flush_align_writes(self) -> None:
+        pending = list(self._pending_align_writes)
+        self._pending_align_writes.clear()
+        if not pending:
+            return
+        t = Timer()
+        try:
+            self._repo.update_many(pending)
+        except RuntimeError:
+            return
+        self._dirty = True
+        log_event("align_db_flush", records=len(pending), ms=t.ms())
 
     def _find_record(self, designator: str) -> Optional[ReviewRecord]:
         for r in self._records:
@@ -1540,15 +1888,10 @@ class MainWindow(QMainWindow):
         for r in records:
             r.id = self._repo.insert(r)
         self._records = self._repo.get_all()
-        self._table_widget.set_records(self._records)
-        self._review_panel.set_record_list(self._records)
-        if self._records:
-            target = min(self._current_index, len(self._records) - 1)
-            self._select_and_display(target)
-        else:
+        if not self._records:
             self._current_index = -1
-            self._review_panel.set_record_list([])
-        self._update_progress()
+        target = min(self._current_index, len(self._records) - 1) if self._records else -1
+        self._sync_after_mutation(target)
 
     def _update_undo_actions(self) -> None:
         if self._undo_action:

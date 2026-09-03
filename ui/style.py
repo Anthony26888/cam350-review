@@ -15,6 +15,41 @@ BORDER = "#334155"
 TEXT = "#E2E8F0"
 TEXT_MUTED = "#94A3B8"
 
+TEXT_LIGHT = "#0F172A"
+MUTED_LIGHT = "#64748B"
+
+
+def is_dark_theme() -> bool:
+    try:
+        from config.config_manager import ConfigManager
+        return ConfigManager.instance().config.theme == "dark"
+    except Exception:
+        return False
+
+
+def txt_color() -> str:
+    return TEXT if is_dark_theme() else TEXT_LIGHT
+
+
+def muted_color() -> str:
+    return TEXT_MUTED if is_dark_theme() else MUTED_LIGHT
+
+
+def pos_color() -> str:
+    return "#2DD4BF" if is_dark_theme() else "#0D9488"
+
+
+def err_color() -> str:
+    return "#F87171" if is_dark_theme() else "#DC2626"
+
+
+def pos_bg() -> str:
+    return "#0F3D2E" if is_dark_theme() else "#f0fff0"
+
+
+def err_bg() -> str:
+    return "#3B1212" if is_dark_theme() else "#fff0f0"
+
 QSS_DARK = """
 * {
     font-family: "Segoe UI";
@@ -259,6 +294,10 @@ QMenu::item {
 
 QMenu::item:selected {
     background-color: #134E4A;
+}
+
+QMenu::item:disabled {
+    color: #64748B;
 }
 
 QMenu::separator {
@@ -611,6 +650,10 @@ QMenu::item {
 
 QMenu::item:selected {
     background-color: #CCFBF1;
+}
+
+QMenu::item:disabled {
+    color: #94A3B8;
 }
 
 QMenu::separator {

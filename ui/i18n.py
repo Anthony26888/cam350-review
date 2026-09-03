@@ -407,6 +407,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Bottom layer (GKO + GBP)": "Lớp dưới (GKO + GBP)",
         "Components:": "Linh kiện:",
         "Search component...": "Tìm linh kiện...",
+        "Search designator or MPN...": "Tìm theo designator hoặc MPN...",
         "Rot": "Rot",
         "No data yet.": "Chưa có dữ liệu.",
         "Details (Zoom {f:g}x)": "Chi tiết (Phóng to {f:g}x)",
@@ -443,6 +444,20 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Measure mode: click the end point.":
             "Chế độ đo: click điểm kết thúc.",
         "Distance: {d:.3f} mm": "Khoảng cách: {d:.3f} mm",
+        "Snap to pad center when measuring":
+            "Bám vào tâm pad khi đo",
+        "Tolerance:": "Dung sai:",
+        "Snap tolerance is in mm and applies to the nearest pad center within the radius.":
+            "Dung sai tính theo mm, áp dụng cho tâm pad gần nhất nằm trong bán kính này.",
+        "Snap": "Bám tâm pad",
+        "Toggle snap to pad center when measuring. Hold Ctrl while clicking to bypass snap for that click.":
+            "Bật/tắt bám tâm pad khi đo. Giữ Ctrl khi click để tạm thời không bám cho lần click đó.",
+        "Distance: {d:.3f} mm (snap off)": "Khoảng cách: {d:.3f} mm (không bám)",
+        "Compact": "Thu gọn",
+        "Show/hide the options bar (buttons, layer, component settings). Search stays visible.":
+            "Ẩn/hiện nhóm tùy chọn (nút chức năng, layer, cài đặt component). Ô tìm kiếm vẫn hiển thị.",
+        "Show/hide the options bar and file stats (Outline/Top/Bottom/Silk) to give the component table more space.":
+            "Ẩn/hiện nhóm tùy chọn và dòng thống kê file (Outline/Top/Bottom/Silk) để bảng component cao hơn.",
         # PCB Info dialog
         "Hotkey {hk}: point the mouse at the desired position in CAM350 then press the hotkey to read coordinates.\nThe macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills Boc 2, the 3rd time fills Boc 3. The Save button appears after enough data.":
             "Hotkey {hk}: di chuyển chuột đến vị trí mong muốn trong CAM350 rồi nhấn hotkey để đọc toạ độ.\nMacro tự điền X Boc 1 & Y Boc 1, lần thứ 2 điền Boc 2, lần thứ 3 điền Boc 3. Nút Save hiện ra khi đủ dữ liệu.",

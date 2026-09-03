@@ -14,12 +14,31 @@ MACRO_SWITCH_DELAY_S = 5
 from config.config_manager import ConfigManager
 from database.pcb_info_repo import PcbInfoRepo
 from ui.i18n import tr
+from ui.style import err_bg, err_color, muted_color, pos_bg, pos_color, txt_color
 from models.pcb_info import PcbInfo
 from models.pickplace import PickPlaceData, PickPlaceComponent
 from models.review import ReviewRecord
 from services.cam350_controller import Cam350Controller
-from services.gerber.gerber_parser import parse_flashes
+from services.gerber.gerber_parser import (
+    parse_flashes,
+    parse_gerber_points,
+)
 from services.gerber.panel_detector import detect_panel, PanelInfo
+from services.prescreen import (
+    KIND_DUP,
+    KIND_OUT,
+    KIND_PAD,
+    KIND_ROT,
+    PrescreenConfig,
+    assign_instance_by_y,
+    compute_pad_stats,
+    eff_rotation,
+    eff_x,
+    eff_y,
+    run_prescreen,
+    summarize,
+    transform_points_through_align,
+)
 from services.gerber.origin_aligner import AlignResult, align_instance
 from services.gerber.offset_applier import (
     ComponentTransform, apply_all_transforms, round_coord, _layer_frame,
@@ -166,6 +185,109 @@ class AlignWorker(QThread):
             self.progress.emit(tr("Error: {e}", e=e), -1)
 
 
+class PrescreenWorker(QThread):
+    progress = Signal(str, int)
+    stats_ready = Signal(dict)
+    finished = Signal(list)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        gko_path,
+        gtp_path,
+        gbp_path,
+        records: List[ReviewRecord],
+        cfg: PrescreenConfig,
+        dismissed=None,
+        ctx=None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._gko_path = gko_path
+        self._gtp_path = gtp_path
+        self._gbp_path = gbp_path
+        self._records = records
+        self._cfg = cfg
+        self._dismissed = set(dismissed or ())
+        self._ctx = ctx or {}
+
+    def run(self) -> None:
+        try:
+            align_results = self._ctx.get("align_results") or {}
+            panel_info = self._ctx.get("panel_info")
+            origin_mode = self._ctx.get("origin_mode", "panel")
+            rotation_angle = int(self._ctx.get("rotation_angle") or 0)
+            rot_layers = self._ctx.get("rot_layers") or {"top": True, "bottom": False}
+
+            outline_bbox = None
+            if self._gko_path and os.path.exists(self._gko_path):
+                self.progress.emit(tr("Reading GKO (outline)..."), 15)
+                pts = parse_gerber_points(self._gko_path, codes=('1', '2'))
+                if pts:
+                    xs = [p.x_mm for p in pts]
+                    ys = [p.y_mm for p in pts]
+                    corners = [
+                        (min(xs), min(ys)), (min(xs), max(ys)),
+                        (max(xs), min(ys)), (max(xs), max(ys)),
+                    ]
+                    tcorners = transform_points_through_align(
+                        corners, "top", align_results=align_results,
+                        panel_info=panel_info, origin_mode=origin_mode,
+                        rotation_angle=rotation_angle, rot_layers=rot_layers,
+                    )
+                    xs = [p[0] for p in tcorners]
+                    ys = [p[1] for p in tcorners]
+                    outline_bbox = (min(xs), min(ys), max(xs), max(ys))
+
+            paste_top = None
+            if self._gtp_path and os.path.exists(self._gtp_path):
+                self.progress.emit(tr("Reading GTP (Top Paste)..."), 45)
+                raw = [(p.x_mm, p.y_mm) for p in parse_flashes(self._gtp_path)]
+                ks = [assign_instance_by_y(y, panel_info) for _, y in raw]
+                paste_top = transform_points_through_align(
+                    raw, "top", align_results=align_results,
+                    panel_info=panel_info, origin_mode=origin_mode,
+                    rotation_angle=rotation_angle, rot_layers=rot_layers,
+                    instance_ks=ks,
+                )
+            paste_bottom = None
+            if self._gbp_path and os.path.exists(self._gbp_path):
+                self.progress.emit(tr("Reading GBP (Bottom Paste)..."), 65)
+                raw = [(p.x_mm, p.y_mm) for p in parse_flashes(self._gbp_path)]
+                ks = [assign_instance_by_y(y, panel_info) for _, y in raw]
+                paste_bottom = transform_points_through_align(
+                    raw, "bottom", align_results=align_results,
+                    panel_info=panel_info, origin_mode=origin_mode,
+                    rotation_angle=rotation_angle, rot_layers=rot_layers,
+                    instance_ks=ks,
+                )
+
+            self.progress.emit(tr("Running pre-screen checks..."), 85)
+            coords = [(eff_x(r), eff_y(r)) for r in self._records]
+            rots = [eff_rotation(r) for r in self._records]
+            issues = run_prescreen(
+                self._records,
+                paste_top=paste_top,
+                paste_bottom=paste_bottom,
+                outline_bbox=outline_bbox,
+                cfg=self._cfg,
+                dismissed=self._dismissed,
+                coords=coords,
+                rots=rots,
+            )
+            stats = compute_pad_stats(
+                self._records, coords=coords,
+                paste_top=paste_top, paste_bottom=paste_bottom,
+            )
+            self.progress.emit(tr("Done."), 100)
+            self.stats_ready.emit(stats)
+            self.finished.emit(issues)
+            self.progress.emit(tr("Done."), 100)
+            self.finished.emit(issues)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class OriginAlignWizard(QDialog):
     def __init__(
         self,
@@ -173,13 +295,17 @@ class OriginAlignWizard(QDialog):
         records: List[ReviewRecord],
         apply_callback: Callable,
         parent: Optional[QWidget] = None,
+        dismissed=None,
+        flush_cb: Optional[Callable] = None,
     ) -> None:
         super().__init__(parent)
         self._pickplace_data = pickplace_data
         self._records = records
         self._apply_callback = apply_callback
+        self._flush_cb = flush_cb
         self._config_mgr = ConfigManager.instance()
         self._cam350 = Cam350Controller()
+        self._dismissed = set(dismissed or ())
 
         self._gko_path = None
         self._gtp_path = None
@@ -203,6 +329,11 @@ class OriginAlignWizard(QDialog):
         self._macro_running = False
         self._macro_countdown = 0
         self._macro_timer = QTimer(self)
+        self._prescreen_issues = None
+        self._prescreen_worker = None
+        self._prescreen_ctx = None
+        self._prescreen_stats = None
+        self._prescreen_generation = 0
 
         self._macro_timer.timeout.connect(self._tick_macro_countdown)
 
@@ -282,6 +413,7 @@ class OriginAlignWizard(QDialog):
             self._step_options,
             self._step_run,
             self._step_macro,
+            self._step_prescreen,
             self._step_result,
         ]
 
@@ -293,14 +425,14 @@ class OriginAlignWizard(QDialog):
         self._btn_cancel.setVisible(step < len(steps) - 1)
 
     def _step_files(self) -> None:
-        self._lbl_title.setText(tr("Step 1/6: Select Gerber Files"))
+        self._lbl_title.setText(tr("Step 1/7: Select Gerber Files"))
 
         group = QGroupBox(tr("Gerber Files"))
         form = QFormLayout(group)
 
         gko_layout = QHBoxLayout()
         self._lbl_gko = QLabel(tr("(not selected)"))
-        self._lbl_gko.setStyleSheet("color: #888;")
+        self._lbl_gko.setStyleSheet(f"color: {muted_color()};")
         btn_gko = QPushButton(tr("Browse..."))
         btn_gko.clicked.connect(self._browse_gko)
         gko_layout.addWidget(self._lbl_gko, 1)
@@ -309,7 +441,7 @@ class OriginAlignWizard(QDialog):
 
         gtp_layout = QHBoxLayout()
         self._lbl_gtp = QLabel(tr("(optional)"))
-        self._lbl_gtp.setStyleSheet("color: #888;")
+        self._lbl_gtp.setStyleSheet(f"color: {muted_color()};")
         btn_gtp = QPushButton(tr("Browse..."))
         btn_gtp.clicked.connect(self._browse_gtp)
         gtp_layout.addWidget(self._lbl_gtp, 1)
@@ -318,7 +450,7 @@ class OriginAlignWizard(QDialog):
 
         gbp_layout = QHBoxLayout()
         self._lbl_gbp = QLabel(tr("(optional)"))
-        self._lbl_gbp.setStyleSheet("color: #888;")
+        self._lbl_gbp.setStyleSheet(f"color: {muted_color()};")
         btn_gbp = QPushButton(tr("Browse..."))
         btn_gbp.clicked.connect(self._browse_gbp)
         gbp_layout.addWidget(self._lbl_gbp, 1)
@@ -327,7 +459,7 @@ class OriginAlignWizard(QDialog):
 
         gto_layout = QHBoxLayout()
         self._lbl_gto = QLabel(tr("(optional)"))
-        self._lbl_gto.setStyleSheet("color: #888;")
+        self._lbl_gto.setStyleSheet(f"color: {muted_color()};")
         btn_gto = QPushButton(tr("Browse..."))
         btn_gto.clicked.connect(self._browse_gto)
         gto_layout.addWidget(self._lbl_gto, 1)
@@ -336,7 +468,7 @@ class OriginAlignWizard(QDialog):
 
         gbo_layout = QHBoxLayout()
         self._lbl_gbo = QLabel(tr("(optional)"))
-        self._lbl_gbo.setStyleSheet("color: #888;")
+        self._lbl_gbo.setStyleSheet(f"color: {muted_color()};")
         btn_gbo = QPushButton(tr("Browse..."))
         btn_gbo.clicked.connect(self._browse_gbo)
         gbo_layout.addWidget(self._lbl_gbo, 1)
@@ -348,13 +480,13 @@ class OriginAlignWizard(QDialog):
                "GTP/GBP help detect offsets more accurately (recommended).\n"
                "GTO/GBO (names/designators on the board) are only used for display in Gerber View.")
         )
-        info.setStyleSheet("color: #666; font-style: italic; margin-top: 8px;")
+        info.setStyleSheet(f"color: {muted_color()}; font-style: italic; margin-top: 8px;")
 
         self._content_area.addWidget(group)
         self._content_area.addWidget(info)
 
     def _step_panel_check(self) -> None:
-        self._lbl_title.setText(tr("Step 2/6: Panel Detection Result"))
+        self._lbl_title.setText(tr("Step 2/7: Panel Detection Result"))
 
         panel_info = self._panel_info
         if not panel_info:
@@ -409,11 +541,11 @@ class OriginAlignWizard(QDialog):
             info = QLabel(
                 tr("Panel detected. The next step lets you choose the origin mode.")
             )
-            info.setStyleSheet("color: #006600; font-weight: bold; margin-top: 8px;")
+            info.setStyleSheet("color: {pos_color()}; font-weight: bold; margin-top: 8px;")
             self._content_area.addWidget(info)
 
     def _step_options(self) -> None:
-        self._lbl_title.setText(tr("Step 3/6: Rotation and Unit Options"))
+        self._lbl_title.setText(tr("Step 3/7: Rotation and Unit Options"))
 
         panel_info = self._panel_info
         if not panel_info:
@@ -465,7 +597,7 @@ class OriginAlignWizard(QDialog):
         self._content_area.addWidget(unit_group)
 
     def _step_run(self) -> None:
-        self._lbl_title.setText(tr("Step 4/6: Computing offsets..."))
+        self._lbl_title.setText(tr("Step 4/7: Computing offsets..."))
 
         self._progress_bar.setVisible(True)
         self._lbl_progress.setVisible(True)
@@ -513,8 +645,15 @@ class OriginAlignWizard(QDialog):
         self._panel_info = panel_info
         self._origin_mode = origin_mode
         self._rotation_angle = rotation_angle
+        self._prescreen_ctx = {
+            "align_results": align_results,
+            "panel_info": panel_info,
+            "origin_mode": origin_mode,
+            "rotation_angle": rotation_angle,
+            "rot_layers": dict(self._chosen_rot_layers),
+        }
 
-        self._lbl_title.setText(tr("Step 4/6: Updating data..."))
+        self._lbl_title.setText(tr("Step 4/7: Updating data..."))
 
         total = len(transforms)
         self._progress_bar.setMaximum(total)
@@ -538,6 +677,12 @@ class OriginAlignWizard(QDialog):
             if i % 30 == 0:
                 QApplication.processEvents()
 
+        if self._flush_cb is not None:
+            try:
+                self._flush_cb()
+            except Exception:
+                pass
+
         self._progress_bar.setMaximum(100)
         self._progress_bar.setValue(100)
         self._lbl_progress.setText(tr("Done! {count} components aligned.", count=updated_count))
@@ -549,7 +694,7 @@ class OriginAlignWizard(QDialog):
         self._btn_cancel.setEnabled(True)
 
     def _step_macro(self) -> None:
-        self._lbl_title.setText(tr("Step 5/6: Get Panel Origin from CAM350 (Macro)"))
+        self._lbl_title.setText(tr("Step 5/7: Get Panel Origin from CAM350 (Macro)"))
 
         layer_group = QGroupBox(tr("Layer"))
         layer_layout = QVBoxLayout(layer_group)
@@ -580,7 +725,7 @@ class OriginAlignWizard(QDialog):
                "Note: CAM350 must be displaying mm units for accurate jumps.")
         )
         info.setWordWrap(True)
-        info.setStyleSheet("color: #666; padding: 4px 0;")
+        info.setStyleSheet(f"color: {muted_color()}; padding: 4px 0;")
         layout.addWidget(info)
 
         self._btn_run_macro = QPushButton(tr("Run Macro ▶"))
@@ -591,7 +736,7 @@ class OriginAlignWizard(QDialog):
 
         self._lbl_macro_status = QLabel(tr("Not run yet."))
         self._lbl_macro_status.setWordWrap(True)
-        self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;")
+        self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: {pos_bg()}; padding: 8px; border: 1px solid #ccc;")
         layout.addWidget(self._lbl_macro_status)
 
         self._content_area.addWidget(group)
@@ -600,7 +745,7 @@ class OriginAlignWizard(QDialog):
         if (not cfg.xTextbox.x) or (not cfg.yTextbox.x):
             self._btn_run_macro.setEnabled(False)
             self._lbl_macro_status.setText(tr("CAM350 is not calibrated. Please run the Calibration Wizard first."))
-            self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: #fff0f0; padding: 8px; border: 1px solid #ccc;")
+            self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: {err_bg()}; padding: 8px; border: 1px solid #ccc;")
             return
         else:
             if self._macro_x is None:
@@ -621,7 +766,7 @@ class OriginAlignWizard(QDialog):
         self._btn_back.setEnabled(False)
         self._btn_cancel.setEnabled(False)
 
-        self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: #f0fff0; padding: 8px; border: 1px solid #ccc;")
+        self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #006600; background: {pos_bg()}; padding: 8px; border: 1px solid #ccc;")
 
         self._macro_countdown = MACRO_SWITCH_DELAY_S
         self._lbl_macro_status.setText(tr("Please switch to the CAM350 window in {n} seconds...", n=self._macro_countdown))
@@ -683,7 +828,7 @@ class OriginAlignWizard(QDialog):
 
         if error is not None:
             self._lbl_macro_status.setText(tr("Macro failed: {error}", error=error))
-            self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: #fff0f0; padding: 8px; border: 1px solid #ccc;")
+            self._lbl_macro_status.setStyleSheet("font-size: 12px; color: #cc0000; background: {err_bg()}; padding: 8px; border: 1px solid #ccc;")
             return
 
         self._macro_layer = layer
@@ -693,8 +838,194 @@ class OriginAlignWizard(QDialog):
         self._lbl_macro_status.setText(tr("Got Panel Origin ({layer}): X = {x:.4f}, Y = {y:.4f}",
                                           layer=layer_label, x=ox, y=oy))
 
+    def _step_prescreen(self) -> None:
+        self._lbl_title.setText(tr("Step 6/7: Pre-screen Check"))
+
+        page = QWidget()
+        v = QVBoxLayout(page)
+
+        self._btn_run_prescreen = QPushButton(tr("▶ Run Check"))
+        self._btn_run_prescreen.setMinimumHeight(36)
+        self._btn_run_prescreen.setStyleSheet(
+            "background-color: #0D9488; color: white; font-weight: bold;"
+        )
+        self._btn_run_prescreen.clicked.connect(self._run_prescreen_check)
+        v.addWidget(self._btn_run_prescreen, 0, Qt.AlignHCenter)
+
+        self._prescreen_summary = QLabel(tr("Not run yet. Press Run Check to scan the board."))
+        self._prescreen_summary.setWordWrap(True)
+        self._prescreen_summary.setStyleSheet("font-size: 14px; padding: 6px 0;")
+        v.addWidget(self._prescreen_summary)
+
+        cfg = self._config_mgr.config.prescreen
+        legend = QGroupBox(tr("Legend"))
+        lv = QVBoxLayout(legend)
+        legend_items = [
+            (tr("🔁 ROT = Rotation — unusual rotation"),
+             tr("(differs more than {dev:g}\u00b0 from the majority of the same MPN)", dev=cfg.rot_dev)),
+            (tr("📍 PAD = Pad — PickPlace block offset vs paste"),
+             tr("(median nearest-pad distance above {tol:g} mm)", tol=cfg.pad_median_tol)),
+            (tr("📌 DUP = Duplicate — two components share coordinates"),
+             tr("(within {tol:g} mm)", tol=cfg.dup_tol)),
+            (tr("⬛ OUT = Out of outline — component outside board outline"),
+             tr("(more than {margin:g} mm beyond the board edge)", margin=cfg.out_margin)),
+        ]
+        for title, desc in legend_items:
+            lbl = QLabel(f"{title}<br><span style='color:#666;'>{desc}</span>")
+            lbl.setWordWrap(True)
+            lv.addWidget(lbl)
+        tip = QLabel(tr("💡 Details: check the Flags column in the main table "
+                        "and dashed orange frames in Gerber View."))
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{muted_color()}; padding-top:4px;")
+        lv.addWidget(tip)
+        v.addWidget(legend)
+        v.addStretch(1)
+
+        self._content_area.addWidget(page)
+
+    def _unreliable_align_layers(self) -> set:
+        """Layers whose alignment was overridden by GKO-priority (untrusted)."""
+        layers = set()
+        results = (self._prescreen_ctx or {}).get("align_results") or {}
+        for res_map in results.values():
+            if isinstance(res_map, dict):
+                for lk, res in res_map.items():
+                    if getattr(res, "gko_priority", False):
+                        layers.add(lk)
+            elif getattr(res_map, "gko_priority", False):
+                layers.add("top")
+        return layers
+
+    def _run_prescreen_check(self) -> None:
+        if getattr(self, "_prescreen_worker", None) is not None and \
+                self._prescreen_worker.isRunning():
+            return
+        self._btn_run_prescreen.setEnabled(False)
+        self._btn_next.setEnabled(False)
+        self._btn_back.setEnabled(False)
+        self._progress_bar.setVisible(True)
+        self._lbl_progress.setVisible(True)
+        self._progress_bar.setValue(0)
+        self._lbl_progress.setText(tr("Starting pre-screen..."))
+
+        cfg = PrescreenConfig(**vars(self._config_mgr.config.prescreen))
+        self._prescreen_generation += 1
+        gen = self._prescreen_generation
+
+        self._prescreen_worker = PrescreenWorker(
+            self._gko_path, self._gtp_path, self._gbp_path,
+            self._records, cfg, self._dismissed,
+            ctx=self._prescreen_ctx, parent=None,
+        )
+        worker = self._prescreen_worker
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(lambda *_: worker.deleteLater())
+        worker.progress.connect(self._on_worker_progress)
+        worker.stats_ready.connect(self._on_prescreen_stats)
+        worker.finished.connect(lambda issues, g=gen: self._on_prescreen_finished(issues, g))
+        worker.failed.connect(lambda msg, g=gen: self._on_prescreen_failed(msg, g))
+        worker.start()
+
+    def _detach_prescreen_worker(self) -> None:
+        """Invalidate in-flight results (e.g. dialog is closing)."""
+        self._prescreen_generation += 1
+        if self._prescreen_worker is not None:
+            try:
+                self._prescreen_worker.disconnect(self)
+            except (RuntimeError, TypeError):
+                pass
+
+    def reject(self) -> None:
+        self._detach_prescreen_worker()
+        super().reject()
+
+    def closeEvent(self, ev) -> None:
+        self._detach_prescreen_worker()
+        super().closeEvent(ev)
+
+    def _on_prescreen_stats(self, stats: dict) -> None:
+        self._prescreen_stats = stats
+
+    def _on_prescreen_finished(self, issues: list, gen: int = -1) -> None:
+        if gen != -1 and gen != self._prescreen_generation:
+            return
+        self._prescreen_worker = None
+        self._prescreen_issues = issues
+        self._progress_bar.setVisible(False)
+        self._lbl_progress.setVisible(False)
+        self._btn_run_prescreen.setEnabled(True)
+        self._btn_next.setEnabled(True)
+        self._btn_back.setEnabled(True)
+
+        counts = summarize(issues)
+        total = counts["TOTAL"]
+        rec_count = len(self._records) if self._records else 0
+        warn_lines = []
+        for lk in sorted(self._unreliable_align_layers()):
+            layer_label = tr("Top") if lk == "top" else tr("Bottom")
+            warn_lines.append(tr(
+                "⚠ Layer {layer}: alignment unreliable — PAD/OUT results may be inaccurate.",
+                layer=layer_label,
+            ))
+        if total == 0:
+            text = tr("✅ No issues found.") + f" ({rec_count})"
+        else:
+            lines = [
+                tr("🔁 ROT : {n}", n=counts[KIND_ROT]) +
+                "      " + tr("📌 DUP : {n}", n=counts[KIND_DUP]),
+                tr("📍 PAD : {n}", n=counts[KIND_PAD]) +
+                "      " + tr("⬛ OUT : {n}", n=counts[KIND_OUT]),
+                tr("Total: {total} / {rec_count} components",
+                   total=total, rec_count=rec_count),
+            ]
+            text = "\n".join(lines)
+        st = self._prescreen_stats or {}
+        if st.get("n"):
+            gauge = tr("📎 Paste match (median): {v} mm over {n} components",
+                       v=f"{st['median_mm']:.2f}", n=st["n"])
+        else:
+            gauge = tr("📎 Paste match: no paste data")
+        text = text + "\n" + gauge
+        if warn_lines:
+            text = text + "\n" + "\n".join(warn_lines)
+        self._prescreen_summary.setText(text)
+        if total == 0 and not warn_lines:
+            self._prescreen_summary.setStyleSheet(
+                "font-size: 15px; font-weight: bold; color: #16A34A; padding: 6px 0;"
+            )
+        else:
+            self._prescreen_summary.setStyleSheet(
+                "font-size: 14px; font-weight: bold; color: #D97706; padding: 6px 0;"
+            )
+
+    def _on_prescreen_failed(self, message: str, gen: int = -1) -> None:
+        if gen != -1 and gen != self._prescreen_generation:
+            return
+        self._prescreen_worker = None
+        self._progress_bar.setVisible(False)
+        self._lbl_progress.setVisible(False)
+        self._btn_run_prescreen.setEnabled(True)
+        self._btn_next.setEnabled(True)
+        self._btn_back.setEnabled(True)
+        self._prescreen_summary.setText(tr("Pre-screen failed: {message}", message=message))
+        self._prescreen_summary.setStyleSheet(
+            "font-size: 13px; color: #DC2626; padding: 6px 0;"
+        )
+
+    def get_prescreen_result(self):
+        return self._prescreen_issues
+
+    def get_prescreen_context(self):
+        """(gko, gtp, gbp, ctx) captured after alignment finished.
+
+        ctx is None until the align worker completes; the toolbar Re-check
+        button uses this to re-run the same pipeline on edited records.
+        """
+        return self._gko_path, self._gtp_path, self._gbp_path, self._prescreen_ctx
+
     def _step_result(self) -> None:
-        self._lbl_title.setText(tr("Step 6/6: Alignment Result"))
+        self._lbl_title.setText(tr("Step 7/7: Alignment Result"))
 
         self._result_text.setVisible(True)
 
@@ -779,7 +1110,7 @@ class OriginAlignWizard(QDialog):
             self._config_mgr.update(gerberGko=path)
 
     def _browse_gtp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, tr("Select GTP file"), "", "Gerber Files (*.gtp *.GTP *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GTP file"), "", "Gerber Files (*.gtp *.GTP *.gpt *.GPT *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gtp_path = path
             self._lbl_gtp.setText(os.path.basename(path))
@@ -787,7 +1118,7 @@ class OriginAlignWizard(QDialog):
             self._config_mgr.update(gerberGtp=path)
 
     def _browse_gbp(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, tr("Select GBP file"), "", "Gerber Files (*.gbp *.GBP *.gbr *.GBR);;All Files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("Select GBP file"), "", "Gerber Files (*.gbp *.GBP *.gpb *.GPB *.gbr *.GBR);;All Files (*.*)")
         if path:
             self._gbp_path = path
             self._lbl_gbp.setText(os.path.basename(path))
@@ -845,6 +1176,9 @@ class OriginAlignWizard(QDialog):
             self._show_step(5)
             return
         elif self._step_index == 5:
+            self._show_step(6)
+            return
+        elif self._step_index == 6:
             self._save_panel_to_pcb_info()
             self.accept()
             return
@@ -869,3 +1203,203 @@ class OriginAlignWizard(QDialog):
 
     def get_results(self) -> tuple:
         return self._transforms, self._panel_info
+
+
+class PrescreenCheckDialog(QDialog):
+    """Standalone re-run panel for the pre-screen (toolbar Run Check button).
+
+    Non-modal: fix components in Gerber View, then press Run Check again.
+    Owns its PrescreenWorker + generation counter; emits checks_finished so
+    the main window can apply flags to the table/viewer.
+    """
+
+    checks_finished = Signal(list)
+
+    def __init__(
+        self,
+        records,
+        get_bundle,
+        dismissed,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._records = records
+        self._get_bundle = get_bundle      # () -> (gko, gtp, gbp, ctx) | None
+        self._dismissed = dismissed        # live set reference
+        self._worker = None
+        self._generation = 0
+        self._stats = {}
+
+        self.setWindowTitle(tr("Pre-screen Check"))
+        self.setMinimumWidth(430)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 16, 16, 16)
+        v.setSpacing(10)
+
+        self._btn_run = QPushButton(tr("▶ Run Check"))
+        self._btn_run.setMinimumHeight(36)
+        self._btn_run.setStyleSheet(
+            "font-size: 15px; font-weight: bold;"
+            "background-color: #0D9488; color: white; border-radius: 6px;"
+        )
+        self._btn_run.clicked.connect(self._run_check)
+        v.addWidget(self._btn_run, 0, Qt.AlignHCenter)
+
+        self._summary = QLabel(tr("Not run yet. Press Run Check to scan the board."))
+        self._summary.setWordWrap(True)
+        self._summary.setStyleSheet("font-size: 14px; padding: 6px 0;")
+        v.addWidget(self._summary)
+
+        self._progress = QLabel("")
+        self._progress.setVisible(False)
+        v.addWidget(self._progress)
+
+        hint = QLabel(tr("💡 Details: check the Flags column in the main table "
+                         "and dashed orange frames in Gerber View."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{muted_color()}; padding-top:4px;")
+        v.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_close = QPushButton(tr("Close"))
+        btn_close.clicked.connect(self.close)
+        row.addWidget(btn_close)
+        v.addLayout(row)
+
+    # ------------------------------------------------------------------ run
+
+    def _unreliable_layers(self) -> set:
+        bundle = self._get_bundle() or (None, None, None, None)
+        ctx = bundle[3] or {}
+        out = set()
+        for _k, layer_results in (ctx.get("align_results") or {}).items():
+            for layer, res in (layer_results or {}).items():
+                try:
+                    n_total = getattr(res, "n_total", 0) or 0
+                    ratio = (getattr(res, "n_matched", 0) / n_total) if n_total else 0.0
+                    unreliable = (
+                        getattr(res, "gko_priority", False)
+                        and (n_total == 0 or ratio < 0.5
+                             or getattr(res, "median_residual", 0.0) > 0.5)
+                    )
+                    if unreliable:
+                        out.add(layer)
+                except AttributeError:
+                    continue
+        return out
+
+    def _show_note(self, text: str, color: str = "#DC2626") -> None:
+        self._progress.setVisible(False)
+        self._summary.setText(text)
+        self._summary.setStyleSheet(f"font-size: 14px; color: {color}; padding: 6px 0;")
+
+    def _run_check(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        bundle = self._get_bundle()
+        if not bundle or bundle[3] is None:
+            self._show_note(tr("Run Align PickPlace Origin once to enable Run Check."))
+            return
+        gko, gtp, gbp, ctx = bundle
+        if not gko or not os.path.exists(gko):
+            self._show_note(tr("Gerber outline file (GKO) is missing — run Align PickPlace Origin again."))
+            return
+
+        cfg = PrescreenConfig(**vars(ConfigManager.instance().config.prescreen))
+        self._generation += 1
+        gen = self._generation
+        self._btn_run.setEnabled(False)
+        self._progress.setVisible(True)
+        self._progress.setText(tr("Starting pre-screen..."))
+
+        worker = PrescreenWorker(
+            gko, gtp, gbp, self._records, cfg,
+            dismissed=set(self._dismissed), ctx=ctx, parent=None,
+        )
+        self._worker = worker
+        worker.progress.connect(self._on_progress)
+        worker.stats_ready.connect(self._on_stats)
+        worker.finished.connect(lambda issues, g=gen: self._on_finished(issues, g))
+        worker.failed.connect(lambda msg, g=gen: self._on_failed(msg, g))
+        worker.start()
+
+    # ------------------------------------------------------------- handlers
+
+    def _detach_worker(self) -> None:
+        self._generation += 1
+        if self._worker is not None:
+            try:
+                self._worker.disconnect(self)
+            except (RuntimeError, TypeError):
+                pass
+
+    def closeEvent(self, ev) -> None:
+        self._detach_worker()
+        super().closeEvent(ev)
+
+    def reject(self) -> None:
+        self._detach_worker()
+        super().reject()
+
+    def _on_progress(self, message: str, _pct: int) -> None:
+        self._progress.setText(message)
+
+    def _on_stats(self, stats: dict) -> None:
+        self._stats = stats
+
+    def _on_finished(self, issues: list, gen: int = -1) -> None:
+        if gen != -1 and gen != self._generation:
+            return
+        self._worker = None
+        self._btn_run.setEnabled(True)
+        self._progress.setVisible(False)
+
+        counts = summarize(issues)
+        total = counts["TOTAL"]
+        rec_count = len(self._records) if self._records else 0
+        warn_lines = []
+        for lk in sorted(self._unreliable_layers()):
+            layer_label = tr("Top") if lk == "top" else tr("Bottom")
+            warn_lines.append(tr(
+                "⚠ Layer {layer}: alignment unreliable — PAD/OUT results may be inaccurate.",
+                layer=layer_label,
+            ))
+        if total == 0:
+            text = tr("✅ No issues found.") + f" ({rec_count})"
+        else:
+            lines = [
+                tr("🔁 ROT : {n}", n=counts[KIND_ROT]) +
+                "      " + tr("📌 DUP : {n}", n=counts[KIND_DUP]),
+                tr("📍 PAD : {n}", n=counts[KIND_PAD]) +
+                "      " + tr("⬛ OUT : {n}", n=counts[KIND_OUT]),
+                tr("Total: {total} / {rec_count} components",
+                   total=total, rec_count=rec_count),
+            ]
+            text = "\n".join(lines)
+        st = self._stats or {}
+        if st.get("n"):
+            gauge = tr("📎 Paste match (median): {v} mm over {n} components",
+                       v=f"{st['median_mm']:.2f}", n=st["n"])
+        else:
+            gauge = tr("📎 Paste match: no paste data")
+        text = text + "\n" + gauge
+        if warn_lines:
+            text = text + "\n" + "\n".join(warn_lines)
+        self._summary.setText(text)
+        if total == 0 and not warn_lines:
+            self._summary.setStyleSheet(
+                "font-size: 15px; font-weight: bold; color: #16A34A; padding: 6px 0;"
+            )
+        else:
+            self._summary.setStyleSheet(
+                "font-size: 14px; font-weight: bold; color: #D97706; padding: 6px 0;"
+            )
+        self.checks_finished.emit(list(issues))
+
+    def _on_failed(self, message: str, gen: int = -1) -> None:
+        if gen != -1 and gen != self._generation:
+            return
+        self._worker = None
+        self._btn_run.setEnabled(True)
+        self._show_note(tr("Pre-screen failed: {message}", message=message))

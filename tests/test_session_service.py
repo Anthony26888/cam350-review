@@ -34,6 +34,28 @@ def test_records_round_trip():
     assert r.status == "Pending"
     assert r.remark == "check pad"
     assert r.row_index == 5
+    assert r.checked is False
+
+
+def test_records_round_trip_checked():
+    record = _make_record()
+    record.checked = True
+    data = SessionService.records_to_list([record])
+    assert data[0]["checked"] is True
+    restored = SessionService.list_to_records(data)
+    assert restored[0].checked is True
+
+
+def test_records_round_trip_ic_rotation():
+    record = _make_record()
+    record.is_ic_rotation = True
+    data = SessionService.records_to_list([record])
+    assert data[0]["is_ic_rotation"] is True
+    restored = SessionService.list_to_records(data)
+    assert restored[0].is_ic_rotation is True
+    # Absent key (older session files) defaults to False
+    del data[0]["is_ic_rotation"]
+    assert SessionService.list_to_records(data)[0].is_ic_rotation is False
 
 
 def test_save_and_load(tmp_path):

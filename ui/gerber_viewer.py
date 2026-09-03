@@ -11,6 +11,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsPathItem,
+    QGraphicsEllipseItem,
     QComboBox,
     QCheckBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QDoubleSpinBox, QSpinBox, QWidget, QDialog,
@@ -149,20 +150,25 @@ class PadGrid:
             key = (int(px // self._CELL), int(py // self._CELL))
             self._cells.setdefault(key, []).append((px, py, size))
 
-    def nearest(self, x: float, y: float) -> Optional[float]:
-        best: Optional[float] = None
+    def nearest_point(self, x: float, y: float,
+                      tol: float = 1.0) -> Optional[Tuple[float, float, float]]:
+        best: Optional[Tuple[float, float, float]] = None
         best_d: Optional[float] = None
         cx, cy = int(x // self._CELL), int(y // self._CELL)
-        r = self._radius
+        r = max(self._radius, int(math.ceil(tol / self._CELL)))
         for i in range(cx - r, cx + r + 1):
             for j in range(cy - r, cy + r + 1):
                 for px, py, size in self._cells.get((i, j), ()):
                     d = math.hypot(px - x, py - y)
-                    tol = max(1.0, size)
-                    if d <= tol and (best_d is None or d < best_d):
+                    t = max(tol, size)
+                    if d <= t and (best_d is None or d < best_d):
                         best_d = d
-                        best = size
+                        best = (px, py, size)
         return best
+
+    def nearest(self, x: float, y: float) -> Optional[float]:
+        hit = self.nearest_point(x, y)
+        return hit[2] if hit is not None else None
 
 
 def _crosshair_half(size: Optional[float], fallback: float) -> float:
@@ -1033,6 +1039,10 @@ class GerberViewer(QWidget):
         self._measure_mode = False
         self._measure_start: Optional[Tuple[float, float]] = None
         self._measure_preview: Optional[QGraphicsPathItem] = None
+        self._measure_snap_item: Optional[QGraphicsEllipseItem] = None
+        self._snap_enabled = True
+        self._snap_tol = 1.0
+        self._compact_hidden = False
         self._measurements: List[Tuple[float, float, float, float]] = []
         self._measurement_items: List[MeasurementItem] = []
         self._mag_cell_rect: Optional[QRectF] = None
@@ -1091,6 +1101,9 @@ class GerberViewer(QWidget):
             "crosshair_scale": self._spin_cross_scale.value(),
             "grid_opacity": self._grid_opacity,
             "grid_width": self._grid_width,
+            "snap": self._chk_snap.isChecked(),
+            "snap_tol": self._spin_snap_tol.value(),
+            "compact": self._btn_compact.isChecked(),
         }
         for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
             settings[f"{key}_color"] = self._current_color(key).name(QColor.HexArgb)
@@ -1135,6 +1148,11 @@ class GerberViewer(QWidget):
         self._spin_grid_width.setValue(float(settings.get("grid_width", 2.0)))
         self._grid_opacity = self._spin_grid_opacity.value()
         self._grid_width = self._spin_grid_width.value()
+        self._chk_snap.setChecked(bool(settings.get("snap", True)))
+        self._spin_snap_tol.setValue(float(settings.get("snap_tol", 1.0)))
+        self._snap_enabled = self._chk_snap.isChecked()
+        self._snap_tol = float(self._spin_snap_tol.value())
+        self._btn_compact.setChecked(bool(settings.get("compact", True)))
         for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
             hex_val = settings.get(f"{key}_color")
             if isinstance(hex_val, str):
@@ -1190,6 +1208,11 @@ class GerberViewer(QWidget):
         panel = QVBoxLayout()
         panel.setSpacing(8)
 
+        self._options_widget = QWidget()
+        self._options_layout = QVBoxLayout(self._options_widget)
+        self._options_layout.setSpacing(8)
+        self._options_layout.setContentsMargins(0, 0, 0, 0)
+
         btn_row = QHBoxLayout()
         btn_disp = QPushButton(tr("Display..."))
         btn_disp.clicked.connect(self._open_display_dialog)
@@ -1201,7 +1224,7 @@ class GerberViewer(QWidget):
         btn_row.addWidget(btn_disp)
         btn_row.addWidget(btn_fit)
         btn_row.addWidget(btn_reload)
-        panel.addLayout(btn_row)
+        self._options_layout.addLayout(btn_row)
 
         layer_row = QHBoxLayout()
         layer_row.addWidget(QLabel(tr("Layer:")))
@@ -1210,7 +1233,7 @@ class GerberViewer(QWidget):
         self._combo_layer.addItem(tr("Bottom layer (GKO + GBP)"))
         self._combo_layer.currentIndexChanged.connect(self._on_layer_changed)
         layer_row.addWidget(self._combo_layer, 1)
-        panel.addLayout(layer_row)
+        self._options_layout.addLayout(layer_row)
 
         comp_row = QHBoxLayout()
         comp_row.addWidget(QLabel(tr("Components:")))
@@ -1221,9 +1244,11 @@ class GerberViewer(QWidget):
         )
         self._chk_group_mpn.toggled.connect(self._on_group_mpn_toggled)
         comp_row.addWidget(self._chk_group_mpn)
-        panel.addLayout(comp_row)
+        self._options_layout.addLayout(comp_row)
+        panel.addWidget(self._options_widget)
+
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText(tr("Search component..."))
+        self._search_input.setPlaceholderText(tr("Search designator or MPN..."))
         self._search_input.setClearButtonEnabled(True)
         self._search_debounce = QTimer(self)
         self._search_debounce.setSingleShot(True)
@@ -1359,6 +1384,25 @@ QGroupBox::title {
         self._btn_clear_measure.setEnabled(False)
         self._btn_clear_measure.clicked.connect(self._clear_measurements)
         coord_bar.addWidget(self._btn_clear_measure)
+        self._btn_snap = QPushButton(tr("Snap"))
+        self._btn_snap.setCheckable(True)
+        self._btn_snap.setChecked(True)
+        self._btn_snap.setEnabled(False)
+        self._btn_snap.setToolTip(
+            tr("Toggle snap to pad center when measuring. "
+               "Hold Ctrl while clicking to bypass snap for that click.")
+        )
+        self._btn_snap.toggled.connect(self._on_snap_toggled)
+        coord_bar.addWidget(self._btn_snap)
+        self._btn_compact = QPushButton(tr("Compact"))
+        self._btn_compact.setCheckable(True)
+        self._btn_compact.setChecked(True)
+        self._btn_compact.setToolTip(
+            tr("Show/hide the options bar and file stats "
+               "(Outline/Top/Bottom/Silk) to give the component table more space.")
+        )
+        self._btn_compact.toggled.connect(self._on_compact_toggled)
+        coord_bar.addWidget(self._btn_compact)
         coord_bar.addWidget(QLabel(tr("X:")))
         self._spin_goto_x = QDoubleSpinBox()
         self._spin_goto_x.setRange(-100000.0, 100000.0)
@@ -1399,6 +1443,26 @@ QGroupBox::title {
 
         self._chk_mirror_x = QCheckBox(tr("Flip Gerber (Mirror X)"))
         layout.addWidget(self._chk_mirror_x)
+
+        snap_row = QHBoxLayout()
+        self._chk_snap = QCheckBox(tr("Snap to pad center when measuring"))
+        self._chk_snap.setChecked(True)
+        self._chk_snap.setToolTip(
+            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
+        self._chk_snap.toggled.connect(self._on_snap_toggled)
+        snap_row.addWidget(self._chk_snap, 1)
+        snap_row.addWidget(QLabel(tr("Tolerance:")))
+        self._spin_snap_tol = QDoubleSpinBox()
+        self._spin_snap_tol.setRange(0.1, 5.0)
+        self._spin_snap_tol.setSingleStep(0.1)
+        self._spin_snap_tol.setDecimals(1)
+        self._spin_snap_tol.setValue(1.0)
+        self._spin_snap_tol.setSuffix(" mm")
+        self._spin_snap_tol.setToolTip(
+            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
+        self._spin_snap_tol.valueChanged.connect(self._on_snap_tol_changed)
+        snap_row.addWidget(self._spin_snap_tol)
+        layout.addLayout(snap_row)
 
         off_row = QHBoxLayout()
         off_row.addWidget(QLabel(tr("Offset X:")))
@@ -1630,6 +1694,7 @@ QGroupBox::title {
                st=len(self._silk.lines), sb=len(self._silk_bottom.lines))
         )
         self._btn_measure.setEnabled(True)
+        self._btn_snap.setEnabled(True)
 
     def _on_load_failed(self, message: str) -> None:
         self._lbl_title.setText(tr("Error reading Gerber file"))
@@ -1641,6 +1706,15 @@ QGroupBox::title {
 
     def _on_search_changed(self, _text: str = "") -> None:
         self._search_debounce.start()
+
+    def _record_matches_search(self, record: ReviewRecord, search_text: str) -> bool:
+        if not search_text:
+            return True
+        search_text = search_text.lower()
+        return (
+            search_text in record.designator.lower()
+            or search_text in (record.mpn or "").lower()
+        )
 
     def _apply_layer(self) -> None:
         records = self._current_layer_records()
@@ -1669,7 +1743,7 @@ QGroupBox::title {
                     QHeaderView.ResizeToContents
                 )
                 for i, record in enumerate(records):
-                    if search_text and search_text not in record.designator.lower():
+                    if not self._record_matches_search(record, search_text):
                         continue
                     x, y, rotation = _record_coord(record)
                     row = self._table_components.rowCount()
@@ -1700,7 +1774,7 @@ QGroupBox::title {
         groups: Dict[str, List[int]] = {}
         order: List[str] = []
         for i, record in enumerate(records):
-            if search_text and search_text not in record.designator.lower():
+            if not self._record_matches_search(record, search_text):
                 continue
             mpn = (record.mpn or "").strip() or record.designator
             if mpn not in groups:
@@ -2036,10 +2110,59 @@ QGroupBox::title {
             self._view.set_measure_mode(False)
             self._on_measure_cancel()
 
+    def _on_snap_toggled(self, checked: bool) -> None:
+        self._snap_enabled = bool(checked)
+        btn_snap = getattr(self, "_btn_snap", None)
+        chk_snap = getattr(self, "_chk_snap", None)
+        if btn_snap is not None and btn_snap.isChecked() != bool(checked):
+            btn_snap.blockSignals(True)
+            btn_snap.setChecked(bool(checked))
+            btn_snap.blockSignals(False)
+        if chk_snap is not None and chk_snap.isChecked() != bool(checked):
+            chk_snap.blockSignals(True)
+            chk_snap.setChecked(bool(checked))
+            chk_snap.blockSignals(False)
+        if not checked:
+            self._remove_measure_snap()
+
+    def _on_snap_tol_changed(self, value: float) -> None:
+        self._snap_tol = float(value)
+
+    def _on_compact_toggled(self, checked: bool) -> None:
+        self._compact_hidden = not bool(checked)
+        widget = getattr(self, "_options_widget", None)
+        if widget is not None:
+            widget.setVisible(checked)
+        lbl = getattr(self, "_lbl_status", None)
+        if lbl is not None:
+            lbl.setVisible(checked)
+
+    def _snap_info(self, gx: float, gy: float) -> Optional[Tuple[float, float, float]]:
+        if not getattr(self, "_snap_enabled", True):
+            return None
+        grid = self._pad_grid(self._combo_layer.currentIndex() == 0)
+        return grid.nearest_point(gx, gy, getattr(self, "_snap_tol", 1.0))
+
+    def _snap_gerber(self, gx: float, gy: float) -> Tuple[float, float]:
+        hit = self._snap_info(gx, gy)
+        if hit is None:
+            return gx, gy
+        px, py, size = hit
+        tol = max(getattr(self, "_snap_tol", 1.0), size)
+        if math.hypot(px - gx, py - gy) <= tol:
+            return px, py
+        return gx, gy
+
+    def _measure_ctrl_bypass(self) -> bool:
+        return Qt.ControlModifier in QApplication.keyboardModifiers()
+
     def _on_measure_clicked(self, sx: float, sy: float) -> None:
         if not self._loaded or not self._measure_mode:
             return
-        gx, gy = self._scene_to_gerber(sx, sy)
+        if self._measure_ctrl_bypass():
+            gx, gy = self._scene_to_gerber(sx, sy)
+        else:
+            gx, gy = self._snap_gerber(*self._scene_to_gerber(sx, sy))
         if self._measure_start is None:
             self._measure_start = (gx, gy)
             self._lbl_status.setText(tr("Measure mode: click the end point."))
@@ -2060,11 +2183,20 @@ QGroupBox::title {
             return
         x1, y1 = self._measure_start
         gx, gy = self._scene_to_gerber(sx, sy)
+        size: Optional[float] = None
+        if not self._measure_ctrl_bypass():
+            hit = self._snap_info(gx, gy)
+            if hit is not None:
+                px, py, pad_size = hit
+                tol = max(getattr(self, "_snap_tol", 1.0), pad_size)
+                if math.hypot(px - gx, py - gy) <= tol:
+                    gx, gy, size = px, py, pad_size
         dist = math.hypot(gx - x1, gy - y1)
         sx1, sy1 = self._gerber_to_scene(x1, y1)
+        sx2, sy2 = self._gerber_to_scene(gx, gy)
         path = QPainterPath()
         path.moveTo(sx1, sy1)
-        path.lineTo(sx, sy)
+        path.lineTo(sx2, sy2)
         if self._measure_preview is None:
             pen = QPen(MEASURE_COLOR, 1.5)
             pen.setCosmetic(True)
@@ -2077,7 +2209,34 @@ QGroupBox::title {
             except RuntimeError:
                 self._measure_preview = None
                 return
-        self._lbl_status.setText(tr("Distance: {d:.3f} mm", d=dist))
+        if size is not None:
+            self._update_measure_snap(sx2, sy2, size)
+        else:
+            self._remove_measure_snap()
+        if self._measure_ctrl_bypass():
+            self._lbl_status.setText(
+                tr("Distance: {d:.3f} mm (snap off)", d=dist))
+        else:
+            self._lbl_status.setText(tr("Distance: {d:.3f} mm", d=dist))
+
+    def _update_measure_snap(self, sx: float, sy: float, pad_size: float) -> None:
+        if self._measure_snap_item is None:
+            pen = QPen(MEASURE_COLOR, 1.2)
+            pen.setCosmetic(True)
+            brush = QBrush(QColor(MEASURE_COLOR.red(), MEASURE_COLOR.green(),
+                                 MEASURE_COLOR.blue(), 50))
+            self._measure_snap_item = self._scene.addEllipse(0.0, 0.0, 1.0, 1.0, pen, brush)
+            self._measure_snap_item.setZValue(78)
+        r = max(getattr(self, "_snap_tol", 1.0), pad_size)
+        self._measure_snap_item.setRect(sx - r, sy - r, 2.0 * r, 2.0 * r)
+
+    def _remove_measure_snap(self) -> None:
+        if self._measure_snap_item is not None:
+            try:
+                self._scene.removeItem(self._measure_snap_item)
+            except RuntimeError:
+                pass
+            self._measure_snap_item = None
 
     def _remove_measure_preview(self) -> None:
         if self._measure_preview is not None:
@@ -2086,6 +2245,7 @@ QGroupBox::title {
             except RuntimeError:
                 pass
             self._measure_preview = None
+        self._remove_measure_snap()
 
     def _add_measurement(self, x1: float, y1: float,
                          x2: float, y2: float) -> None:
@@ -2434,6 +2594,7 @@ QGroupBox::title {
         self._goto_crosshair = None
         self._grid_item = None
         self._measure_preview = None
+        self._measure_snap_item = None
         self._line_items = {}
         self._fill_items = {}
         self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top)

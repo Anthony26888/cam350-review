@@ -9,8 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QBrush
 from PySide6.QtWidgets import QApplication, QGraphicsScene
 
-from services.gerber.gerber_render import RenderData
-from services.gerber.gerber_render_lib import parse_layer
+from services.gerber.gerber_render import RenderData, parse_render
 from ui import gerber_viewer as gv
 
 COLOR = QColor("#F8FAFC")
@@ -81,7 +80,7 @@ def main():
     rows = []
     for fp in sorted(candidates):
         try:
-            rd = parse_layer(fp)
+            rd = parse_render(fp)
         except Exception:
             continue
         if not (rd.lines or rd.arcs or rd.flashes):
@@ -125,7 +124,7 @@ def _build_combined(root: str):
         if not fpath:
             return RenderData()
         try:
-            return parse_layer(fpath)
+            return parse_render(fpath)
         except Exception:
             return RenderData()
 

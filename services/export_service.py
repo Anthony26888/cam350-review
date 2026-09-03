@@ -38,7 +38,7 @@ class ExportService:
             "Designator", "MPN", "Layer", "Old X", "Old Y", "Old Rotation",
             "New X", "New Y", "New Rotation",
             "Aligned X", "Aligned Y", "Aligned Rotation",
-            "Status", "Remark", "Review Time",
+            "Status", "Pre-screen Flags", "Remark", "Review Time",
         ]
 
         _write_header(sheet, headers)
@@ -59,8 +59,9 @@ class ExportService:
             sheet.cell(row=row_idx, column=11, value=record.new_y if is_aligned else "")
             sheet.cell(row=row_idx, column=12, value=record.new_rotation if is_aligned else "")
             sheet.cell(row=row_idx, column=13, value=record.status)
-            sheet.cell(row=row_idx, column=14, value=record.remark)
-            sheet.cell(row=row_idx, column=15, value=record.review_time or "")
+            sheet.cell(row=row_idx, column=14, value="·".join(record.prescreen_flags))
+            sheet.cell(row=row_idx, column=15, value=record.remark)
+            sheet.cell(row=row_idx, column=16, value=record.review_time or "")
 
             _apply_row_style(sheet, row_idx, len(headers))
             if record.status == "Deleted":

@@ -12,3 +12,6 @@ secrets/
 config/config.json
 database/*.db
 *.log
+
+# Generated at build time
+utils/_build_info.py

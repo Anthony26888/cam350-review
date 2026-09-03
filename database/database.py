@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import shutil
+from contextlib import contextmanager
 from typing import Optional
 
 from utils.path_utils import user_data_dir
@@ -65,7 +66,9 @@ class Database:
                 remark TEXT DEFAULT '',
                 review_time TEXT,
                 datasheet TEXT DEFAULT '',
-                row_index INTEGER DEFAULT 0
+                checked INTEGER DEFAULT 0,
+                row_index INTEGER DEFAULT 0,
+                is_ic_rotation INTEGER DEFAULT 0
             )
             """
         )
@@ -77,6 +80,14 @@ class Database:
         columns = {row[1] for row in cursor.fetchall()}
         if "datasheet" not in columns:
             conn.execute("ALTER TABLE review ADD COLUMN datasheet TEXT DEFAULT ''")
+            conn.commit()
+        if "checked" not in columns:
+            conn.execute("ALTER TABLE review ADD COLUMN checked INTEGER DEFAULT 0")
+            conn.commit()
+        if "is_ic_rotation" not in columns:
+            conn.execute(
+                "ALTER TABLE review ADD COLUMN is_ic_rotation INTEGER DEFAULT 0"
+            )
             conn.commit()
         conn.execute(
             """
@@ -104,6 +115,29 @@ class Database:
             cursor = conn.execute(query, params)
             conn.commit()
             return cursor
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database error: {e}")
+
+    @contextmanager
+    def transaction(self):
+        """Batch many writes into a single commit.
+
+        Commits once on clean exit; rolls back on any exception so partial
+        batches never persist.
+        """
+        conn = self._get_connection()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def execute_many(self, query: str, seq_of_params) -> None:
+        conn = self._get_connection()
+        try:
+            with self.transaction() as conn:
+                conn.executemany(query, list(seq_of_params))
         except sqlite3.Error as e:
             raise RuntimeError(f"Database error: {e}")
 

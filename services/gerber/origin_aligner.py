@@ -26,6 +26,29 @@ class AlignResult:
         self.median_residual = median_residual
         self.gko_priority = gko_priority
 
+    def to_dict(self) -> dict:
+        return {
+            "offset_x": self.offset_x,
+            "offset_y": self.offset_y,
+            "rotation_angle": self.rotation_angle,
+            "n_matched": self.n_matched,
+            "n_total": self.n_total,
+            "median_residual": self.median_residual,
+            "gko_priority": bool(self.gko_priority),
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "AlignResult":
+        return AlignResult(
+            offset_x=float(data.get("offset_x", 0.0)),
+            offset_y=float(data.get("offset_y", 0.0)),
+            rotation_angle=float(data.get("rotation_angle", 0.0)),
+            n_matched=int(data.get("n_matched", 0)),
+            n_total=int(data.get("n_total", 0)),
+            median_residual=float(data.get("median_residual", -1.0)),
+            gko_priority=bool(data.get("gko_priority", False)),
+        )
+
     def __repr__(self) -> str:
         flag = " [GKO_PRIORITY]" if self.gko_priority else ""
         return (

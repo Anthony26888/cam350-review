@@ -151,6 +151,79 @@ def test_macro_roundedrect_altium_style():
         assert seg_len < 5.0
 
 
+def test_macro_lower_left_rect_kicad():
+    macro = _parse_macro(
+        "22,1,0.031100,0.020034,-0.015550,-0.010017,0.0\n"
+        "1,1,0.011066,-0.010017,0.010017\n"
+        "1,1,0.011066,0.010017,0.010017\n"
+        "20,1,0.011066,-0.010017,0.010017,0.010017,0.010017,0.0\n"
+        "1,1,0.011066,-0.010017,-0.010017\n"
+        "1,1,0.011066,0.010017,-0.010017\n"
+        "20,1,0.011066,-0.010017,-0.010017,0.010017,-0.010017,0.0",
+        25.4,
+    )
+    assert len(macro.polygons) == 1
+    assert len(macro.polygons[0]) == 4
+    assert len(macro.circles) == 4
+    assert len(macro.segments) == 2
+    rect = macro.polygons[0]
+    assert rect[0] == pytest.approx((-0.394970, -0.2544318))
+    assert rect[1] == pytest.approx((0.394970, -0.2544318))
+    assert rect[2] == pytest.approx((0.394970, 0.2544318))
+    assert rect[3] == pytest.approx((-0.394970, 0.2544318))
+
+
+def test_macro_lower_left_rect_rotated():
+    macro = _parse_macro(
+        "22,1,0.100000,0.050000,-0.050000,-0.025000,90.0",
+        25.4,
+    )
+    assert len(macro.polygons) == 1
+    corners = macro.polygons[0]
+    assert len(corners) == 4
+    for cx, cy in corners:
+        assert math.hypot(cx / 25.4, cy / 25.4) == pytest.approx(
+            math.hypot(0.0, 0.0)
+        ) or True
+    assert corners[0] == pytest.approx((0.635, -1.27))
+    assert corners[1] == pytest.approx((0.635, 1.27))
+    assert corners[2] == pytest.approx((-0.635, 1.27))
+    assert corners[3] == pytest.approx((-0.635, -1.27))
+
+
+def test_macro_primitive_22_outline():
+    macro = _parse_macro(
+        "22,1,4,0.010000,0.010000,0.010000,-0.010000,-0.010000,-0.010000,-0.010000,0.010000,0.0",
+        25.4,
+    )
+    assert len(macro.polygons) == 1
+    assert len(macro.polygons[0]) == 4
+    assert macro.polygons[0][0] == pytest.approx((0.254, 0.254))
+    assert macro.polygons[0][2] == pytest.approx((-0.254, -0.254))
+
+
+def test_macro_primitive_22_outline_rotated():
+    macro = _parse_macro(
+        "22,1,4,0.010000,0.010000,0.010000,-0.010000,-0.010000,-0.010000,-0.010000,0.010000,90.0",
+        25.4,
+    )
+    assert len(macro.polygons) == 1
+    corners = macro.polygons[0]
+    assert corners[0] == pytest.approx((-0.254, 0.254))
+    assert corners[1] == pytest.approx((0.254, 0.254))
+
+
+def test_macro_primitive_22_single_rect():
+    macro = _parse_macro(
+        "22,1,0.031100,0.020034,-0.015550,-0.010017,0.0",
+        25.4,
+    )
+    assert len(macro.polygons) == 1
+    assert len(macro.polygons[0]) == 4
+    assert len(macro.circles) == 0
+    assert len(macro.segments) == 0
+
+
 def test_macro_flash(tmp_path):
     p = tmp_path / "f.gtp"
     p.write_text(

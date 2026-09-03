@@ -197,12 +197,35 @@ def _parse_macro(text: str, scale: float) -> ApertureMacro:
             exposure, cx, cy, outer_d = vals[:4]
             if exposure:
                 macro.circles.append((cx * scale, cy * scale, outer_d / 2.0 * scale))
-        elif ptype == 22 and n - i >= 4:  # moire -> outer disc approximation
-            vals = take(4)
-            exposure, cx, cy, diameter = vals[:4]
-            take(2)
-            if exposure and diameter > 0:
-                macro.circles.append((cx * scale, cy * scale, diameter / 2.0 * scale))
+        elif ptype == 22 and n - i >= 6:  # outline polygon (N pts) or lower-left rect (KiCad)
+            exposure = tokens[i]; i += 1
+            n_pts = int(tokens[i]) if i < n and float(tokens[i]).is_integer() else 0
+            if n_pts >= 3 and n - i - 1 >= 2 * n_pts + 1:
+                i += 1  # skip the point count
+                pts_coords = take(2 * n_pts)
+                rot = take(1)[0]
+                if exposure:
+                    pts = [
+                        (pts_coords[2 * k] * scale, pts_coords[2 * k + 1] * scale)
+                        for k in range(n_pts)
+                    ]
+                    ang = math.radians(rot)
+                    c, s = math.cos(ang), math.sin(ang)
+                    pts = [(x * c - y * s, x * s + y * c) for x, y in pts]
+                    macro.polygons.append(pts)
+            else:
+                width, height, x_ll, y_ll, rot = take(5)
+                if exposure:
+                    ang = math.radians(rot)
+                    c, s = math.cos(ang), math.sin(ang)
+                    corners = []
+                    for px, py in ((0, 0), (width, 0), (width, height), (0, height)):
+                        ex = x_ll + px
+                        ey = y_ll + py
+                        corners.append((ex * c - ey * s, ex * s + ey * c))
+                    macro.polygons.append(
+                        [(x * scale, y * scale) for x, y in corners]
+                    )
         else:
             # Unknown primitive: skip its own row, keep parsing the rest.
             take(1)

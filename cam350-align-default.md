@@ -716,6 +716,9 @@ ghi đè bằng gốc GKO (`panel_origin` ở chế độ Panel Origin,
 `board_origin` ở chế độ Board Origin) → `new = orig`, tọa độ giữ nguyên
 theo file PickPlace nguồn, tránh dịch nhầm toàn hệ thống khi pad GTP
 lệch hệ thống so với outline (ví dụ thực tế lệch `(-1.1452, +2.54)mm`).
+Cơ chế chỉ kích hoạt khi có khớp pad thật (`n_matched > 0`) — board
+thiếu file paste (ước lượng bbox) hoặc matching thất bại hoàn toàn vẫn
+giữ nguyên offset ước lượng như trước.
 Khi ghi đè, `AlignResult.gko_priority = True` và wizard hiển thị cảnh
 báo ở bước tổng kết.
 

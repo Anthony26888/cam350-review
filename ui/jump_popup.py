@@ -394,7 +394,9 @@ class JumpPopup(QWidget):
             f"color: {status_colors.get(record.status, '#333')}; font-weight: bold;"
         )
 
-        self._mini_table.selectRow(self._current_index)
+        row = self._filtered.index(self._current_index) if self._current_index in self._filtered else -1
+        if row >= 0:
+            self._mini_table.selectRow(row)
         self._btn_prev.setEnabled(self._current_index > 0)
         self._btn_next.setEnabled(self._current_index < total - 1)
 

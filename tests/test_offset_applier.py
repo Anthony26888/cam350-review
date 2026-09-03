@@ -204,3 +204,24 @@ def test_gko_priority_not_applied_when_offset_matches_gko():
 
 def test_gko_priority_constant_value():
     assert GKO_PRIORITY_TOL == 0.01
+
+
+def test_gko_priority_skipped_when_no_paste_match():
+    panel = _Panel(100.0, 50.0)
+    panel.panel_origin = (265.9024, 163.3220)
+    panel.instances = [_Inst(100.0, 50.0)]
+    panel.instances[0].origin = (265.9024, 163.3220)
+    res = _Result()
+    res.offset_x = 264.0
+    res.offset_y = 161.0
+    res.n_matched = 0
+    res.n_total = 484
+    res.median_residual = -1.0
+    comp = ComponentTransform("C1", "Top", 42.8357, 201.549, 0)
+    apply_all_transforms([comp], panel, {0: res}, origin_mode="panel", rotation_angle=0)
+    # không có paste thật -> giữ nguyên bbox estimate, không bị GKO ghi đè
+    assert res.gko_priority is False
+    assert res.offset_x == 264.0
+    assert res.offset_y == 161.0
+    assert comp.new_x == pytest.approx(42.8357 + 264.0 - 265.9024, abs=1e-4)
+    assert comp.new_y == pytest.approx(201.549 + 161.0 - 163.3220, abs=1e-4)

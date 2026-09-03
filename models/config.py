@@ -16,6 +16,41 @@ def _default_column_profiles() -> Dict[str, Dict[str, str]]:
 
 
 @dataclass
+class PrescreenConfig:
+    enabled: bool = True
+    rot_dev: float = 90.0
+    rot_min_group: int = 2
+    dup_tol: float = 0.05
+    pad_median_tol: float = 2.0
+    out_margin: float = 1.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "rot_dev": self.rot_dev,
+            "rot_min_group": self.rot_min_group,
+            "dup_tol": self.dup_tol,
+            "pad_median_tol": self.pad_median_tol,
+            "out_margin": self.out_margin,
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "PrescreenConfig":
+        raw_rot_dev = float(data.get("rot_dev", 90.0))
+        # Legacy default 45.0 -> upgrade (no UI exposes this knob)
+        if raw_rot_dev == 45.0:
+            raw_rot_dev = 90.0
+        return PrescreenConfig(
+            enabled=bool(data.get("enabled", True)),
+            rot_dev=raw_rot_dev,
+            rot_min_group=int(data.get("rot_min_group", 2)),
+            dup_tol=float(data.get("dup_tol", 0.05)),
+            pad_median_tol=float(data.get("pad_median_tol", 2.0)),
+            out_margin=float(data.get("out_margin", 1.0)),
+        )
+
+
+@dataclass
 class Point:
     x: int = 0
     y: int = 0
@@ -50,6 +85,7 @@ class AppConfig:
     language: str = "en"
     columnProfiles: Dict[str, Dict[str, str]] = field(default_factory=_default_column_profiles)
     lastColumnProfile: str = ""
+    prescreen: PrescreenConfig = field(default_factory=PrescreenConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -73,6 +109,7 @@ class AppConfig:
             "language": self.language,
             "columnProfiles": self.columnProfiles,
             "lastColumnProfile": self.lastColumnProfile,
+            "prescreen": self.prescreen.to_dict(),
         }
 
     @staticmethod
@@ -98,4 +135,5 @@ class AppConfig:
             language=data.get("language", "en"),
             columnProfiles=data.get("columnProfiles") or _default_column_profiles(),
             lastColumnProfile=data.get("lastColumnProfile", ""),
+            prescreen=PrescreenConfig.from_dict(data.get("prescreen") or {}),
         )

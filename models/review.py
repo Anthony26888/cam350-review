@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -18,8 +18,11 @@ class ReviewRecord:
     remark: str = ""
     review_time: Optional[str] = None
     datasheet: str = ""
+    checked: bool = False
     id: int = 0
     row_index: int = 0
+    prescreen_flags: List[str] = field(default_factory=list)
+    is_ic_rotation: bool = False
 
     @property
     def needs_edit(self) -> bool:

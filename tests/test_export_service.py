@@ -58,6 +58,26 @@ def test_export_pickplace_fixed(tmp_path):
     assert not any("Layer" in row for row in rows)
 
 
+def test_export_pickplace_fixed_ic_flag_keeps_raw_value(tmp_path):
+    """IC convention only affects on-screen direction; exports stay raw."""
+    data = PickPlaceData(
+        headers=["Designator", "MPN", "Layer", "X", "Y", "Rotation"],
+        components=[
+            PickPlaceComponent(designator="C1", mpn="MPN1", layer="Top", x=1, y=2, rotation=0),
+        ],
+        raw_data=[
+            {"Designator": "C1", "MPN": "MPN1", "Layer": "Top", "X": 1, "Y": 2, "Rotation": 0},
+        ],
+    )
+    records = _records()[:1]
+    assert records[0].designator == "C1"
+    records[0].is_ic_rotation = True
+    path = tmp_path / "fixed_ic.csv"
+    ExportService.export_pickplace_fixed(records, data, str(path))
+    rows = _read_csv(path)
+    assert rows[0] == ["C1", "MPN1", "3.0", "4.0", "90"]  # raw 90, not +45
+
+
 def test_export_pickplace_fixed_skips_inactive(tmp_path):
     data = PickPlaceData(
         headers=["Designator", "X", "Y"],

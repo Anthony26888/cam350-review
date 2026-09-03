@@ -50,6 +50,22 @@ def _expanded_round_rect_pad():
     ]
 
 
+def _kicad_round_rect_macro_pad():
+    """A KiCad roundrect pad macro: lower-left body rect + 4 corner circles +
+    2 horizontal segments (the shape emitted by KiCad's aperture macro)."""
+    macro = ApertureMacro(
+        polygons=[[(-0.01555, -0.010017), (0.01555, -0.010017),
+                   (0.01555, 0.010017), (-0.01555, 0.010017)]],
+        circles=[(-0.010017, 0.010017, 0.005533),
+                 (0.010017, 0.010017, 0.005533),
+                 (-0.010017, -0.010017, 0.005533),
+                 (0.010017, -0.010017, 0.005533)],
+        segments=[(-0.010017, 0.010017, 0.010017, 0.010017, 0.011066),
+                  (-0.010017, -0.010017, 0.010017, -0.010017, 0.011066)],
+    )
+    return FlashShape(0.0, 0.0, "macro", 0.0, 0.0, 0.0, None, macro=macro)
+
+
 def _render_fill(flashes, size=400):
     path = _build_fill_path(flashes, False, 0.0, 0.0, 0.0, 0.0, 0.0)
     assert path.fillRule() == Qt.WindingFill
@@ -110,5 +126,26 @@ def test_expanded_round_rect_pad_renders_solid(app):
         (9.9, 1.25),       # lower-right
         (9.845, 1.38),     # top edge middle
         (9.845, 1.22),     # bottom edge middle
+    ]
+    assert all(_is_filled(img, bb, size, x, y) for x, y in probes)
+
+
+def test_kicad_round_rect_pad_segments_fill_solid(app):
+    """KiCad roundrect macro segments must fill the top/bottom edges, not
+    leave concave cut-lines (previously the segment quad had zero area)."""
+    img, bb = _render_fill([_kicad_round_rect_macro_pad()])
+    size = img.width()
+    probes = [
+        (0.0, 0.0),           # center
+        (0.0, 0.012),         # top edge middle (segment)
+        (0.0, -0.012),        # bottom edge middle (segment)
+        (0.0, 0.007),         # inside body rect, upper area
+        (0.0, -0.007),        # inside body rect, lower area
+        (0.013, 0.0),         # mid-right
+        (-0.013, 0.0),        # mid-left
+        (0.0135, 0.0135),     # corner (circle)
+        (-0.0135, 0.0135),    # corner (circle)
+        (0.0135, -0.0135),    # corner (circle)
+        (-0.0135, -0.0135),   # corner (circle)
     ]
     assert all(_is_filled(img, bb, size, x, y) for x, y in probes)

@@ -4,7 +4,7 @@ import os
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from ui.gerber_viewer import (
@@ -145,6 +145,57 @@ def test_overlay_show_unselected_true_draws_markers():
     assert _overlay_red_pix(overlay) > 0
 
 
+def test_overlay_uses_custom_cross_color():
+    overlay = MarkerOverlayItem(
+        [(0.0, 0.0, 0.0, 3.0)], show_unselected=True,
+        cross_color=QColor(30, 100, 200),
+    )
+    assert overlay._cross_color == QColor(30, 100, 200)
+    img = _render_overlay(overlay)
+    blue = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.red() < 80 and c.green() < 150 and c.blue() > 150:
+                blue += 1
+    assert blue > 0
+    assert _overlay_red_pix(overlay) == 0
+
+
+def test_overlay_uses_custom_highlight_color():
+    overlay = MarkerOverlayItem(
+        [(0.0, 0.0, 0.0, 3.0)], show_unselected=False,
+        highlight_color=QColor(120, 30, 200),
+    )
+    overlay.set_selected(0)
+    assert overlay._highlight_color == QColor(120, 30, 200)
+    img = _render_overlay(overlay)
+    purple = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.blue() > 150 and c.red() > 100 and c.green() < 100:
+                purple += 1
+    assert purple > 0
+    assert _overlay_green_pix(overlay) == 0
+
+
+def test_overlay_show_frame_true_draws_rect():
+    overlay = MarkerOverlayItem([(0.0, 0.0, 0.0, 3.0)], show_unselected=False)
+    overlay.set_selected(0)
+    assert overlay._show_frame is True
+    assert _overlay_green_pix(overlay) > 0
+
+
+def test_overlay_show_frame_false_no_rect():
+    overlay = MarkerOverlayItem(
+        [(0.0, 0.0, 0.0, 3.0)], show_unselected=False, show_frame=False,
+    )
+    overlay.set_selected(0)
+    assert overlay._show_frame is False
+    assert _overlay_green_pix(overlay) > 0
+
+
 def test_overlay_hidden_when_unselected_and_not_selected():
     overlay = MarkerOverlayItem([(0.0, 0.0, 0.0, 3.0)], show_unselected=False)
     assert _overlay_red_pix(overlay) == 0
@@ -154,6 +205,55 @@ def test_overlay_selected_still_visible_when_unselected_hidden():
     overlay = MarkerOverlayItem([(0.0, 0.0, 0.0, 3.0)], show_unselected=False)
     overlay.set_selected(0)
     assert _overlay_green_pix(overlay) > 0
+
+
+def _overlay_marker_xy(overlay: MarkerOverlayItem, half: float, scale: float = _SCALE):
+    span = int(4 * half * scale) + 16
+    img = QImage(span, span, QImage.Format_ARGB32)
+    img.fill(0)
+    p = QPainter(img)
+    p.translate(span / 2.0, span / 2.0)
+    p.scale(scale, scale)
+    overlay.paint(p, None)
+    p.end()
+    return img
+
+
+def test_overlay_multiple_selected_all_highlighted():
+    # two markers far apart in x: both become green when selected together
+    markers = [(-2.0, 0.0, 0.0, 3.0), (6.0, 0.0, 0.0, 3.0)]
+    overlay = MarkerOverlayItem(markers, show_unselected=False)
+    overlay.set_selected_indices({0, 1})
+    img = _overlay_marker_xy(overlay, 3.0, _SCALE)
+    greens = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.red() < 100 and c.green() > 150:
+                greens += 1
+    assert greens > 0
+    # one marker left at x=-2.0 stays dark (show_unselected False + not selected)
+    overlay2 = MarkerOverlayItem(markers, show_unselected=False)
+    overlay2.set_selected_indices({1})
+    img2 = _overlay_marker_xy(overlay2, 3.0, _SCALE)
+    span = int(4 * 3.0 * _SCALE) + 16
+    half = int(span / 2.0)
+    left = img2.copy(0, half - 3, half - 4, 6)
+    dark = 0
+    for y in range(left.height()):
+        for x in range(left.width()):
+            c = left.pixelColor(x, y)
+            if c.red() < 100 and c.green() < 100:
+                dark += 1
+    assert dark > 0
+
+
+def test_overlay_clear_selection_hides_all_when_unselected_hidden():
+    overlay = MarkerOverlayItem([(0.0, 0.0, 0.0, 3.0)], show_unselected=False)
+    overlay.set_selected_indices({0})
+    assert _overlay_green_pix(overlay) > 0
+    overlay.set_selected_indices(set())
+    assert _overlay_green_pix(overlay) == 0
 
 
 def test_overlay_arrow_visible_on_small_pad_low_zoom():

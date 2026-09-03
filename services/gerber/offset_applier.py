@@ -143,6 +143,9 @@ def _apply_gko_priority(
     hoặc residual cao), ghi đè offset bằng gốc GKO để tọa độ component
     giữ nguyên (new = orig), tránh dịch nhầm toàn hệ thống.
     """
+    if result.n_matched <= 0:
+        return False
+
     offset = (result.offset_x, result.offset_y)
     delta = math.hypot(offset[0] - ref_origin[0], offset[1] - ref_origin[1])
     if delta <= GKO_PRIORITY_TOL:
@@ -158,6 +161,64 @@ def _apply_gko_priority(
     result.offset_y = ref_origin[1]
     result.gko_priority = True
     return True
+
+
+def finalize_frame(
+    comp: ComponentTransform,
+    panel_info,
+    origin_mode: str = 'panel',
+    rotation_angle: int = 0,
+    rot_layers: Optional[Dict[str, bool]] = None,
+) -> None:
+    """STEP 4B/6/7: panel-origin translate, board rotate, bottom mirror.
+
+    Operates on whatever new_x/new_y/new_rotation the component already
+    carries (falls back to orig_*). Shared by apply_all_transforms and the
+    pre-screen gerber-frame mapping so both sides undergo the exact same
+    final-frame pipeline.
+    """
+    if rot_layers is None:
+        rot_layers = {"top": True, "bottom": False}
+
+    layer_norm = _layer_frame(comp.layer)
+
+    if origin_mode == 'panel':
+        step4b_translate_to_panel_origin(
+            comp, panel_info.panel_origin[0], panel_info.panel_origin[1]
+        )
+
+    instance = None
+    k = comp.instance_k or 0
+    if 0 <= k < len(panel_info.instances):
+        instance = panel_info.instances[k]
+
+    # STEP 6: Apply panel/board rotation (only for layers enabled in rot_layers)
+    if rotation_angle != 0:
+        if rot_layers.get(layer_norm, False):
+            if origin_mode == 'panel':
+                w = panel_info.panel_w
+                h = panel_info.panel_h
+            else:
+                if instance is None:
+                    return
+                w = instance.w
+                h = instance.h
+            step6_rotate(comp, w, h, rotation_angle)
+
+    # STEP 7: Mirror Bottom
+    skip_mirror = False
+    if rotation_angle in (90, 270) and layer_norm == "bottom":
+        if rot_layers.get("bottom", False):
+            skip_mirror = True
+    if not skip_mirror:
+        swap_wh = rotation_angle in (90, 270)
+        if origin_mode == 'panel':
+            ref_w = panel_info.panel_h if swap_wh else panel_info.panel_w
+        else:
+            if instance is None:
+                return
+            ref_w = instance.h if swap_wh else instance.w
+        step7_mirror_bottom(comp, ref_w)
 
 
 def apply_all_transforms(
@@ -195,35 +256,8 @@ def apply_all_transforms(
         # STEP 4: Apply offset + rotation
         step4_apply_offset(comp, result.offset_x, result.offset_y, result.rotation_angle)
 
-        # STEP 4B: Translate to panel origin (Panel Origin mode)
-        if origin_mode == 'panel':
-            step4b_translate_to_panel_origin(
-                comp, panel_info.panel_origin[0], panel_info.panel_origin[1]
-            )
-
-        # STEP 6: Apply panel/board rotation (only for layers enabled in rot_layers)
-        if rotation_angle != 0:
-            if rot_layers.get(_layer_frame(comp.layer), False):
-                if origin_mode == 'panel':
-                    w = panel_info.panel_w
-                    h = panel_info.panel_h
-                else:
-                    w = instance.w
-                    h = instance.h
-                step6_rotate(comp, w, h, rotation_angle)
-
-        # STEP 7: Mirror Bottom
-        skip_mirror = False
-        if rotation_angle in (90, 270) and _layer_frame(comp.layer) == "bottom":
-            if rot_layers.get("bottom", False):
-                skip_mirror = True
-        if not skip_mirror:
-            swap_wh = rotation_angle in (90, 270)
-            if origin_mode == 'panel':
-                ref_w = panel_info.panel_h if swap_wh else panel_info.panel_w
-            else:
-                ref_w = instance.h if swap_wh else instance.w
-            step7_mirror_bottom(comp, ref_w)
+        # STEP 4B/6/7
+        finalize_frame(comp, panel_info, origin_mode, rotation_angle, rot_layers)
 
 
 def round_coord(value: float, decimals: int = 4) -> float:

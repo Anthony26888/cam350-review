@@ -20,6 +20,26 @@ class BoardInstance:
         self.sub_name = sub_name
         self.k = k
 
+    def to_dict(self) -> dict:
+        return {
+            "origin": [self.origin[0], self.origin[1]],
+            "w": self.w,
+            "h": self.h,
+            "sub_name": self.sub_name or "",
+            "k": self.k,
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "BoardInstance":
+        ox, oy = data.get("origin", [0.0, 0.0])
+        return BoardInstance(
+            origin=(float(ox), float(oy)),
+            w=float(data.get("w", 0.0)),
+            h=float(data.get("h", 0.0)),
+            sub_name=data.get("sub_name") or None,
+            k=int(data.get("k", 0)),
+        )
+
     def __repr__(self) -> str:
         return (
             f"BoardInstance(k={self.k}, origin=({self.origin[0]:.4f}, "
@@ -60,6 +80,36 @@ class PanelInfo:
     @property
     def count(self) -> int:
         return len(self.instances)
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "instances": [inst.to_dict() for inst in self.instances],
+            "panel_origin": [self.panel_origin[0], self.panel_origin[1]],
+            "panel_w": self.panel_w,
+            "panel_h": self.panel_h,
+            "sub_block_names": list(self.sub_block_names),
+            "dx_mm": self.dx_mm,
+            "dy_mm": self.dy_mm,
+            "nx": self.nx,
+            "ny": self.ny,
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "PanelInfo":
+        po = data.get("panel_origin", [0.0, 0.0])
+        return PanelInfo(
+            kind=data.get("kind", "S"),
+            instances=[BoardInstance.from_dict(d) for d in data.get("instances", [])],
+            panel_origin=(float(po[0]), float(po[1])),
+            panel_w=float(data.get("panel_w", 0.0)),
+            panel_h=float(data.get("panel_h", 0.0)),
+            sub_block_names=list(data.get("sub_block_names") or []),
+            dx_mm=float(data.get("dx_mm", 0.0)),
+            dy_mm=float(data.get("dy_mm", 0.0)),
+            nx=int(data.get("nx", 1)),
+            ny=int(data.get("ny", 1)),
+        )
 
     def __repr__(self) -> str:
         return (

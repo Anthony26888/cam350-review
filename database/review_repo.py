@@ -12,8 +12,9 @@ class ReviewRepo:
         cursor = self._db.execute(
             """
             INSERT INTO review (designator, mpn, layer, old_x, old_y, old_rotation,
-                                new_x, new_y, new_rotation, status, remark, review_time, datasheet, row_index)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                new_x, new_y, new_rotation, status, remark, review_time, datasheet, checked, row_index,
+                                is_ic_rotation)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.designator,
@@ -29,7 +30,9 @@ class ReviewRepo:
                 record.remark,
                 record.review_time,
                 record.datasheet,
+                1 if record.checked else 0,
                 record.row_index,
+                1 if record.is_ic_rotation else 0,
             ),
         )
         return cursor.lastrowid or 0
@@ -39,24 +42,45 @@ class ReviewRepo:
             """
             UPDATE review SET mpn=?, layer=?, old_x=?, old_y=?, old_rotation=?,
                               new_x=?, new_y=?, new_rotation=?, status=?, remark=?,
-                              review_time=?, datasheet=?
+                              review_time=?, datasheet=?, checked=?, is_ic_rotation=?
             WHERE id=?
             """,
-            (
-                record.mpn,
-                record.layer,
-                record.old_x,
-                record.old_y,
-                record.old_rotation,
-                record.new_x,
-                record.new_y,
-                record.new_rotation,
-                record.status,
-                record.remark,
-                record.review_time,
-                record.datasheet,
-                record.id,
-            ),
+            self._update_params(record),
+        )
+
+    @staticmethod
+    def _update_params(record: ReviewRecord) -> tuple:
+        return (
+            record.mpn,
+            record.layer,
+            record.old_x,
+            record.old_y,
+            record.old_rotation,
+            record.new_x,
+            record.new_y,
+            record.new_rotation,
+            record.status,
+            record.remark,
+            record.review_time,
+            record.datasheet,
+            1 if record.checked else 0,
+            1 if record.is_ic_rotation else 0,
+            record.id,
+        )
+
+    def update_many(self, records) -> None:
+        """Persist many records in a single transaction/commit."""
+        records = list(records)
+        if not records:
+            return
+        self._db.execute_many(
+            """
+            UPDATE review SET mpn=?, layer=?, old_x=?, old_y=?, old_rotation=?,
+                              new_x=?, new_y=?, new_rotation=?, status=?, remark=?,
+                              review_time=?, datasheet=?, checked=?, is_ic_rotation=?
+            WHERE id=?
+            """,
+            [self._update_params(r) for r in records],
         )
 
     def get_by_id(self, record_id: int) -> Optional[ReviewRecord]:
@@ -115,5 +139,7 @@ class ReviewRepo:
             remark=row["remark"],
             review_time=row["review_time"],
             datasheet=row["datasheet"],
+            checked=bool(row["checked"]),
             row_index=row["row_index"],
+            is_ic_rotation=bool(row["is_ic_rotation"]),
         )
