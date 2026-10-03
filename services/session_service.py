@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from models.review import ReviewRecord
 
 
-SESSION_VERSION = 5
+SESSION_VERSION = 7
 
 
 def compress_text(text: str) -> str:
@@ -36,6 +36,8 @@ class SessionData:
         self.gerber_files: Optional[Dict[str, str]] = None
         self.prescreen_dismissed: List[str] = []
         self.prescreen_ctx: Optional[Dict[str, Any]] = None
+        self.panel_config: Optional[Dict[str, Any]] = None
+        self.history: List[Dict[str, Any]] = []
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,6 +56,8 @@ class SessionData:
             "gerber_files": self.gerber_files,
             "prescreen_dismissed": self.prescreen_dismissed,
             "prescreen_ctx": self.prescreen_ctx,
+            "panel_config": self.panel_config,
+            "history": self.history,
         }
 
     @staticmethod
@@ -74,6 +78,8 @@ class SessionData:
         obj.gerber_files = data.get("gerber_files") or None
         obj.prescreen_dismissed = list(data.get("prescreen_dismissed") or [])
         obj.prescreen_ctx = data.get("prescreen_ctx") or None
+        obj.panel_config = data.get("panel_config") or None
+        obj.history = list(data.get("history") or [])
         return obj
 
 
@@ -101,6 +107,9 @@ class SessionService:
                 "checked": r.checked,
                 "row_index": r.row_index,
                 "is_ic_rotation": bool(r.is_ic_rotation),
+                "block": int(getattr(r, "block", 0)),
+                "block_rotation": int(getattr(r, "block_rotation", 0)),
+                "base_designator": getattr(r, "base_designator", ""),
             })
         return result
 
@@ -126,6 +135,9 @@ class SessionService:
                 checked=bool(item.get("checked", False)),
                 row_index=item.get("row_index", 0),
                 is_ic_rotation=bool(item.get("is_ic_rotation", False)),
+                block=int(item.get("block", 0)),
+                block_rotation=int(item.get("block_rotation", 0)),
+                base_designator=item.get("base_designator", ""),
             ))
         return records
 
@@ -146,6 +158,8 @@ class SessionService:
         gerber_files: Optional[Dict[str, str]] = None,
         prescreen_dismissed: Optional[List[str]] = None,
         prescreen_ctx: Optional[Dict[str, Any]] = None,
+        panel_config: Optional[Dict[str, Any]] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         data = SessionData()
         data.source_file = source_file
@@ -162,6 +176,8 @@ class SessionService:
         data.gerber_files = gerber_files
         data.prescreen_dismissed = list(prescreen_dismissed or [])
         data.prescreen_ctx = prescreen_ctx or None
+        data.panel_config = panel_config or None
+        data.history = list(history or [])
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, indent=2, ensure_ascii=False)

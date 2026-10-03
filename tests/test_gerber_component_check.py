@@ -556,3 +556,74 @@ def test_edit_same_value_mode_switch_still_marks_edited(viewer, monkeypatch):
     assert rec.status == "Edited"
     assert emitted == [viewer._record_index_in_records(rec)]
     assert abs(viewer._overlay._markers[0][2] - 135.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Group-by-MPN context menu "Checked" action
+# ---------------------------------------------------------------------------
+
+def _build_group_records():
+    return [
+        ReviewRecord(designator="C1", mpn="M1", layer="Top", old_x=10.0, old_y=20.0, old_rotation=0),
+        ReviewRecord(designator="C2", mpn="M1", layer="Top", old_x=30.0, old_y=40.0, old_rotation=90),
+        ReviewRecord(designator="R1", mpn="M2", layer="Top", old_x=50.0, old_y=60.0, old_rotation=0),
+    ]
+
+
+def _group_viewer(recs, monkeypatch=None):
+    v = _NoopGerberViewer(recs, r"C:\nonexistent.gko")
+    v._outline = RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])
+    v._loaded = True
+    v.show()
+    v._chk_group_mpn.setChecked(True)
+    v._apply_layer()
+    if monkeypatch is not None:
+        monkeypatch.setattr("ui.gerber_viewer.QMessageBox", _FakeMsgBox)
+    return v
+
+
+def test_group_mpn_confirm_checks_all_designators(monkeypatch):
+    v = _group_viewer(_build_group_records(), monkeypatch)
+    assert v._group_rows == [[0, 1], [2]]
+    _FakeMsgBox.answer = QMessageBox.Yes
+    emitted = []
+    v.checked_changed.connect(emitted.append)
+    v._on_group_checked_action(0)
+    layer = v._current_layer_records()
+    assert layer[0].checked is True
+    assert layer[1].checked is True
+    assert layer[2].checked is False
+    assert emitted == [v._record_index_in_records(layer[0]),
+                       v._record_index_in_records(layer[1])]
+
+
+def test_group_mpn_declined_keeps_all_unchecked(monkeypatch):
+    v = _group_viewer(_build_group_records(), monkeypatch)
+    _FakeMsgBox.answer = QMessageBox.No
+    v._on_group_checked_action(0)
+    layer = v._current_layer_records()
+    assert all(not r.checked for r in layer)
+
+
+def test_group_mpn_recheck_unchecks_all_designators(monkeypatch):
+    recs = _build_group_records()
+    recs[0].checked = True
+    recs[1].checked = True
+    v = _group_viewer(recs, monkeypatch)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    v._on_group_checked_action(0)
+    layer = v._current_layer_records()
+    assert layer[0].checked is False
+    assert layer[1].checked is False
+
+
+def test_group_mpn_partial_checked_state_defaults_unchecked(monkeypatch):
+    recs = _build_group_records()
+    recs[0].checked = True
+    recs[1].checked = False
+    v = _group_viewer(recs, monkeypatch)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    v._on_group_checked_action(0)
+    layer = v._current_layer_records()
+    assert layer[0].checked is True
+    assert layer[1].checked is True

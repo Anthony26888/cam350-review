@@ -24,6 +24,10 @@ def _holder() -> types.SimpleNamespace:
     h._new_action = _act()
     h._save_action = _act()
     h._save_as_action = _act()
+    h._panelize_action = _act()
+    h._clear_panelize_action = _act()
+    h._panel_config = None
+    h._pre_panel_snapshot = None
     h._btn_align = _btn(True)
     h._btn_export_report = _btn(True)
     h._btn_export_fixed = _btn(True)

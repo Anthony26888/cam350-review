@@ -7,7 +7,7 @@ from typing import Optional, List, Dict, Any, Callable
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QPushButton, QMessageBox, QFileDialog, QStatusBar,
+    QPushButton, QToolButton, QMessageBox, QFileDialog, QStatusBar,
     QLabel, QSplitter, QMenuBar, QMenu, QToolBar,
     QApplication, QDialog, QProgressDialog, QStyle,
 )
@@ -18,6 +18,7 @@ from PySide6.QtGui import (
 
 from config.config_manager import ConfigManager
 from database.review_repo import ReviewRepo
+from database.history_repo import HistoryRepo
 from license.info import license_summary
 from models.review import ReviewRecord
 from models.pickplace import PickPlaceData, PickPlaceComponent, COLUMN_FIELDS
@@ -27,6 +28,9 @@ from services.export_service import ExportService
 from services.datasheet_service import DatasheetService
 from services.session_service import SessionService
 from services.prescreen import dismiss_key_for, pack_prescreen_ctx, summarize, unpack_prescreen_ctx
+from services.panelize_service import (
+    PanelConfig, PanelError, is_panelized, panelize_records,
+)
 from utils.perf_log import Timer, log_event
 from ui.table_widget import TableWidget
 from ui.review_panel import ReviewPanel
@@ -210,6 +214,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._config_mgr = ConfigManager.instance()
         self._repo = ReviewRepo()
+        self._history_repo = HistoryRepo()
         self._cam350 = Cam350Controller()
         self._reader = PickPlaceReader()
         self._exporter = ExportService()
@@ -236,6 +241,9 @@ class MainWindow(QMainWindow):
         self._redo_action: Optional[QAction] = None
         self._datasheet_worker: Optional[DatasheetWorker] = None
         self._export_worker: Optional[ExportWorker] = None
+        self._panel_config: Optional[PanelConfig] = None
+        self._pre_panel_snapshot: Optional[List[Dict[str, Any]]] = None
+        self._clear_panelize_action: Optional[QAction] = None
 
         self.setWindowTitle("CAM350 Review Assistant")
         self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
@@ -333,6 +341,18 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(gerber_check_action)
         self._gerber_check_action = gerber_check_action
 
+        panelize_action = QAction(tr("Panelize..."), self)
+        panelize_action.triggered.connect(self._panelize)
+        panelize_action.setEnabled(False)
+        self._panelize_action = panelize_action
+        tools_menu.addAction(panelize_action)
+
+        clear_panelize_action = QAction(tr("Clear Panelize"), self)
+        clear_panelize_action.triggered.connect(self._clear_panelize)
+        clear_panelize_action.setEnabled(False)
+        self._clear_panelize_action = clear_panelize_action
+        tools_menu.addAction(clear_panelize_action)
+
         tools_menu.addSeparator()
 
         pcb_info_action = QAction(tr("PCB Info..."), self)
@@ -367,22 +387,33 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(24, 24))
 
-        def _std_button(tip: str, icon_factory: Callable[[], QIcon]) -> QPushButton:
-            btn = QPushButton()
+        def _std_button(tip: str, label: str, icon_factory: Callable[[], QIcon]) -> QToolButton:
+            btn = QToolButton()
             btn.setToolTip(tip)
+            btn.setText(label)
             btn.setIcon(icon_factory())
-            btn.setFixedSize(34, 30)
+            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            btn.setFixedSize(62, 56)
+            btn.setStyleSheet("""
+                QToolButton {
+                    padding: 2px;
+                    text-align: center;
+                }
+                QToolButton:disabled {
+                    color: gray;
+                }
+            """)
             return btn
 
         spi = self.style().standardIcon
-        icon_sources: List[tuple[QPushButton, Callable[[], QIcon]]] = []
+        icon_sources: List[tuple[QToolButton, Callable[[], QIcon]]] = []
 
-        def _register(btn: QPushButton, factory: Callable[[], QIcon]) -> QPushButton:
+        def _register(btn: QToolButton, factory: Callable[[], QIcon]) -> QToolButton:
             icon_sources.append((btn, factory))
             return btn
 
         btn_new = _register(
-            _std_button(tr("New Session (Ctrl+N)"), lambda: spi(QStyle.StandardPixmap.SP_FileIcon)),
+            _std_button(tr("New Session (Ctrl+N)"), tr("New"), lambda: spi(QStyle.StandardPixmap.SP_FileIcon)),
             lambda: spi(QStyle.StandardPixmap.SP_FileIcon),
         )
         btn_new.clicked.connect(self._new_session)
@@ -390,62 +421,62 @@ class MainWindow(QMainWindow):
         self._btn_new = btn_new
 
         btn_open_session = _register(
-            _std_button(tr("Open Session (Ctrl+O)"), lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton)),
+            _std_button(tr("Open Session (Ctrl+O)"), tr("Open"), lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton)),
             lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton),
         )
         btn_open_session.clicked.connect(self._open_session)
 
         btn_save = _register(
-            _std_button(tr("Save Session (Ctrl+S)"), lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton)),
+            _std_button(tr("Save Session (Ctrl+S)"), tr("Save"), lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton)),
             lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton),
         )
         btn_save.clicked.connect(self._save_session)
         btn_save.setEnabled(False)
         self._btn_save = btn_save
 
-        self._btn_open = _register(_std_button(tr("Open PickPlace Excel"), _grid_icon), _grid_icon)
+        self._btn_open = _register(_std_button(tr("Open PickPlace Excel"), tr("Open"), _grid_icon), _grid_icon)
         self._btn_open.clicked.connect(self._open_file)
 
         self._btn_align = _register(
-            _std_button(tr("Align PickPlace Origin"), lambda: spi(QStyle.StandardPixmap.SP_BrowserReload)),
+            _std_button(tr("Align PickPlace Origin"), tr("Align"), lambda: spi(QStyle.StandardPixmap.SP_BrowserReload)),
             lambda: spi(QStyle.StandardPixmap.SP_BrowserReload),
         )
         self._btn_align.clicked.connect(self._align_origin)
         self._btn_align.setEnabled(False)
 
         self._btn_run_check = _register(
-            _std_button(tr("Run Check"), _prescreen_icon),
+            _std_button(tr("Run Check"), tr("Check"), _prescreen_icon),
             _prescreen_icon,
         )
         self._btn_run_check.setToolTip(tr("Re-run the pre-screen check on the current data"))
         self._btn_run_check.clicked.connect(self._open_prescreen_dialog)
         self._btn_run_check.setEnabled(False)
 
-        self._btn_gerber_check = _register(_std_button(tr("Gerber View"), _board_icon), _board_icon)
+        self._btn_gerber_check = _register(_std_button(tr("Gerber View"), tr("Gerber"), _board_icon), _board_icon)
         self._btn_gerber_check.clicked.connect(self._open_gerber_check)
         self._btn_gerber_check.setEnabled(False)
 
-        self._btn_export_report = _register(_std_button(tr("Export Review Report"), _doc_icon), _doc_icon)
+        self._btn_export_report = _register(_std_button(tr("Export Review Report"), tr("Report"), _doc_icon), _doc_icon)
         self._btn_export_report.clicked.connect(self._export_report)
         self._btn_export_report.setEnabled(False)
 
-        self._btn_export_fixed = _register(_std_button(tr("Export PickPlace Fixed"), _export_icon), _export_icon)
+        self._btn_export_fixed = _register(_std_button(tr("Export PickPlace Fixed"), tr("Export"), _export_icon), _export_icon)
         self._btn_export_fixed.clicked.connect(self._export_fixed)
         self._btn_export_fixed.setEnabled(False)
 
         self._btn_batch_edit = _register(
-            _std_button(tr("Batch Edit"), lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView)),
+            _std_button(tr("Batch Edit"), tr("Batch"), lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView)),
             lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView),
         )
         self._btn_batch_edit.clicked.connect(self._batch_edit)
         self._btn_batch_edit.setEnabled(False)
 
-        self._btn_pcb_info = _register(_std_button(tr("PCB Info"), _chip_icon), _chip_icon)
+        self._btn_pcb_info = _register(_std_button(tr("PCB Info"), tr("PCB"), _chip_icon), _chip_icon)
         self._btn_pcb_info.clicked.connect(self._open_pcb_info)
         self._btn_pcb_info.setEnabled(False)
 
         self._btn_ok_checked = _register(
-            _std_button(tr("OK Checked"), lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton)),
+            _std_button(tr("OK Checked"), tr("OK"), lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton)),
             lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton),
         )
         self._btn_ok_checked.setObjectName("success")
@@ -453,14 +484,14 @@ class MainWindow(QMainWindow):
         self._btn_ok_checked.clicked.connect(self._mark_checked_ok)
 
         self._btn_delete = _register(
-            _std_button(tr("Delete Selected"), lambda: spi(QStyle.StandardPixmap.SP_TrashIcon)),
+            _std_button(tr("Delete Selected"), tr("Delete"), lambda: spi(QStyle.StandardPixmap.SP_TrashIcon)),
             lambda: spi(QStyle.StandardPixmap.SP_TrashIcon),
         )
         self._btn_delete.setObjectName("danger")
         self._btn_delete.setEnabled(False)
         self._btn_delete.clicked.connect(self._delete_selected)
 
-        self._btn_settings = _register(_std_button(tr("Settings"), _gear_icon), _gear_icon)
+        self._btn_settings = _register(_std_button(tr("Settings"), tr("Settings"), _gear_icon), _gear_icon)
         self._btn_settings.clicked.connect(self._open_settings)
 
         self._toolbar_icon_sources = icon_sources
@@ -497,12 +528,7 @@ class MainWindow(QMainWindow):
         self._table_widget.flag_dismiss_requested.connect(self._on_flag_dismiss)
 
         self._review_panel = ReviewPanel()
-        self._review_panel.previous_requested.connect(self._previous)
-        self._review_panel.next_requested.connect(self._next)
-        self._review_panel.jump_requested.connect(self._jump_cam350)
-        self._review_panel.ok_requested.connect(self._mark_ok)
-        self._review_panel.edit_requested.connect(self._mark_edit)
-        self._review_panel.datasheet_requested.connect(self._search_datasheet)
+        self._review_panel.set_record_list([])
 
         splitter.addWidget(self._table_widget)
         splitter.addWidget(self._review_panel)
@@ -585,6 +611,10 @@ class MainWindow(QMainWindow):
     def _clear_all(self) -> None:
         self._dirty = False
         self._repo.delete_all()
+        try:
+            self._history_repo.clear_all()
+        except Exception:
+            pass
         self._records = []
         self._pickplace_data = None
         self._prescreen_dismissed = set()
@@ -610,6 +640,8 @@ class MainWindow(QMainWindow):
         self._btn_new.setEnabled(False)
         self._btn_save.setEnabled(False)
         self._clear_gerber_config()
+        self._panel_config = None
+        self._pre_panel_snapshot = None
         self._update_gerber_view_button()
         self._sync_action_states()
         self._update_progress()
@@ -650,6 +682,12 @@ class MainWindow(QMainWindow):
         self._new_action.setEnabled(self._btn_new.isEnabled())
         self._save_action.setEnabled(self._btn_save.isEnabled())
         self._save_as_action.setEnabled(self._btn_save.isEnabled())
+        if self._panelize_action is not None:
+            self._panelize_action.setEnabled(self._btn_export_report.isEnabled())
+        if self._clear_panelize_action is not None:
+            self._clear_panelize_action.setEnabled(
+                bool(self._panel_config) or self._pre_panel_snapshot is not None
+            )
 
     @staticmethod
     def _restore_pcb_info(session) -> None:
@@ -747,11 +785,7 @@ class MainWindow(QMainWindow):
     def _build_pickplace_data_from_records(records: List[ReviewRecord]) -> PickPlaceData:
         components = []
         raw_data = []
-        seen = set()
         for r in records:
-            if r.designator in seen:
-                continue
-            seen.add(r.designator)
             comp = PickPlaceComponent(
                 designator=r.designator,
                 mpn=r.mpn,
@@ -760,6 +794,7 @@ class MainWindow(QMainWindow):
                 y=r.old_y,
                 rotation=r.old_rotation,
                 row=r.row_index,
+                panel_instance=r.block if r.block else None,
             )
             components.append(comp)
             raw_data.append({
@@ -817,6 +852,7 @@ class MainWindow(QMainWindow):
         self._records = self._repo.get_all()
         self._records = [r for r in self._records if r.status != "Deleted"]
         self._session_file = file_path
+        self._restore_history(getattr(session, "history", None))
         self._pickplace_data = None
         self._restore_pcb_info(session)
         self._restore_session_gerber(session)
@@ -824,6 +860,9 @@ class MainWindow(QMainWindow):
         self._prescreen_dismissed = set(getattr(session, "prescreen_dismissed", None) or ())
         self._close_prescreen_dialog()
         self._restore_prescreen_bundle(session)
+        raw_panel = getattr(session, "panel_config", None)
+        self._panel_config = PanelConfig.from_dict(raw_panel) if raw_panel else None
+        self._pre_panel_snapshot = None
 
         if session.source_file:
             try:
@@ -897,6 +936,8 @@ class MainWindow(QMainWindow):
             gerber_files=gerber_files,
             prescreen_dismissed=sorted(self._prescreen_dismissed),
             prescreen_ctx=self._prescreen_ctx_packed,
+            panel_config=self._panel_config.to_dict() if self._panel_config else None,
+            history=self._collect_history_dicts(),
         )
         self._session_file = file_path
         self._config_mgr.update(lastSessionFile=file_path)
@@ -928,6 +969,8 @@ class MainWindow(QMainWindow):
                 gerber_files=gerber_files,
                 prescreen_dismissed=sorted(self._prescreen_dismissed),
                 prescreen_ctx=self._prescreen_ctx_packed,
+                panel_config=self._panel_config.to_dict() if self._panel_config else None,
+                history=self._collect_history_dicts(),
             )
             self._config_mgr.update(lastSessionFile=self._session_file)
             self._dirty = False
@@ -983,9 +1026,16 @@ class MainWindow(QMainWindow):
         self._pickplace_data = data
         self._config_mgr.update(lastFile=file_path)
         self._clear_gerber_config()
+        self._panel_config = None
+        self._pre_panel_snapshot = None
 
         self._repo.delete_all()
+        try:
+            self._history_repo.clear_all()
+        except Exception:
+            pass
         self._records = []
+        import_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for comp in data.components:
             record = ReviewRecord(
                 designator=comp.designator,
@@ -999,6 +1049,17 @@ class MainWindow(QMainWindow):
             )
             record.id = self._repo.insert(record)
             self._records.append(record)
+            try:
+                from models.history import HistoryEntry
+                self._history_repo.add(HistoryEntry(
+                    designator=record.designator, block=0, action="Import",
+                    old_x=None, old_y=None, old_rotation=None,
+                    new_x=record.old_x, new_y=record.old_y,
+                    new_rotation=record.old_rotation,
+                    remark="", created_at=import_ts,
+                ))
+            except Exception:
+                pass
 
         self._dirty = True
         self._table_widget.set_records(self._records)
@@ -1033,6 +1094,7 @@ class MainWindow(QMainWindow):
         record = self._records[index]
         self._table_widget.select_record(index)
         self._review_panel.display_record(record, index, len(self._records), progress_text)
+        self._refresh_history_panel(record)
 
     def _on_record_selected(self, index: int) -> None:
         self._select_and_display(index)
@@ -1092,6 +1154,9 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self._records):
             return
         record = self._records[index]
+        old_x = record.new_x if record.new_x is not None else record.old_x
+        old_y = record.new_y if record.new_y is not None else record.old_y
+        old_rot = record.new_rotation if record.new_rotation is not None else record.old_rotation
         self._push_undo()
         record.new_x = new_x
         record.new_y = new_y
@@ -1100,7 +1165,10 @@ class MainWindow(QMainWindow):
         record.status = "Edited"
         record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._repo.update(record)
+        self._log_history(record, "Edit", old_x=old_x, old_y=old_y, old_rot=old_rot)
         self._table_widget.update_record_row(index)
+        if index == self._current_index:
+            self._refresh_history_panel(record)
         self._update_progress()
         self._config_mgr.update(lastReviewId=record.id)
         self._status_label.setText(tr("{des}: Edited", des=record.designator))
@@ -1121,6 +1189,8 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         self._push_undo()
+        self._log_history(record, "Delete", old_x=record.new_x, old_y=record.new_y,
+                           old_rot=record.new_rotation, remark=record.remark or "")
         self._repo.delete_by_id(record.id)
         self._records.pop(index)
         if not self._records:
@@ -1137,6 +1207,9 @@ class MainWindow(QMainWindow):
         if self._current_index < 0 or self._current_index >= len(self._records):
             return
         record = self._records[self._current_index]
+        old_x = record.new_x
+        old_y = record.new_y
+        old_rot = record.new_rotation
         self._push_undo()
         record.status = "OK"
         if record.new_x is None:
@@ -1147,6 +1220,7 @@ class MainWindow(QMainWindow):
             record.new_rotation = record.old_rotation
         record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._repo.update(record)
+        self._log_history(record, "OK", old_x=old_x, old_y=old_y, old_rot=old_rot)
         self._table_widget.update_record_row(self._current_index)
         self._update_progress()
         self._config_mgr.update(lastReviewId=record.id)
@@ -1158,6 +1232,10 @@ class MainWindow(QMainWindow):
         if self._current_index < 0 or self._current_index >= len(self._records):
             return
         record = self._records[self._current_index]
+        old_x = record.new_x
+        old_y = record.new_y
+        old_rot = record.new_rotation
+        old_remark = record.remark
         before = self._record_snapshot()
         dialog = EditDialog(record, self)
         if dialog.exec():
@@ -1165,6 +1243,9 @@ class MainWindow(QMainWindow):
             record.status = "Edited"
             record.review_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._repo.update(record)
+            # EditDialog already wrote new_x/new_y/rot/remark into record
+            self._log_history(record, "Edit", old_x=old_x, old_y=old_y,
+                              old_rot=old_rot, remark=old_remark)
             self._table_widget.update_record_row(self._current_index)
             self._update_progress()
             self._config_mgr.update(lastReviewId=record.id)
@@ -1326,6 +1407,8 @@ class MainWindow(QMainWindow):
             if progress.wasCanceled():
                 break
             record = self._records[idx]
+            old_x, old_y, old_rot = record.new_x, record.new_y, record.new_rotation
+            old_remark = record.remark
             if dialog.is_apply_x:
                 base_x = record.new_x if record.new_x is not None else record.old_x
                 record.new_x = round(base_x + dialog.offset_x, 4)
@@ -1346,12 +1429,16 @@ class MainWindow(QMainWindow):
             record.status = "Edited"
             record.review_time = timestamp
             self._repo.update(record)
+            self._log_history(record, "Batch", old_x=old_x, old_y=old_y,
+                              old_rot=old_rot, remark=old_remark,
+                              created_at=timestamp)
             self._table_widget.update_record_row(idx)
             progress.setValue(count)
             QApplication.processEvents()
         progress.close()
         self._update_progress()
         self._status_label.setText(tr("Batch edited {n} records", n=len(indices)))
+        self._refresh_history_panel()
 
     def _mark_checked_ok(self) -> None:
         indices = self._table_widget.get_checked_indices()
@@ -1371,6 +1458,7 @@ class MainWindow(QMainWindow):
             if progress.wasCanceled():
                 break
             record = self._records[idx]
+            old_x, old_y, old_rot = record.new_x, record.new_y, record.new_rotation
             record.status = "OK"
             if record.new_x is None:
                 record.new_x = record.old_x
@@ -1380,6 +1468,8 @@ class MainWindow(QMainWindow):
                 record.new_rotation = record.old_rotation
             record.review_time = timestamp
             self._repo.update(record)
+            self._log_history(record, "OK", old_x=old_x, old_y=old_y,
+                              old_rot=old_rot, created_at=timestamp)
             self._table_widget.update_record_row(idx)
             progress.setValue(count)
             QApplication.processEvents()
@@ -1387,6 +1477,7 @@ class MainWindow(QMainWindow):
         self._table_widget.clear_checked()
         self._update_progress()
         self._status_label.setText(tr("Marked OK: {n} records", n=len(indices)))
+        self._refresh_history_panel()
 
     def _delete_selected(self) -> None:
         indices = self._table_widget.get_checked_indices()
@@ -1405,6 +1496,8 @@ class MainWindow(QMainWindow):
             record = self._records[idx]
             record.status = "Deleted"
             self._repo.update(record)
+            self._log_history(record, "Delete", old_x=record.new_x,
+                              old_y=record.new_y, old_rot=record.new_rotation)
             self._records.pop(idx)
         self._table_widget.clear_checked()
         if not self._records:
@@ -1540,6 +1633,7 @@ class MainWindow(QMainWindow):
             self._review_panel.display_record(
                 records[current_index], current_index, len(records)
             )
+            self._refresh_history_panel(records[current_index])
         else:
             self._review_panel.clear_record()
         self._update_progress()
@@ -1611,6 +1705,67 @@ class MainWindow(QMainWindow):
             tr("Updating component table..."),
             _post_wizard,
         ))
+
+    def _panelize(self) -> None:
+        if not self._records:
+            QMessageBox.warning(self, tr("Panelize"), tr("No data to panelize."))
+            return
+        if is_panelized(self._records):
+            QMessageBox.warning(
+                self, tr("Panelize"),
+                tr("Dữ liệu đã được panelize. Hãy xóa panelize trước "
+                   "(Tools > Clear Panelize)."),
+            )
+            return
+
+        from ui.panelize_dialog import PanelizeDialog
+
+        gko = self._existing_gerber_paths().get("gerberGko", "")
+        dialog = PanelizeDialog(
+            self._records, parent=self,
+            config=self._panel_config, gko_path=gko,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        cfg = dialog.panel_config
+        if cfg is None:
+            return
+
+        try:
+            new_records = panelize_records(self._records, cfg)
+        except PanelError as e:
+            QMessageBox.critical(self, tr("Panelize"), str(e))
+            return
+
+        self._pre_panel_snapshot = self._record_snapshot()
+        self._push_undo()
+        snap = SessionService.records_to_list(new_records)
+        self._restore_records(snap)
+        self._panel_config = cfg
+        self._dirty = True
+        self._sync_action_states()
+        self._status_label.setText(
+            tr("Panelized: {boards} boards × {parts} components = {total} records",
+               boards=cfg.count, parts=len(self._records) // max(cfg.count, 1),
+               total=len(self._records))
+        )
+
+    def _clear_panelize(self) -> None:
+        if self._pre_panel_snapshot is not None:
+            self._push_undo()
+            self._restore_records(list(self._pre_panel_snapshot))
+        else:
+            base = [r for r in self._records if getattr(r, "block", 0) == 0]
+            if not base or len(base) == len(self._records):
+                return
+            self._push_undo()
+            snap = SessionService.records_to_list(base)
+            self._restore_records(snap)
+        self._panel_config = None
+        self._pre_panel_snapshot = None
+        self._dirty = True
+        self._sync_action_states()
+        self._status_label.setText(tr("Panelize cleared"))
 
     def _run_with_busy_dialog(self, text: str, fn: Callable[[], None],
                               dialog_factory: Optional[Callable] = None) -> None:
@@ -1814,9 +1969,14 @@ class MainWindow(QMainWindow):
         if 0 <= record_index < len(self._records):
             rec = self._records[record_index]
             self._repo.update(rec)
+            # Viewer already set new_rotation + review_time; old unknown here,
+            # log with old=None so the line still shows công đoạn + giá trị mới.
+            self._log_history(rec, "Edit", old_x=None, old_y=None, old_rot=None)
             self._table_widget.update_record_row(record_index)
             self._update_progress()
             self._status_label.setText(tr("{des}: Edited", des=rec.designator))
+            if record_index == self._current_index:
+                self._refresh_history_panel(rec)
 
     def _current_gerber_view_settings(self) -> Dict[str, Any]:
         viewer = getattr(self, "_gerber_viewer", None)
@@ -1837,6 +1997,10 @@ class MainWindow(QMainWindow):
         record = self._find_record(designator)
         if record is None:
             return
+        # Capture once per align batch to log old->new correctly
+        if record not in self._pending_align_writes:
+            record._align_old = (record.new_x, record.new_y, record.new_rotation,
+                                 record.remark)
         if new_x is not None:
             record.new_x = new_x
         if new_y is not None:
@@ -1862,17 +2026,80 @@ class MainWindow(QMainWindow):
             self._repo.update_many(pending)
         except RuntimeError:
             return
+        for record in pending:
+            old = getattr(record, "_align_old", (None, None, None, ""))
+            try:
+                delattr(record, "_align_old")
+            except AttributeError:
+                pass
+            self._log_history(record, "Align", old_x=old[0], old_y=old[1],
+                              old_rot=old[2], remark=old[3])
         self._dirty = True
         log_event("align_db_flush", records=len(pending), ms=t.ms())
 
-    def _find_record(self, designator: str) -> Optional[ReviewRecord]:
+    def _find_record(self, designator: str, block: int = 0) -> Optional[ReviewRecord]:
         for r in self._records:
-            if r.designator == designator:
+            if r.designator == designator and getattr(r, "block", 0) == block:
                 return r
         return None
 
     def _record_snapshot(self) -> List[Dict[str, Any]]:
         return SessionService.records_to_list(self._records)
+
+    def _log_history(self, record: ReviewRecord, action: str,
+                     old_x=None, old_y=None, old_rot=None,
+                     remark: str = "", created_at: str = "") -> None:
+        try:
+            from models.history import HistoryEntry
+            ts = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            entry = HistoryEntry(
+                designator=record.designator,
+                block=int(getattr(record, "block", 0) or 0),
+                action=action,
+                old_x=old_x, old_y=old_y, old_rotation=old_rot,
+                new_x=record.new_x, new_y=record.new_y,
+                new_rotation=record.new_rotation,
+                remark=remark if remark else (record.remark or ""),
+                created_at=ts,
+            )
+            self._history_repo.add(entry)
+        except Exception:
+            pass
+
+    def _refresh_history_panel(self, record: Optional[ReviewRecord] = None) -> None:
+        try:
+            if record is None:
+                if 0 <= self._current_index < len(self._records):
+                    record = self._records[self._current_index]
+                else:
+                    return
+            entries = self._history_repo.list_by(
+                record.designator, int(getattr(record, "block", 0) or 0)
+            )
+            self._review_panel.reload_history(entries)
+        except Exception:
+            pass
+
+    def _collect_history_dicts(self) -> List[Dict[str, Any]]:
+        try:
+            return [e.to_dict() for e in self._history_repo.get_all()]
+        except Exception:
+            return []
+
+    def _restore_history(self, raw) -> None:
+        try:
+            self._history_repo.clear_all()
+        except Exception:
+            return
+        if not raw:
+            return
+        try:
+            from models.history import HistoryEntry
+            for item in raw:
+                if isinstance(item, dict):
+                    self._history_repo.add(HistoryEntry.from_dict(item))
+        except Exception:
+            pass
 
     def _push_undo(self, before: Optional[List[Dict[str, Any]]] = None) -> None:
         self._dirty = True

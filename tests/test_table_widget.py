@@ -123,7 +123,7 @@ def _checked_records():
 
 def test_table_has_checked_column(table):
     table.set_records(_records())
-    assert table._table.columnCount() == 12
+    assert table._table.columnCount() == 13
     header = table._table.horizontalHeaderItem(_CHECK_COLUMN)
     assert header is not None
     assert header.text() == "Checked"
@@ -187,9 +187,9 @@ def test_flags_column_constants_and_render(table):
     from ui.table_widget import (
         _COLUMNS, _FLAGS_COLUMN, _STATUS_COLUMN, _REMARK_COLUMN,
     )
-    assert _COLUMNS[8] == "Flags"
-    assert _STATUS_COLUMN == 9
-    assert _REMARK_COLUMN == 11
+    assert _COLUMNS[9] == "Flags"
+    assert _STATUS_COLUMN == 10
+    assert _REMARK_COLUMN == 12
 
     recs = _records()
     recs[1].prescreen_flags = ["ROT", "PAD"]
@@ -282,3 +282,58 @@ def test_context_menu_emits_dismiss_signal(app, monkeypatch):
     t.update_all_rows()
     t._on_context_menu(QPoint(5, 5))
     assert received == [0]
+
+
+def test_block_column_shows_value_and_color(table):
+    from ui.table_widget import _BLOCK_COLUMN, _block_color
+    recs = _records()
+    recs.append(ReviewRecord(
+        designator="C1", mpn="MPN1", layer="Top",
+        old_x=100.0, old_y=2.0, old_rotation=0.0,
+        block=1, block_rotation=180,
+    ))
+    table.set_records(recs)
+    # block 0 rows show empty cell
+    assert table._table.item(0, _BLOCK_COLUMN).text() == ""
+    # block 1 row shows the block number with a distinct color
+    item = table._table.item(3, _BLOCK_COLUMN)
+    assert item.text() == "1"
+    assert item.foreground().color().name() == _block_color(1).name()
+    assert item.toolTip()
+    assert _block_color(0) is None
+
+
+def test_block_filter_reloads_and_filters(table):
+    recs = _records()
+    recs.append(ReviewRecord(
+        designator="C1", mpn="MPN1", layer="Top",
+        old_x=100.0, old_y=2.0, old_rotation=0.0, block=1,
+    ))
+    recs.append(ReviewRecord(
+        designator="C1", mpn="MPN1", layer="Top",
+        old_x=200.0, old_y=2.0, old_rotation=0.0, block=2,
+    ))
+    table.set_records(recs)
+    assert table._table.rowCount() == 5
+    idx = table._block_filter.findData(1)
+    assert idx >= 0
+    table._block_filter.setCurrentIndex(idx)
+    assert table._table.rowCount() == 1
+    assert table._table.item(0, 1).text() == "4"  # the block-1 record row
+    table._clear_filters()
+    assert table._block_filter.currentData() is None
+    assert table._table.rowCount() == 5
+
+
+def test_block_filter_preserved_on_set_records(table):
+    recs = _records()
+    recs.append(ReviewRecord(
+        designator="C2", mpn="MPN2", layer="Bottom",
+        old_x=9.0, old_y=9.0, old_rotation=0.0, block=3,
+    ))
+    table.set_records(recs)
+    idx = table._block_filter.findData(3)
+    table._block_filter.setCurrentIndex(idx)
+    assert table._table.rowCount() == 1
+    table.set_records(recs)
+    assert table._block_filter.currentData() == 3

@@ -85,12 +85,16 @@ class ExportService:
     ) -> str:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-        active_desigs = {r.designator for r in records}
-
-        modified = {r.designator: r for r in records if r.has_modifications}
+        by_block: dict = {}
+        for r in records:
+            by_block.setdefault(getattr(r, "block", 0), []).append(r)
+        has_blocks = len(by_block) > 1
 
         comp_by_des = {c.designator: c for c in original_data.components if c.designator}
-        has_panel_instance = any(c.panel_instance is not None for c in original_data.components)
+        has_panel_instance = (
+            has_blocks
+            or any(c.panel_instance is not None for c in original_data.components)
+        )
 
         headers = [h for h in original_data.headers if h.strip().lower() != "layer"]
         if has_panel_instance and "Panel_Instance" not in [h.strip() for h in headers]:
@@ -109,29 +113,42 @@ class ExportService:
             if pcb_info is not None and pcb_info.has_data():
                 writer.writerow(pcb_info.to_row())
 
-            for raw_row in original_data.raw_data:
-                des = str(raw_row.get("Designator", "")).strip()
-                if des not in active_desigs:
-                    continue
-                record = modified.get(des)
-                comp = comp_by_des.get(des)
+            for block_idx in sorted(by_block):
+                block_records = {
+                    (r.base_designator or r.designator): r
+                    for r in by_block[block_idx]
+                    if r.designator
+                }
+                for raw_row in original_data.raw_data:
+                    des = str(raw_row.get("Designator", "")).strip()
+                    record = block_records.get(des)
+                    if record is None:
+                        continue
+                    comp = comp_by_des.get(des)
 
-                values = []
-                for col_idx, header in enumerate(headers):
-                    if panel_col_idx is not None and col_idx == panel_col_idx:
-                        value = comp.panel_instance if comp and comp.panel_instance is not None else ""
-                    else:
-                        value = raw_row.get(header, "")
-                        if record is not None:
+                    values = []
+                    for col_idx, header in enumerate(headers):
+                        if panel_col_idx is not None and col_idx == panel_col_idx:
+                            if block_idx:
+                                value = block_idx
+                            else:
+                                value = comp.panel_instance if comp and comp.panel_instance is not None else ""
+                        else:
+                            value = raw_row.get(header, "")
                             hdr_lower = header.lower()
-                            if hdr_lower == "x" and record.new_x is not None:
-                                value = record.new_x
-                            elif hdr_lower == "y" and record.new_y is not None:
-                                value = record.new_y
-                            elif hdr_lower == "rotation" and record.new_rotation is not None:
-                                value = record.new_rotation
-                    values.append(value)
-                writer.writerow(values)
+                            if hdr_lower == "designator":
+                                value = record.designator
+                            elif hdr_lower == "x":
+                                if block_idx or record.new_x is not None:
+                                    value = record.new_x if record.new_x is not None else record.old_x
+                            elif hdr_lower == "y":
+                                if block_idx or record.new_y is not None:
+                                    value = record.new_y if record.new_y is not None else record.old_y
+                            elif hdr_lower == "rotation":
+                                if block_idx or record.new_rotation is not None:
+                                    value = record.new_rotation if record.new_rotation is not None else record.old_rotation
+                        values.append(value)
+                    writer.writerow(values)
 
         return file_path
 

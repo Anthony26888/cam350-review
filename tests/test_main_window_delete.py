@@ -172,8 +172,19 @@ def _holder(records, popup=None, viewer=None, current_index=0):
     for name in ["_popup_delete", "_delete_selected", "_sync_after_mutation",
                  "_close_jump_popup", "_close_gerber_viewer", "_close_prescreen_dialog",
                  "_clear_all",
-                 "_restore_records", "_select_and_display", "_push_undo"]:
-        setattr(h, name, getattr(MainWindow, name).__get__(h))
+                 "_restore_records", "_select_and_display", "_push_undo",
+                 "_log_history", "_refresh_history_panel",
+                 "_collect_history_dicts", "_restore_history"]:
+        try:
+            setattr(h, name, getattr(MainWindow, name).__get__(h))
+        except AttributeError:
+            pass
+    h._history_repo = types.SimpleNamespace(
+        add=lambda e: 0,
+        list_by=lambda *a, **k: [],
+        get_all=lambda *a, **k: [],
+        clear_all=lambda: None,
+    )
     h._record_snapshot = MainWindow._record_snapshot.__get__(h)
     h._update_undo_actions = MainWindow._update_undo_actions.__get__(h)
     h._update_progress = lambda: None

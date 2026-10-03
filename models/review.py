@@ -23,6 +23,9 @@ class ReviewRecord:
     row_index: int = 0
     prescreen_flags: List[str] = field(default_factory=list)
     is_ic_rotation: bool = False
+    block: int = 0
+    block_rotation: int = 0
+    base_designator: str = ""
 
     @property
     def needs_edit(self) -> bool:

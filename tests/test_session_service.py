@@ -58,12 +58,54 @@ def test_records_round_trip_ic_rotation():
     assert SessionService.list_to_records(data)[0].is_ic_rotation is False
 
 
+def test_records_round_trip_block():
+    record = _make_record()
+    record.block = 2
+    record.block_rotation = 180
+    data = SessionService.records_to_list([record])
+    assert data[0]["block"] == 2
+    assert data[0]["block_rotation"] == 180
+    restored = SessionService.list_to_records(data)
+    assert restored[0].block == 2
+    assert restored[0].block_rotation == 180
+    # Absent key (older session files) defaults to block 0
+    del data[0]["block"]
+    assert SessionService.list_to_records(data)[0].block == 0
+
+
+def test_save_and_load_panel_config(tmp_path):
+    path = tmp_path / "session_panel.cam350review"
+    record = _make_record()
+    panel_config = {
+        "nx": 2, "ny": 2, "dx": 100.0, "dy": 120.0,
+        "panel_origin_x": 0.0, "panel_origin_y": 0.0,
+        "blocks": [
+            {"index": 0, "origin_x": 0.0, "origin_y": 0.0,
+             "rotation": 0, "designator": "sub1"},
+            {"index": 1, "origin_x": 100.0, "origin_y": 0.0,
+             "rotation": 180, "designator": "sub1"},
+        ],
+    }
+    SessionService.save(str(path), [record], panel_config=panel_config)
+    loaded = SessionService.load(str(path))
+    assert loaded.panel_config == panel_config
+    assert loaded.panel_config["blocks"][1]["rotation"] == 180
+
+
+def test_save_panel_config_defaults_none(tmp_path):
+    path = tmp_path / "session_no_panel.cam350review"
+    record = _make_record()
+    SessionService.save(str(path), [record])
+    loaded = SessionService.load(str(path))
+    assert loaded.panel_config is None
+
+
 def test_save_and_load(tmp_path):
     path = tmp_path / "session.cam350review"
     record = _make_record()
     SessionService.save(str(path), [record], source_file="src.xlsx", current_index=2)
     loaded = SessionService.load(str(path))
-    assert loaded.version == 5
+    assert loaded.version == 7
     assert loaded.source_file == "src.xlsx"
     assert loaded.current_index == 2
     assert len(loaded.records) == 1
@@ -83,7 +125,7 @@ def test_save_and_load_gerber_paths(tmp_path):
         gerberGbo=r"D:\gerber\b.GBO",
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 5
+    assert loaded.version == 7
     assert loaded.gerberGko == r"D:\gerber\b.GKO"
     assert loaded.gerberGtp == r"D:\gerber\b.GTP"
     assert loaded.gerberGbp == r"D:\gerber\b.GBP"
@@ -181,7 +223,7 @@ def test_save_and_load_column_mapping(tmp_path):
         str(path), [record], source_file="src.xlsx", column_mapping=mapping
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 5
+    assert loaded.version == 7
     assert loaded.column_mapping == mapping
     assert loaded.column_mapping["x"] == "Xpos"
 
@@ -219,7 +261,7 @@ def test_save_and_load_gerber_files(tmp_path):
         gerber_files=gerber_files,
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 5
+    assert loaded.version == 7
     assert loaded.gerber_files is not None
     assert decompress_text(loaded.gerber_files["gerberGko"]) == "GKO-CONTENT\n%MOMM*%\nM02*"
     assert decompress_text(loaded.gerber_files["gerberGtp"]) == "GTP-CONTENT"

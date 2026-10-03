@@ -135,6 +135,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Edited": "Đã sửa",
         "Aligned": "Đã canh",
         "Clear all filters": "Xóa bộ lọc",
+        "Clear filters": "Xóa bộ lọc",
         "No": "STT",
         "#": "#",
         "Designator": "Designator",
@@ -147,6 +148,12 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Remark": "Ghi chú",
         # Review panel
         "Component Information": "Thông tin linh kiện",
+        "History": "Lịch sử",
+        "Time": "Giờ",
+        "Step": "Công đoạn",
+        "Changes": "Thay đổi",
+        "No history": "Chưa có lịch sử chỉnh sửa",
+        "No value change": "Không đổi giá trị",
         "Actions": "Thao tác",
         "Previous": "Trước",
         "Next": "Sau",
@@ -385,6 +392,43 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Skipped (unchanged): {count}": "Bỏ qua (không đổi): {count}",
         "◀ Back": "◀ Quay lại",
         "Finish": "Hoàn tất",
+        # Panelize
+        "Panelize...": "Panelize bảng...",
+        "Clear Panelize": "Xóa Panelize",
+        "Panelize": "Panelize",
+        "Panelize - Multiply Board Coordinates": "Panelize - Nhân tọa độ theo Panel",
+        "No data to panelize.": "Không có dữ liệu để panelize.",
+        "Detect from GKO": "Dò từ GKO",
+        "Fill block origins from the GKO outline.":
+            "Điền tọa độ gốc các block từ file GKO outline.",
+        "No panel detected (single board). Coordinates stay unchanged.":
+            "Không phát hiện panel (board đơn). Tọa độ giữ nguyên.",
+        "No GKO file loaded. Select one in the gerber file dialog first.":
+            "Chưa có file GKO. Hãy chọn trong hộp thoại chọn file Gerber.",
+        "No boards defined.": "Chưa có board nào được định nghĩa.",
+        "No records to panelize.": "Không có bản ghi để panelize.",
+        "Boards": "Các board",
+        "Number of boards:": "Số board:",
+        "Block 1 is the base board at (0, 0).":
+            "Block 1 là board gốc tại (0, 0).",
+        "Origin X (mm)": "Gốc X (mm)",
+        "Origin Y (mm)": "Gốc Y (mm)",
+        "Normal block: enter its bottom-left corner. Flipped (180°) block: enter its top-right corner.":
+            "Board thường: nhập góc trái-dưới. Board lật (180°): nhập góc phải-trên.",
+        "Rename designators (C1 \u2192 C1_2, C1_3, ...)":
+            "Đổi tên designator (C1 \u2192 C1_2, C1_3, ...)",
+        "Board Orientation": "Hướng Board",
+        "Click a board to flip it 180°.": "Click vào một board để lật 180°.",
+        "Preview": "Xem trước",
+        "Result: {boards} boards \u00d7 {parts} components = {total} records":
+            "Kết quả: {boards} board \u00d7 {parts} linh kiện = {total} dòng",
+        "Panelized: {boards} boards \u00d7 {parts} components = {total} records":
+            "Đã panelize: {boards} board \u00d7 {parts} linh kiện = {total} dòng",
+        "Panelize cleared": "Đã xóa Panelize",
+        "Block": "Block",
+        "Panel block {b}": "Block panel {b}",
+        "Block {b}: origin=({x:.4f}, {y:.4f}), rotation={rot}\u00b0":
+            "Block {b}: gốc=({x:.4f}, {y:.4f}), xoay={rot}\u00b0",
         # Gerber viewer
         "Gerber View - Overlay PickPlace": "Gerber View - Overlay PickPlace",
         "Display settings saved to session.": "Đã lưu cài đặt hiển thị vào phiên.",
@@ -414,9 +458,19 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Zoom:": "Phóng to:",
         "Hover the drawing / select a component to see details.":
             "Di chuột lên hình / chọn một linh kiện để xem chi tiết.",
+        "Filters…": "Bộ lọc…",
+        "Open filters dialog": "Mở hộp thoại bộ lọc",
+        "Filters": "Bộ lọc",
+        "Attribute filters": "Bộ lọc thuộc tính",
+        "Coordinate range": "Khoảng tọa độ",
         "Display settings": "Cài đặt hiển thị",
         "Save display settings": "Lưu cài đặt hiển thị",
         "Display": "Hiển thị",
+        "Gerber Transform & Offset": "Biến đổi Gerber & Offset",
+        "Visibility": "Hiển thị",
+        "PickPlace markers": "Marker PickPlace",
+        "Snapping": "Snap",
+        "Grid": "Lưới",
         "Rotate Gerber:": "Xoay Gerber:",
         "Invert Gerber rotation": "Đảo chiều xoay Gerber",
         "Flip Gerber (Mirror Y)": "Lật Gerber (Mirror Y)",
@@ -428,8 +482,12 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Show Silkscreen (GTO / GBO)": "Hiện Silkscreen (GTO / GBO)",
         "Show PickPlace (aligned)": "Hiện PickPlace (đã canh)",
         "Show crosshair": "Hiện crosshair",
+        "Checked": "Đã check",
         "Arrow size:": "Kích thước mũi tên:",
         "Crosshair scale:": "Tỷ lệ crosshair:",
+        "Crosshair full screen": "Dấu thập toàn màn hình",
+        "Show a crosshair across the whole view while hovering":
+            "Hiển thị dấu thập toàn bộ màn hình khi di chuột",
         "No valid GKO file.": "Không có file GKO hợp lệ.",
         "Outline: {ol} lines, {of} pads | Top: {tf} pads | Bottom: {bf} pads | Silk Top: {st} lines | Silk Bottom: {sb} lines":
             "Outline: {ol} đường, {of} pad | Trên: {tf} pad | Dưới: {bf} pad | Silk Trên: {st} đường | Silk Dưới: {sb} đường",

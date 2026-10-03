@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, QRectF, QPointF, QPoint, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QPolygonF,
     QWheelEvent, QFont, QFontMetricsF, QTransform, QPixmap, QMouseEvent, QIcon,
+    QCursor,
 )
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -731,6 +732,7 @@ class GerberView(QGraphicsView):
     grid_cell_clicked = Signal(float, float)
     measure_clicked = Signal(float, float)
     measure_cancel = Signal()
+    crosshair_right_clicked = Signal(float, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -749,6 +751,9 @@ class GerberView(QGraphicsView):
         self._panning = False
         self._grid_active = False
         self._measure_mode = False
+
+        self._full_cross_enabled = False
+        self._full_cross_pos: Optional[QPointF] = None
 
         self._fast_render = False
         self._fast_timer: Optional[QTimer] = None
@@ -837,6 +842,11 @@ class GerberView(QGraphicsView):
                 self.measure_cancel.emit()
                 event.accept()
             return
+        if event.button() == Qt.RightButton:
+            sp = self.mapToScene(event.position().toPoint())
+            self.crosshair_right_clicked.emit(sp.x(), sp.y())
+            event.accept()
+            return
         if event.button() == Qt.LeftButton and not self._fast_render:
             # Freeze the viewport once; drag blits the snapshot (~1 ms/frame)
             self._panning = True
@@ -852,6 +862,9 @@ class GerberView(QGraphicsView):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         sp = self.mapToScene(event.position().toPoint())
         self.cursor_moved.emit(sp.x(), sp.y())
+        self._full_cross_pos = event.position()
+        if self._full_cross_enabled:
+            self.viewport().update()
         if self._panning and self._pan_pixmap is not None:
             self._pan_offset = event.position().toPoint() - self._pan_press
             self.viewport().update()
@@ -861,6 +874,9 @@ class GerberView(QGraphicsView):
 
     def leaveEvent(self, event) -> None:
         self.cursor_left.emit()
+        self._full_cross_pos = None
+        if self._full_cross_enabled:
+            self.viewport().update()
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -897,6 +913,28 @@ class GerberView(QGraphicsView):
             return
         super().keyPressEvent(event)
 
+    def set_full_crosshair_enabled(self, enabled: bool) -> None:
+        self._full_cross_enabled = bool(enabled)
+        if enabled:
+            self.viewport().setCursor(Qt.CrossCursor)
+        else:
+            self.viewport().setCursor(Qt.ArrowCursor)
+            self._full_cross_pos = None
+        self.viewport().update()
+
+    def _paint_full_cross(self) -> None:
+        if not self._full_cross_enabled or self._full_cross_pos is None:
+            return
+        pt = self._full_cross_pos
+        painter = QPainter(self.viewport())
+        pen = QPen(CROSS_COLOR, 1.2)
+        painter.setPen(pen)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.viewport().rect()
+        painter.drawLine(QPointF(rect.left(), pt.y()), QPointF(rect.right(), pt.y()))
+        painter.drawLine(QPointF(pt.x(), rect.top()), QPointF(pt.x(), rect.bottom()))
+        painter.end()
+
     def paintEvent(self, event: object) -> None:
         if self._zoom_pixmap is not None and self._zoom_ratio != 1.0:
             pm = self._zoom_pixmap
@@ -912,6 +950,7 @@ class GerberView(QGraphicsView):
                 QRectF(0.0, 0.0, size.width(), size.height()),
             )
             painter.end()
+            self._paint_full_cross()
             event.accept()
             return
         if self._pan_pixmap is not None:
@@ -919,9 +958,11 @@ class GerberView(QGraphicsView):
             painter.fillRect(self.viewport().rect(), self.backgroundBrush())
             painter.drawPixmap(self._pan_offset, self._pan_pixmap)
             painter.end()
+            self._paint_full_cross()
             event.accept()
             return
         super().paintEvent(event)
+        self._paint_full_cross()
 
 
 class GerberLoadWorker(QThread):
@@ -1104,6 +1145,7 @@ class GerberViewer(QWidget):
             "snap": self._chk_snap.isChecked(),
             "snap_tol": self._spin_snap_tol.value(),
             "compact": self._btn_compact.isChecked(),
+            "full_crosshair": self._chk_full_cross.isChecked(),
         }
         for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
             settings[f"{key}_color"] = self._current_color(key).name(QColor.HexArgb)
@@ -1153,6 +1195,7 @@ class GerberViewer(QWidget):
         self._snap_enabled = self._chk_snap.isChecked()
         self._snap_tol = float(self._spin_snap_tol.value())
         self._btn_compact.setChecked(bool(settings.get("compact", True)))
+        self._chk_full_cross.setChecked(bool(settings.get("full_crosshair", False)))
         for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
             hex_val = settings.get(f"{key}_color")
             if isinstance(hex_val, str):
@@ -1245,6 +1288,7 @@ class GerberViewer(QWidget):
         self._chk_group_mpn.toggled.connect(self._on_group_mpn_toggled)
         comp_row.addWidget(self._chk_group_mpn)
         self._options_layout.addLayout(comp_row)
+
         panel.addWidget(self._options_widget)
 
         self._search_input = QLineEdit()
@@ -1342,6 +1386,7 @@ QGroupBox::title {
         self._view.measure_clicked.connect(self._on_measure_clicked)
         self._view.measure_cancel.connect(self._on_measure_cancel)
         self._view.cursor_moved.connect(self._on_measure_move)
+        self._view.crosshair_right_clicked.connect(self._on_crosshair_right_clicked)
         self._mag_view.clicked.connect(self._on_mag_clicked)
 
         self._display_dialog = QDialog(self)
@@ -1427,42 +1472,27 @@ QGroupBox::title {
         layout = QVBoxLayout(group)
         layout.setSpacing(6)
 
+        # --- Gerber Transform & Offset ---
+        transform_group = QGroupBox(tr("Gerber Transform & Offset"))
+        transform_layout = QVBoxLayout(transform_group)
+        transform_layout.setSpacing(4)
+
         rot_row = QHBoxLayout()
         rot_row.addWidget(QLabel(tr("Rotate Gerber:")))
         self._combo_rot = QComboBox()
         for angle in (0, 90, 180, 270):
             self._combo_rot.addItem(f"{angle}°", angle)
         rot_row.addWidget(self._combo_rot, 1)
-        layout.addLayout(rot_row)
+        transform_layout.addLayout(rot_row)
 
         self._chk_invert_rot = QCheckBox(tr("Invert Gerber rotation"))
-        layout.addWidget(self._chk_invert_rot)
+        transform_layout.addWidget(self._chk_invert_rot)
 
         self._chk_flip = QCheckBox(tr("Flip Gerber (Mirror Y)"))
-        layout.addWidget(self._chk_flip)
+        transform_layout.addWidget(self._chk_flip)
 
         self._chk_mirror_x = QCheckBox(tr("Flip Gerber (Mirror X)"))
-        layout.addWidget(self._chk_mirror_x)
-
-        snap_row = QHBoxLayout()
-        self._chk_snap = QCheckBox(tr("Snap to pad center when measuring"))
-        self._chk_snap.setChecked(True)
-        self._chk_snap.setToolTip(
-            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
-        self._chk_snap.toggled.connect(self._on_snap_toggled)
-        snap_row.addWidget(self._chk_snap, 1)
-        snap_row.addWidget(QLabel(tr("Tolerance:")))
-        self._spin_snap_tol = QDoubleSpinBox()
-        self._spin_snap_tol.setRange(0.1, 5.0)
-        self._spin_snap_tol.setSingleStep(0.1)
-        self._spin_snap_tol.setDecimals(1)
-        self._spin_snap_tol.setValue(1.0)
-        self._spin_snap_tol.setSuffix(" mm")
-        self._spin_snap_tol.setToolTip(
-            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
-        self._spin_snap_tol.valueChanged.connect(self._on_snap_tol_changed)
-        snap_row.addWidget(self._spin_snap_tol)
-        layout.addLayout(snap_row)
+        transform_layout.addWidget(self._chk_mirror_x)
 
         off_row = QHBoxLayout()
         off_row.addWidget(QLabel(tr("Offset X:")))
@@ -1485,7 +1515,14 @@ QGroupBox::title {
         btn_origin = QPushButton(tr("To Origin (0,0)"))
         btn_origin.clicked.connect(self._bring_gerber_to_origin)
         off_row.addWidget(btn_origin)
-        layout.addLayout(off_row)
+        transform_layout.addLayout(off_row)
+
+        layout.addWidget(transform_group)
+
+        # --- Visibility ---
+        visibility_group = QGroupBox(tr("Visibility"))
+        visibility_layout = QGridLayout(visibility_group)
+        visibility_layout.setSpacing(6)
 
         self._chk_outline = QCheckBox(tr("Show GKO outline"))
         self._chk_outline.setChecked(True)
@@ -1501,23 +1538,27 @@ QGroupBox::title {
         self._chk_frame.setChecked(True)
         self._chk_frame.toggled.connect(self._on_frame_toggled)
 
-        grid = QGridLayout()
-        grid.setSpacing(6)
-        grid.addWidget(self._chk_outline, 0, 0)
-        grid.addWidget(self._make_color_swatch("outline"), 0, 1)
-        grid.addWidget(self._chk_paste, 0, 3)
-        grid.addWidget(self._make_color_swatch("paste_top"), 0, 4)
-        grid.addWidget(self._make_color_swatch("paste_bottom"), 0, 5)
-        grid.addWidget(self._chk_silk, 1, 0)
-        grid.addWidget(self._make_color_swatch("silk"), 1, 1)
-        grid.addWidget(self._chk_pickplace, 1, 3)
-        grid.addWidget(self._make_color_swatch("cross"), 1, 4)
-        grid.addWidget(self._chk_crosshair, 2, 0)
-        grid.addWidget(self._chk_frame, 2, 3)
-        grid.addWidget(self._make_color_swatch("highlight"), 2, 4)
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(5, 1)
-        layout.addLayout(grid)
+        visibility_layout.addWidget(self._chk_outline, 0, 0)
+        visibility_layout.addWidget(self._make_color_swatch("outline"), 0, 1)
+        visibility_layout.addWidget(self._chk_paste, 0, 3)
+        visibility_layout.addWidget(self._make_color_swatch("paste_top"), 0, 4)
+        visibility_layout.addWidget(self._make_color_swatch("paste_bottom"), 0, 5)
+        visibility_layout.addWidget(self._chk_silk, 1, 0)
+        visibility_layout.addWidget(self._make_color_swatch("silk"), 1, 1)
+        visibility_layout.addWidget(self._chk_pickplace, 1, 3)
+        visibility_layout.addWidget(self._make_color_swatch("cross"), 1, 4)
+        visibility_layout.addWidget(self._chk_crosshair, 2, 0)
+        visibility_layout.addWidget(self._chk_frame, 2, 3)
+        visibility_layout.addWidget(self._make_color_swatch("highlight"), 2, 4)
+        visibility_layout.setColumnStretch(2, 1)
+        visibility_layout.setColumnStretch(5, 1)
+
+        layout.addWidget(visibility_group)
+
+        # --- PickPlace markers ---
+        markers_group = QGroupBox(tr("PickPlace markers"))
+        markers_layout = QVBoxLayout(markers_group)
+        markers_layout.setSpacing(4)
 
         arrow_row = QHBoxLayout()
         arrow_row.addWidget(QLabel(tr("Arrow size:")))
@@ -1528,7 +1569,7 @@ QGroupBox::title {
         self._spin_arrow_px.setSuffix(" px")
         self._spin_arrow_px.valueChanged.connect(self._on_arrow_size_changed)
         arrow_row.addWidget(self._spin_arrow_px, 1)
-        layout.addLayout(arrow_row)
+        markers_layout.addLayout(arrow_row)
 
         cross_row = QHBoxLayout()
         cross_row.addWidget(QLabel(tr("Crosshair scale:")))
@@ -1539,7 +1580,46 @@ QGroupBox::title {
         self._spin_cross_scale.setValue(1.0)
         self._spin_cross_scale.valueChanged.connect(self._on_crosshair_scale_changed)
         cross_row.addWidget(self._spin_cross_scale, 1)
-        layout.addLayout(cross_row)
+        markers_layout.addLayout(cross_row)
+
+        self._chk_full_cross = QCheckBox(tr("Crosshair full screen"))
+        self._chk_full_cross.setToolTip(tr("Show a crosshair across the whole view while hovering"))
+        self._chk_full_cross.toggled.connect(self._on_full_cross_toggled)
+        markers_layout.addWidget(self._chk_full_cross)
+
+        layout.addWidget(markers_group)
+
+        # --- Snapping ---
+        snap_group = QGroupBox(tr("Snapping"))
+        snap_layout = QVBoxLayout(snap_group)
+        snap_layout.setSpacing(4)
+
+        snap_row = QHBoxLayout()
+        self._chk_snap = QCheckBox(tr("Snap to pad center when measuring"))
+        self._chk_snap.setChecked(True)
+        self._chk_snap.setToolTip(
+            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
+        self._chk_snap.toggled.connect(self._on_snap_toggled)
+        snap_row.addWidget(self._chk_snap, 1)
+        snap_row.addWidget(QLabel(tr("Tolerance:")))
+        self._spin_snap_tol = QDoubleSpinBox()
+        self._spin_snap_tol.setRange(0.1, 5.0)
+        self._spin_snap_tol.setSingleStep(0.1)
+        self._spin_snap_tol.setDecimals(1)
+        self._spin_snap_tol.setValue(1.0)
+        self._spin_snap_tol.setSuffix(" mm")
+        self._spin_snap_tol.setToolTip(
+            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
+        self._spin_snap_tol.valueChanged.connect(self._on_snap_tol_changed)
+        snap_row.addWidget(self._spin_snap_tol)
+        snap_layout.addLayout(snap_row)
+
+        layout.addWidget(snap_group)
+
+        # --- Grid ---
+        grid_group = QGroupBox(tr("Grid"))
+        grid_layout = QVBoxLayout(grid_group)
+        grid_layout.setSpacing(4)
 
         grid_row = QHBoxLayout()
         self._chk_grid = QCheckBox(tr("Show grid"))
@@ -1559,7 +1639,7 @@ QGroupBox::title {
         self._spin_grid_rows.valueChanged.connect(self._on_grid_params_changed)
         grid_row.addWidget(self._spin_grid_rows)
         grid_row.addStretch(1)
-        layout.addLayout(grid_row)
+        grid_layout.addLayout(grid_row)
 
         grid_style_row = QHBoxLayout()
         grid_style_row.addWidget(QLabel(tr("Grid opacity:")))
@@ -1578,7 +1658,9 @@ QGroupBox::title {
         self._spin_grid_width.valueChanged.connect(self._on_grid_style_changed)
         grid_style_row.addWidget(self._spin_grid_width)
         grid_style_row.addStretch(1)
-        layout.addLayout(grid_style_row)
+        grid_layout.addLayout(grid_style_row)
+
+        layout.addWidget(grid_group)
 
         return group
 
@@ -1810,6 +1892,9 @@ QGroupBox::title {
         self._selected_marker_index = -1
         self._selected_marker_indices = set()
         self._apply_layer()
+
+    def _on_full_cross_toggled(self, checked: bool) -> None:
+        self._view.set_full_crosshair_enabled(bool(checked))
 
     def refresh_records(self, records: List[ReviewRecord]) -> None:
         self._records = records
@@ -2045,6 +2130,62 @@ QGroupBox::title {
             return
         record = records[best]
         info = self._component_info_text(record)
+        if record.checked:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Cancel the check for this component?") + "\n\n" + info,
+            )
+            if ret != QMessageBox.Yes:
+                return
+            record.checked = False
+        else:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Confirm component exists?") + "\n\n" + info,
+            )
+            if ret != QMessageBox.Yes:
+                return
+            record.checked = True
+        if self._overlay is not None:
+            self._overlay.set_checked_indices(self._checked_layer_indices())
+        self._refresh_component_status_row(best)
+        self.checked_changed.emit(self._record_index_in_records(record))
+
+    def _on_crosshair_right_clicked(self, sx: float, sy: float) -> None:
+        if not self._loaded:
+            return
+        records = self._current_layer_records()
+        if not records:
+            return
+        grid = self._pad_grid(self._combo_layer.currentIndex() == 0)
+        best = -1
+        best_d = float("inf")
+        outer = max(self._cross_half * self._crosshair_scale, 0.25)
+        outer_d = outer * outer
+        for i, record in enumerate(records):
+            x, y, _rot = _record_coord(record)
+            dx = sx - x
+            dy = sy + y
+            d2 = dx * dx + dy * dy
+            if d2 > outer_d:
+                continue
+            size = grid.nearest(x, y)
+            half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
+            tol = max(half, 0.25)
+            if d2 <= tol * tol and d2 < best_d:
+                best_d = d2
+                best = i
+        if best < 0:
+            return
+        record = records[best]
+        info = self._component_info_text(record)
+        menu = QMenu(self)
+        act_checked = menu.addAction(tr("Checked"))
+        act_checked.setCheckable(True)
+        act_checked.setChecked(record.checked)
+        chosen = menu.exec(QCursor.pos())
+        if chosen != act_checked:
+            return
         if record.checked:
             ret = QMessageBox.question(
                 self, tr("Confirm"),
@@ -2390,18 +2531,82 @@ QGroupBox::title {
         self._update_magnifier(x, -y)
 
     def _on_component_menu(self, pos) -> None:
-        if self._group_by_mpn:
-            return
         table = self._table_components
         row = table.rowAt(pos.y())
         if not (0 <= row < len(self._component_index)):
             return
         table.selectRow(row)
+        if self._group_by_mpn:
+            menu = QMenu(self)
+            group = self._group_rows[row]
+            act_checked = menu.addAction(tr("Checked"))
+            act_checked.setCheckable(True)
+            records = self._current_layer_records()
+            act_checked.setChecked(
+                all(0 <= i < len(records) and records[i].checked for i in group)
+            )
+            chosen = menu.exec(table.viewport().mapToGlobal(pos))
+            if chosen == act_checked:
+                self._on_group_checked_action(row)
+            return
         menu = QMenu(self)
         act_edit = menu.addAction(tr("Edit Rotation"))
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
         if chosen == act_edit:
             self._edit_rotation_for_row(row)
+
+    def _on_group_checked_action(self, row: int) -> None:
+        if not self._group_by_mpn or not (0 <= row < len(self._group_rows)):
+            return
+        records = self._current_layer_records()
+        group = self._group_rows[row]
+        if not group:
+            return
+        if not all(0 <= i < len(records) for i in group):
+            return
+        all_checked = all(records[i].checked for i in group)
+        if all_checked:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Cancel the check for this component?") + "\n\n"
+                + tr("MPN: {mpn}", mpn=records[group[0]].mpn or "-"),
+            )
+            if ret != QMessageBox.Yes:
+                return
+            new_checked = False
+        else:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Confirm component exists?") + "\n\n"
+                + tr("MPN: {mpn}", mpn=records[group[0]].mpn or "-"),
+            )
+            if ret != QMessageBox.Yes:
+                return
+            new_checked = True
+        changed = []
+        for i in group:
+            if records[i].checked != new_checked:
+                records[i].checked = new_checked
+                changed.append(i)
+        if self._overlay is not None:
+            self._overlay.set_checked_indices(self._checked_layer_indices())
+        self._refresh_group_status_row(row)
+        for i in changed:
+            self.checked_changed.emit(self._record_index_in_records(records[i]))
+
+    def _refresh_group_status_row(self, row: int) -> None:
+        layer = self._current_layer_records()
+        if not (0 <= row < len(self._group_rows)):
+            return
+        group = self._group_rows[row]
+        col = self._table_components.columnCount() - 1
+        item = self._table_components.item(row, col)
+        if item is None:
+            return
+        checked = all(
+            0 <= i < len(layer) and layer[i].checked for i in group
+        ) and bool(group)
+        item.setIcon(self._status_icon(checked))
 
     def _edit_rotation_for_row(self, row: int) -> None:
         if self._group_by_mpn or not (0 <= row < len(self._component_index)):

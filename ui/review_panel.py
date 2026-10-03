@@ -1,16 +1,24 @@
 from typing import Optional, List, Dict
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QFormLayout, QFrame, QSizePolicy, QStyle,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QGroupBox, QFormLayout, QFrame, QSizePolicy,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 from PySide6.QtCore import Signal, Qt
 
 from models.review import ReviewRecord
 from ui.i18n import tr
 
+try:
+    from models.history import HistoryEntry
+except Exception:  # pragma: no cover - for minimal test envs
+    HistoryEntry = object  # type: ignore
+
 
 class ReviewPanel(QWidget):
+    # Kept for backward compatibility (shortcuts in MainWindow still use
+    # the same slots). No buttons emit them anymore since Actions was removed.
     previous_requested = Signal()
     next_requested = Signal()
     jump_requested = Signal()
@@ -29,7 +37,7 @@ class ReviewPanel(QWidget):
         self._build_stats_section()
         self._build_info_section()
         self._layout.addSpacing(10)
-        self._build_nav_section()
+        self._build_history_section()
 
     def _build_stats_section(self) -> None:
         stats_row = QHBoxLayout()
@@ -131,68 +139,43 @@ class ReviewPanel(QWidget):
 
         self._layout.addWidget(info_group)
 
-    def _build_nav_section(self) -> None:
-        nav_group = QGroupBox(tr("Actions"))
-        nav_layout = QVBoxLayout(nav_group)
+    def _build_history_section(self) -> None:
+        hist_group = QGroupBox(tr("History"))
+        hist_layout = QVBoxLayout(hist_group)
 
-        btn_layout = QHBoxLayout()
-        self._btn_prev = QPushButton(tr("Previous"))
-        self._btn_prev.setMinimumHeight(40)
-        self._btn_prev.setObjectName("action_btn")
-        self._btn_prev.clicked.connect(self.previous_requested.emit)
+        self._lbl_hist_title = QLabel("-")
+        self._lbl_hist_title.setObjectName("title")
+        self._lbl_hist_title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        hist_layout.addWidget(self._lbl_hist_title)
 
-        self._btn_next = QPushButton(tr("Next"))
-        self._btn_next.setMinimumHeight(40)
-        self._btn_next.setObjectName("action_btn")
-        self._btn_next.clicked.connect(self.next_requested.emit)
+        self._history_table = QTableWidget(0, 3)
+        self._history_table.setHorizontalHeaderLabels(
+            [tr("Time"), tr("Step"), tr("Changes")]
+        )
+        self._history_table.setAlternatingRowColors(True)
+        self._history_table.setWordWrap(True)
+        self._history_table.setTextElideMode(Qt.ElideNone)
+        self._history_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._history_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._history_table.verticalHeader().setVisible(False)
+        self._history_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        header = self._history_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        self._history_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
+        self._history_table.setMinimumHeight(180)
+        hist_layout.addWidget(self._history_table, 1)
 
-        btn_layout.addWidget(self._btn_prev)
-        btn_layout.addWidget(self._btn_next)
-        nav_layout.addLayout(btn_layout)
-
-        self._btn_jump = QPushButton(tr("Jump CAM350"))
-        self._btn_jump.setMinimumHeight(40)
-        self._btn_jump.setObjectName("action_btn")
-        self._btn_jump.clicked.connect(self.jump_requested.emit)
-        nav_layout.addWidget(self._btn_jump)
-
-        self._btn_datasheet = QPushButton(tr("Search Datasheet"))
-        self._btn_datasheet.setMinimumHeight(40)
-        self._btn_datasheet.setObjectName("action_btn")
-        self._btn_datasheet.clicked.connect(self._on_datasheet_clicked)
-        nav_layout.addWidget(self._btn_datasheet)
-
-        action_layout = QHBoxLayout()
-        self._btn_ok = QPushButton(tr("OK (Space)"))
-        self._btn_ok.setMinimumHeight(40)
-        self._btn_ok.setObjectName("success")
-        self._btn_ok.clicked.connect(self.ok_requested.emit)
-
-        self._btn_edit = QPushButton(tr("Edit (Ctrl+E)"))
-        self._btn_edit.setMinimumHeight(40)
-        self._btn_edit.setObjectName("action_btn")
-        self._btn_edit.clicked.connect(self.edit_requested.emit)
-
-        action_layout.addWidget(self._btn_ok)
-        action_layout.addWidget(self._btn_edit)
-        nav_layout.addLayout(action_layout)
-
-        self._layout.addWidget(nav_group)
-        self.refresh_icons()
+        self._layout.addWidget(hist_group, 1)
 
     def refresh_icons(self) -> None:
-        spi = self.style().standardIcon
-        self._btn_prev.setIcon(spi(QStyle.StandardPixmap.SP_ArrowBack))
-        self._btn_next.setIcon(spi(QStyle.StandardPixmap.SP_ArrowForward))
-        self._btn_jump.setIcon(spi(QStyle.StandardPixmap.SP_ArrowForward))
-        self._btn_datasheet.setIcon(spi(QStyle.StandardPixmap.SP_DialogHelpButton))
-        self._btn_ok.setIcon(spi(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self._btn_edit.setIcon(spi(QStyle.StandardPixmap.SP_FileDialogInfoView))
-
-    def _on_datasheet_clicked(self) -> None:
-        mpn = self._lbl_mpn.text()
-        if mpn and mpn != "-":
-            self.datasheet_requested.emit(mpn)
+        # No action buttons anymore; kept for compatibility.
+        return
 
     def set_datasheet(self, url: str) -> None:
         if url and url != "Searching...":
@@ -201,7 +184,8 @@ class ReviewPanel(QWidget):
             self._lbl_datasheet.setText(url if url else tr("Not found"))
 
     def set_datasheet_searching(self, searching: bool) -> None:
-        self._btn_datasheet.setEnabled(not searching)
+        # No button to disable anymore; kept for compatibility.
+        return
 
     def display_record(self, record: ReviewRecord, index: int, total: int, progress_text: str = "") -> None:
         self._current_index = index
@@ -230,7 +214,6 @@ class ReviewPanel(QWidget):
             self._lbl_datasheet.setText(tr('<a href="{url}">View Datasheet</a>', url=record.datasheet))
         else:
             self._lbl_datasheet.setText("-")
-        self._btn_datasheet.setEnabled(bool(record.mpn))
 
         if progress_text:
             self._lbl_progress.setText(progress_text)
@@ -245,8 +228,34 @@ class ReviewPanel(QWidget):
                    reviewed=reviewed, total=t, pct=pct, ok=ok_count, edited=edit_count)
             )
 
-        self._btn_prev.setEnabled(index > 0)
-        self._btn_next.setEnabled(index < total - 1)
+        self._lbl_hist_title.setText(record.designator)
+
+    def reload_history(self, entries: List) -> None:
+        table = self._history_table
+        try:
+            table.clearSpans()
+        except Exception:
+            pass
+        table.clearContents()
+        if not entries:
+            table.setRowCount(1)
+            item = QTableWidgetItem(tr("No history"))
+            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+            table.setItem(0, 0, item)
+            table.setSpan(0, 0, 1, 3)
+            return
+        table.setRowCount(len(entries))
+        for row, e in enumerate(entries):
+            time_item = QTableWidgetItem(history_time_short(e))
+            step_item = QTableWidgetItem(getattr(e, "action", "") or "")
+            change_item = QTableWidgetItem(history_change_text(e))
+            for item in (time_item, step_item, change_item):
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 0, time_item)
+            table.setItem(row, 1, step_item)
+            table.setItem(row, 2, change_item)
+        table.resizeRowsToContents()
 
     def set_record_list(self, records: List[ReviewRecord]) -> None:
         self._record_list = records
@@ -267,12 +276,76 @@ class ReviewPanel(QWidget):
         self._lbl_remark.setText("-")
         self._lbl_datasheet.setText("-")
         self._lbl_progress.setText("-")
-        self._btn_datasheet.setEnabled(False)
-        self._btn_prev.setEnabled(False)
-        self._btn_next.setEnabled(False)
+        self._lbl_hist_title.setText("-")
+        table = self._history_table
+        try:
+            table.clearSpans()
+        except Exception:
+            pass
+        table.clearContents()
+        table.setRowCount(1)
+        item = QTableWidgetItem(tr("No history"))
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+        table.setItem(0, 0, item)
+        table.setSpan(0, 0, 1, 3)
 
     def _get_records(self) -> List[ReviewRecord]:
         return getattr(self, "_record_list", [])
+
+
+def format_history_entry(e) -> str:
+    """One line: [time] action | what changed (old->new). Kept for compat/tests."""
+    when = getattr(e, "created_at", "") or ""
+    action = getattr(e, "action", "") or ""
+    changes = history_change_text(e)
+    head = f"{when} | {action}".strip(" |")
+    return f"{head} | {changes}" if head else changes
+
+
+def history_time_short(e) -> str:
+    when = (getattr(e, "created_at", "") or "").strip()
+    if " " in when:
+        return when.split(" ")[-1]
+    return when
+
+
+def history_change_text(e) -> str:
+    """Only the 'what changed' part for the Changes column."""
+    parts: List[str] = []
+    ox, nx = getattr(e, "old_x", None), getattr(e, "new_x", None)
+    oy, ny = getattr(e, "old_y", None), getattr(e, "new_y", None)
+    orot, nrot = getattr(e, "old_rotation", None), getattr(e, "new_rotation", None)
+    parts.append(_fmt_change("X", ox, nx))
+    parts.append(_fmt_change("Y", oy, ny))
+    parts.append(_fmt_change("Rot", orot, nrot, suffix="°"))
+    parts = [p for p in parts if p]
+    remark = (getattr(e, "remark", "") or "").strip()
+    if remark:
+        parts.append(f"Remark: {remark}")
+    if not parts:
+        return tr("No value change")
+    return ", ".join(parts)
+
+
+def _fmt_change(name: str, old, new, suffix: str = "") -> str:
+    if not _changed(old, new):
+        return ""
+    if old is None and new is not None:
+        return f"{name}: {_fmt(new)}{suffix}"
+    if new is None and old is not None:
+        return f"{name}: {_fmt(old)}{suffix} -> -"
+    return f"{name}: {_fmt(old)}{suffix}->{_fmt(new)}{suffix}"
+
+
+def _changed(a, b) -> bool:
+    if a is None and b is None:
+        return False
+    if a is None or b is None:
+        return True
+    try:
+        return abs(float(a) - float(b)) >= 1e-9
+    except (TypeError, ValueError):
+        return a != b
 
 
 def _fmt(v: Optional[float]) -> str:

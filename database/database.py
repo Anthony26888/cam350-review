@@ -68,7 +68,10 @@ class Database:
                 datasheet TEXT DEFAULT '',
                 checked INTEGER DEFAULT 0,
                 row_index INTEGER DEFAULT 0,
-                is_ic_rotation INTEGER DEFAULT 0
+                is_ic_rotation INTEGER DEFAULT 0,
+                block INTEGER DEFAULT 0,
+                block_rotation INTEGER DEFAULT 0,
+                base_designator TEXT DEFAULT ''
             )
             """
         )
@@ -89,6 +92,44 @@ class Database:
                 "ALTER TABLE review ADD COLUMN is_ic_rotation INTEGER DEFAULT 0"
             )
             conn.commit()
+        if "block" not in columns:
+            conn.execute("ALTER TABLE review ADD COLUMN block INTEGER DEFAULT 0")
+            conn.commit()
+        if "block_rotation" not in columns:
+            conn.execute(
+                "ALTER TABLE review ADD COLUMN block_rotation INTEGER DEFAULT 0"
+            )
+            conn.commit()
+        if "base_designator" not in columns:
+            conn.execute(
+                "ALTER TABLE review ADD COLUMN base_designator TEXT DEFAULT ''"
+            )
+            conn.commit()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS component_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                designator TEXT NOT NULL,
+                block INTEGER DEFAULT 0,
+                action TEXT DEFAULT '',
+                old_x REAL,
+                old_y REAL,
+                old_rotation REAL,
+                new_x REAL,
+                new_y REAL,
+                new_rotation REAL,
+                remark TEXT DEFAULT '',
+                created_at TEXT DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_hist_des
+            ON component_history(designator, block, id DESC)
+            """
+        )
+        conn.commit()
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pcb_info (

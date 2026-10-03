@@ -138,7 +138,13 @@ class LicenseRegistry:
             return None
         old_expiry = record.get("expiry", "")
         today = date.today().isoformat()
-        base = max(old_expiry, today) if old_expiry else today
+        base_date = today
+        if when:
+            try:
+                base_date = date.fromisoformat(when[:10]).isoformat()
+            except (ValueError, TypeError):
+                base_date = today
+        base = max(old_expiry, base_date) if old_expiry else base_date
         try:
             new_expiry = (date.fromisoformat(base) + timedelta(days=days)).isoformat()
         except (ValueError, TypeError):

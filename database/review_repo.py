@@ -13,8 +13,8 @@ class ReviewRepo:
             """
             INSERT INTO review (designator, mpn, layer, old_x, old_y, old_rotation,
                                 new_x, new_y, new_rotation, status, remark, review_time, datasheet, checked, row_index,
-                                is_ic_rotation)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                is_ic_rotation, block, block_rotation, base_designator)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.designator,
@@ -33,6 +33,9 @@ class ReviewRepo:
                 1 if record.checked else 0,
                 record.row_index,
                 1 if record.is_ic_rotation else 0,
+                record.block,
+                record.block_rotation,
+                record.base_designator,
             ),
         )
         return cursor.lastrowid or 0
@@ -42,7 +45,8 @@ class ReviewRepo:
             """
             UPDATE review SET mpn=?, layer=?, old_x=?, old_y=?, old_rotation=?,
                               new_x=?, new_y=?, new_rotation=?, status=?, remark=?,
-                              review_time=?, datasheet=?, checked=?, is_ic_rotation=?
+                              review_time=?, datasheet=?, checked=?, is_ic_rotation=?,
+                              block=?, block_rotation=?, base_designator=?
             WHERE id=?
             """,
             self._update_params(record),
@@ -65,6 +69,9 @@ class ReviewRepo:
             record.datasheet,
             1 if record.checked else 0,
             1 if record.is_ic_rotation else 0,
+            record.block,
+            record.block_rotation,
+            record.base_designator,
             record.id,
         )
 
@@ -77,7 +84,8 @@ class ReviewRepo:
             """
             UPDATE review SET mpn=?, layer=?, old_x=?, old_y=?, old_rotation=?,
                               new_x=?, new_y=?, new_rotation=?, status=?, remark=?,
-                              review_time=?, datasheet=?, checked=?, is_ic_rotation=?
+                              review_time=?, datasheet=?, checked=?, is_ic_rotation=?,
+                              block=?, block_rotation=?, base_designator=?
             WHERE id=?
             """,
             [self._update_params(r) for r in records],
@@ -142,4 +150,7 @@ class ReviewRepo:
             checked=bool(row["checked"]),
             row_index=row["row_index"],
             is_ic_rotation=bool(row["is_ic_rotation"]),
+            block=int(row["block"] or 0),
+            block_rotation=int(row["block_rotation"] or 0),
+            base_designator=row["base_designator"] or "",
         )
