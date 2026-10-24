@@ -38,7 +38,9 @@ def test_coord_label_blank_by_default(viewer):
 def test_update_coord_label_flips_y(viewer):
     viewer._loaded = True
     viewer._update_coord_label(10.5, 20.25)
-    assert viewer._lbl_coord.text() == "X: 10.50  Y: -20.25"
+    # The first numbers count from the origin, the ones in brackets are
+    # the coordinates of the file.
+    assert viewer._lbl_coord.text() == "X: 10.50  Y: -20.25  (10.50 / -20.25)"
 
 
 def test_update_coord_label_ignored_when_not_loaded(viewer):

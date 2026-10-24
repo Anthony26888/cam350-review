@@ -190,6 +190,7 @@ def test_flags_column_constants_and_render(table):
     assert _COLUMNS[9] == "Flags"
     assert _STATUS_COLUMN == 10
     assert _REMARK_COLUMN == 12
+    assert _COLUMNS[-1] == "Remark"
 
     recs = _records()
     recs[1].prescreen_flags = ["ROT", "PAD"]

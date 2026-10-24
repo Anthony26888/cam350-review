@@ -3,11 +3,13 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QRectF, QPointF, QPoint, QThread, QTimer, Signal
+from PySide6.QtCore import (
+    Qt, QRectF, QPointF, QPoint, QSize, QThread, QTimer, Signal,
+)
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QPolygonF,
     QWheelEvent, QFont, QFontMetricsF, QTransform, QPixmap, QMouseEvent, QIcon,
-    QCursor,
+    QCursor, QAction, QActionGroup,
 )
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -17,18 +19,37 @@ from PySide6.QtWidgets import (
     QCheckBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QDoubleSpinBox, QSpinBox, QWidget, QDialog,
     QSizePolicy, QFrame, QColorDialog, QGridLayout, QMenu,
-    QProgressBar, QApplication,
+    QProgressBar, QApplication, QFileDialog, QSplitter,
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,
+    QToolButton, QStyle, QToolBar, QProgressDialog,
 )
 
 from models.review import ReviewRecord
 from ui.i18n import tr
+from ui.style import err_color, muted_color
 from ui.rotation_edit_dialog import RotationEditDialog
 from services.gerber.gerber_render import (
     RenderData, LineShape, ArcShape, FlashShape, parse_render,
 )
-from services.gerber.gerber_render_lib import parse_layer
+from services.gerber.gerber_render_lib import load_drill, load_layer, parse_layer
+from services.gerber.drill_aligner import align_drill, points_bbox, shift_render_data
+from services.gerber.aperture_picker import ApertureIndex
+from services.gerber.layer_scan import (
+    LayerInfo, ROLE_COPPER, ROLE_DRILL, ROLE_MASK, ROLE_OTHER, ROLE_PASTE,
+    ROLE_PROFILE, ROLE_SILK, SIDE_BOTTOM, SIDE_NONE, SIDE_TOP,
+)
+from services.gerber.gerber_export import ExportLayer, export_layers
+from services.gerber.render.layer import LayerItem, build_layer_paths
+from ui.zoom_controller import (
+    ZOOM_PRESETS,
+    clamp_zoom_factor,
+    create_zoom_controller,
+    next_preset,
+    scale_from_zoom_factor,
+    zoom_factor_from_scale,
+)
 from services.gerber.gerber_transform import (
-    apply_transform, apply_inverse_transform, transform_rot,
+    AffineTransform, apply_transform, apply_inverse_transform, transform_rot,
 )
 from utils.path_utils import resource_path
 
@@ -36,6 +57,42 @@ OUTLINE_COLOR = QColor("#F8FAFC")
 TOP_PASTE_COLOR = QColor(34, 211, 238, 210)
 BOTTOM_PASTE_COLOR = QColor(251, 191, 36, 210)
 SILK_COLOR = QColor(240, 171, 252, 220)
+COPPER_COLOR = QColor("#D97706")
+MASK_COLOR = QColor("#60A5FA")
+OTHER_COLOR = QColor("#94A3B8")
+DRILL_COLOR = QColor(96, 165, 250, 235)
+
+#: The colours of the palette of the card, for a dark background.  The
+#: first row holds the strong colours, the rest the lighter ones.
+LAYER_PALETTE = (
+    "#FF5555", "#FF8C00", "#FFD700", "#C8FF00", "#00E676", "#00E5FF",
+    "#4D7CFF", "#8A6CFF", "#FF6BD6", "#FFFFFF", "#FFB3B3", "#FFD9A0",
+    "#FFF3B0", "#DCFFA8", "#A8FFD8", "#A8E8FF", "#A8C0FF", "#C8B3FF",
+    "#FFA8E8", "#B0B0B0", "#7A7A7A", "#5A3E2B", "#2F6B4F", "#7B2F4F",
+)
+
+#: The width of the card of the layers, open and closed.
+CARD_WIDTH = 350
+CARD_WIDTH_COLLAPSED = 36
+
+#: The colour of the mark of the origin of the coordinates.
+ORIGIN_COLOR = QColor("#C0C0C0")
+#: The half length of the diagonals that mark the origin, in millimetres.
+ORIGIN_MARKER_HALF = 1.5
+
+#: The area the page can be scrolled in, in millimetres.  It is very big,
+#: so that nothing holds the view back: the zoom factor is what limits
+#: how far the page can be shrunk.
+SCENE_MARGIN = 1_000_000.0
+
+#: The order the items are drawn in.  The grid lies under the artwork,
+#: and the marks of the Pick&Place lie over it, so that a pad never
+#: hides them.
+Z_GRID = 60
+Z_MEASURE = 1200
+Z_ORIGIN_MARK = 1300
+Z_GOTO_CROSS = 1400
+Z_PICKPLACE = 1500
 CROSS_COLOR = QColor("#EF4444")
 HIGHLIGHT_COLOR = QColor("#39FF14")
 CHECKED_COLOR = QColor("#22C55E")
@@ -46,6 +103,20 @@ MEASURE_COLOR = QColor("#38BDF8")
 _CROSS_BOARD_RATIO = 0.01
 _MIN_ARROW_PX = 10.0
 _MIN_ARROW_WING_RATIO = 0.3
+
+#: Fraction of the smaller viewport side that starts the auto panning.
+_AUTO_PAN_MARGIN = 0.02
+
+#: Interval of the auto panning timer, in milliseconds.
+_AUTO_PAN_INTERVAL_MS = 4
+
+#: The state of a layer in the list of layers.
+LAYER_STATE_NORMAL = "normal"
+LAYER_STATE_DIMMED = "dimmed"
+LAYER_STATE_HIDDEN = "hidden"
+
+#: How much of the colour a layer that is dimmed keeps.
+LAYER_DIMMED_ALPHA = 76
 
 _ICON_CHECKED: Optional[QIcon] = None
 _ICON_UNCHECKED: Optional[QIcon] = None
@@ -172,6 +243,331 @@ class PadGrid:
         return hit[2] if hit is not None else None
 
 
+def _target_icon(size: int = 24) -> QIcon:
+    """A bullseye with a pink centre: the mark of the origin.
+
+    The program has no picture files of its own, so the mark of the
+    origin is drawn: a ring, a cross and a pink middle.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    middle = size / 2.0
+    pen = QPen(QColor("#60A5FA"))
+    pen.setWidthF(1.4)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawEllipse(QPointF(middle, middle), size * 0.36, size * 0.36)
+    painter.drawLine(QPointF(middle, 1.5), QPointF(middle, size - 1.5))
+    painter.drawLine(QPointF(1.5, middle), QPointF(size - 1.5, middle))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#F0ACFC"))
+    painter.drawEllipse(QPointF(middle, middle), size * 0.13, size * 0.13)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _paint_stroke_icon(size: int, draw, accent: Optional[QColor] = None) -> QIcon:
+    """Draw a small icon with one grey stroke, like the icons of the card."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(accent if accent is not None else QColor("#94A3B8"))
+    pen.setWidthF(1.4)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    draw(painter, size, accent if accent is not None else pen.color())
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _rotate_icon(size: int = 24) -> QIcon:
+    """A circular arrow turning right: the mark of turning the board."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        cx, cy, r = s / 2.0, s / 2.0, s * 0.30
+        # The ring stays empty in the top right; the arc runs clockwise
+        # from just above 3 o'clock and ends near the top.
+        gap = 70.0
+        end = 80.0
+        start = end + (360.0 - gap)
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        p.drawArc(rect, int(start * 16), -int((360.0 - gap) * 16))
+        # The head sits at the end of the arc and follows its direction.
+        rad = math.radians(end)
+        tangent = (math.sin(rad), math.cos(rad))
+        normal = (math.cos(rad), -math.sin(rad))
+        px = cx + r * normal[0]
+        py = cy + r * normal[1]
+        tip = QPointF(px + tangent[0] * s * 0.18, py + tangent[1] * s * 0.18)
+        b1 = QPointF(px + normal[0] * s * 0.10, py + normal[1] * s * 0.10)
+        b2 = QPointF(px - normal[0] * s * 0.10, py - normal[1] * s * 0.10)
+        p.setBrush(base)
+        p.setPen(Qt.NoPen)
+        p.drawPolygon(QPolygonF([tip, b1, b2]))
+        p.setBrush(Qt.NoBrush)
+    return _paint_stroke_icon(size, _draw, QColor("#F59E0B"))
+
+
+def _mirror_icon(size: int = 24, horizontal: bool = False,
+                 accent: Optional[QColor] = None) -> QIcon:
+    """A pair of mirrored triangles about a dash line: the mark of a flip.
+
+    `horizontal` mirrors about the direction X — the line stands
+    vertically and the halves swap left and right.  Otherwise the line
+    lies on its side and the halves swap up and down.
+    """
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        dash = QPen(base, 1.2)
+        dash.setStyle(Qt.DashLine)
+        p.setPen(dash)
+        if horizontal:
+            axis = s / 2.0
+            p.drawLine(QPointF(axis, 2.0), QPointF(axis, s - 2.0))
+            p.setPen(QPen(base, 1.2))
+            left = QPolygonF([
+                QPointF(2.0, s * 0.30), QPointF(2.0, s * 0.70),
+                QPointF(axis - 3.0, s * 0.50),
+            ])
+            p.drawPolygon(left)
+            right = QPolygonF([
+                QPointF(s - 2.0, s * 0.30), QPointF(s - 2.0, s * 0.70),
+                QPointF(axis + 3.0, s * 0.50),
+            ])
+            p.drawPolygon(right)
+        else:
+            axis = s / 2.0
+            p.drawLine(QPointF(2.0, axis), QPointF(s - 2.0, axis))
+            p.setPen(QPen(base, 1.2))
+            top = QPolygonF([
+                QPointF(s * 0.30, 2.0), QPointF(s * 0.70, 2.0),
+                QPointF(s * 0.50, axis - 3.0),
+            ])
+            p.drawPolygon(top)
+            bottom = QPolygonF([
+                QPointF(s * 0.30, s - 2.0), QPointF(s * 0.70, s - 2.0),
+                QPointF(s * 0.50, axis + 3.0),
+            ])
+            p.drawPolygon(bottom)
+    return _paint_stroke_icon(
+        size, _draw, accent if accent is not None else QColor("#94A3B8"))
+
+
+def _flip_x_icon(size: int = 24) -> QIcon:
+    """Mirror about the vertical axis: left and right swap."""
+    return _mirror_icon(size, horizontal=True, accent=QColor("#22D3EE"))
+
+
+def _flip_y_icon(size: int = 24) -> QIcon:
+    """Mirror about the horizontal axis: top and bottom swap."""
+    return _mirror_icon(size, horizontal=False, accent=QColor("#2DD4BF"))
+
+
+def _grid_icon(size: int = 24) -> QIcon:
+    """A mesh of lines: the mark of the grid."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        edge = 3.0
+        p.drawRect(QRectF(edge, edge, s - 2 * edge, s - 2 * edge))
+        for i in (1, 2):
+            t = edge + i * (s - 2 * edge) / 3.0
+            p.drawLine(QPointF(edge, t), QPointF(s - edge, t))
+            p.drawLine(QPointF(t, edge), QPointF(t, s - edge))
+    return _paint_stroke_icon(size, _draw, QColor("#A78BFA"))
+
+
+def _pickplace_icon(size: int = 24) -> QIcon:
+    """A cross with an arrow, like the marker of a component."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        cx, cy, h = s / 2.0, s / 2.0, s * 0.28
+        p.drawLine(QPointF(cx - h, cy), QPointF(cx + h, cy))
+        p.drawLine(QPointF(cx, cy - h), QPointF(cx, cy + h))
+        # The arrow points to the upper left, like the marker does.
+        u = QPointF(-0.707, 0.707)
+        v = QPointF(0.707, 0.707)
+        tip = QPointF(cx + 1.3 * h * u.x(), cy - 1.3 * h * u.y())
+        at = QPointF(cx + h * u.x() + 0.3 * h * v.x(),
+                     cy - h * u.y() + 0.3 * h * v.y())
+        ab = QPointF(cx + h * u.x() - 0.3 * h * v.x(),
+                     cy - h * u.y() - 0.3 * h * v.y())
+        p.setBrush(base)
+        p.setPen(Qt.NoPen)
+        p.drawPolygon(QPolygonF([tip, at, ab]))
+        p.setBrush(Qt.NoBrush)
+    return _paint_stroke_icon(size, _draw, QColor("#EF4444"))
+
+
+def _arrow_head(p: QPainter, tip: QPointF, direction: float,
+                size: float) -> None:
+    """A filled triangle at `tip`, pointing along `direction` (degrees)."""
+    rad = math.radians(direction)
+    u = QPointF(math.cos(rad), -math.sin(rad))
+    v = QPointF(-math.sin(rad), -math.cos(rad))
+    b1 = QPointF(tip.x() - u.x() * size + v.x() * size * 0.6,
+                 tip.y() - u.y() * size + v.y() * size * 0.6)
+    b2 = QPointF(tip.x() - u.x() * size - v.x() * size * 0.6,
+                 tip.y() - u.y() * size - v.y() * size * 0.6)
+    p.setBrush(p.pen().color())
+    p.setPen(Qt.NoPen)
+    p.drawPolygon(QPolygonF([tip, b1, b2]))
+    p.setBrush(Qt.NoBrush)
+
+
+def _fit_icon(size: int = 24) -> QIcon:
+    """Four corner brackets with outward arrows: the mark of fitting the view."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        a, b = 4.0, s * 0.42
+        for (cx, cy, dx, dy) in (
+            (a, a, 1.0, 1.0),
+            (s - a, a, -1.0, 1.0),
+            (a, s - a, 1.0, -1.0),
+            (s - a, s - a, -1.0, -1.0),
+        ):
+            p.drawLine(QPointF(cx + dx * (b - a), cy),
+                       QPointF(cx, cy))
+            p.drawLine(QPointF(cx, cy),
+                       QPointF(cx, cy + dy * (b - a)))
+            inner = QPointF(cx + dx * (b - a) * 0.35,
+                            cy + dy * (b - a) * 0.35)
+            _arrow_head(p, inner, math.degrees(math.atan2(-dy, dx)), 3.2)
+    return _paint_stroke_icon(size, _draw, QColor("#10B981"))
+
+
+def _export_icon(size: int = 24) -> QIcon:
+    """A framed picture with a sun and hills: the mark of an exported image."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        edge = 3.0
+        p.drawRect(QRectF(edge, edge, s - 2 * edge, s - 2 * edge))
+        sun = 4.0
+        p.drawEllipse(QPointF(s * 0.34, s * 0.34), sun / 2.0, sun / 2.0)
+        base_y = s - 4.5
+        p.drawPolyline(QPolygonF([
+            QPointF(edge + 1.5, base_y),
+            QPointF(s * 0.45, s * 0.45),
+            QPointF(s * 0.62, base_y - s * 0.18),
+            QPointF(s * 0.75, base_y - s * 0.09),
+            QPointF(s - 1.5, base_y),
+        ]))
+    return _paint_stroke_icon(size, _draw, QColor("#3B82F6"))
+
+
+def _reload_icon(size: int = 24) -> QIcon:
+    """A ring with two arrow heads: the mark of reloading the data."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        cx, cy, r = s / 2.0, s / 2.0, s * 0.30
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        gap = 60.0
+        p.drawArc(rect, int(gap * 16), int((360.0 - 2 * gap) * 16))
+        p.drawArc(rect, int((180.0 + gap) * 16), int((360.0 - 2 * gap) * 16))
+        rad = math.radians(90.0 - gap)
+        tip = QPointF(cx - r * math.sin(rad), cy - r * math.cos(rad))
+        _arrow_head(p, tip, 90.0 - gap - 90.0, 3.2)
+        tip2 = QPointF(cx + r * math.sin(rad), cy + r * math.cos(rad))
+        _arrow_head(p, tip2, 270.0 - gap - 90.0 + 180.0, 3.2)
+    return _paint_stroke_icon(size, _draw, QColor("#FB923C"))
+
+
+def _ruler_icon(size: int = 24) -> QIcon:
+    """A tilted ruler with tick marks: the mark of measuring a distance."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        p.save()
+        p.translate(s / 2.0, s / 2.0)
+        p.rotate(-35.0)
+        length, half = s * 0.62, s * 0.13
+        p.drawRect(QRectF(-length / 2.0, -half, length, 2 * half))
+        for i in range(1, 6):
+            t = -length / 2.0 + i * length / 6.0
+            h = half * (1.0 if i % 3 == 0 else 0.55)
+            p.drawLine(QPointF(t, -half), QPointF(t, -half + h))
+        p.restore()
+    return _paint_stroke_icon(size, _draw, QColor("#F472B6"))
+
+
+def _tick_stroke(p: QPainter, s: float) -> None:
+    """A wide tick mark, like the check of the component status."""
+    path = QPainterPath()
+    path.moveTo(s * 0.14, s * 0.56)
+    path.lineTo(s * 0.36, s * 0.76)
+    path.lineTo(s * 0.82, s * 0.26)
+    p.drawPath(path)
+
+
+def _check_icon(size: int = 24) -> QIcon:
+    """A green tick: the mark of checking a component."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        _tick_stroke(p, s)
+    return _paint_stroke_icon(size, _draw, QColor("#22C55E"))
+
+
+def _undo_check_icon(size: int = 24) -> QIcon:
+    """A tick cancelled by a thin line: removing a check again."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        _tick_stroke(p, s)
+        p.setPen(QPen(base, 1.4))
+        p.drawLine(QPointF(s * 0.14, s * 0.2), QPointF(s * 0.86, s * 0.8))
+    return _paint_stroke_icon(size, _draw, QColor("#94A3B8"))
+
+
+def _uncheck_all_icon(size: int = 24) -> QIcon:
+    """Two ticks crossed by a slash: clearing every check."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        p.save()
+        p.translate(s * 0.74, s / 2.0)
+        p.scale(0.55, 0.55)
+        _tick_stroke(p, s)
+        p.restore()
+        p.save()
+        p.translate(-s * 0.10, s * 0.08)
+        p.scale(0.55, 0.55)
+        _tick_stroke(p, s)
+        p.restore()
+        p.drawLine(QPointF(s * 0.1, s * 0.88), QPointF(s * 0.9, s * 0.12))
+    return _paint_stroke_icon(size, _draw, QColor("#DC2626"))
+
+
+def _rotate_records_icon(size: int = 24) -> QIcon:
+    """A component marker inside a turning ring: rotating the data."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        cx, cy, r = s / 2.0, s / 2.0, s * 0.33
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        gap = 80.0
+        end = 135.0 + gap * 0.5
+        start = end + (360.0 - gap)
+        p.drawArc(rect, int(start * 16), -int((360.0 - gap) * 16))
+        rad = math.radians(end)
+        tip = QPointF(cx + r * math.cos(-rad), cy - r * math.sin(-rad))
+        _arrow_head(p, tip, end + 90.0, 3.4)
+        # The filled marker of the component sits in the middle.
+        p.setBrush(base)
+        p.setPen(Qt.NoPen)
+        dot = s * 0.08
+        p.drawEllipse(QPointF(cx, cy), dot, dot)
+        p.setPen(QPen(base, 1.3))
+        p.setBrush(Qt.NoBrush)
+        h = s * 0.10
+        p.drawLine(QPointF(cx - h, cy), QPointF(cx - dot - 1.0, cy))
+        p.drawLine(QPointF(cx + dot + 1.0, cy), QPointF(cx + h, cy))
+    return _paint_stroke_icon(size, _draw, QColor("#60A5FA"))
+
+
+def _flip_records_icon(size: int = 24) -> QIcon:
+    """Three markers and their mirror image: flipping the data."""
+    def _draw(p: QPainter, s: int, base: QColor) -> None:
+        axis_p = QPen(base, 1.3)
+        axis_p.setStyle(Qt.DashLine)
+        p.setPen(axis_p)
+        p.drawLine(QPointF(s / 2.0, s * 0.08), QPointF(s / 2.0, s * 0.92))
+        p.setBrush(base)
+        p.setPen(Qt.NoPen)
+        dot = s * 0.05
+        for fy in (0.30, 0.50, 0.70):
+            y = s * fy
+            p.drawEllipse(QPointF(s * 0.28 - dot, y), dot, dot)
+            p.drawEllipse(QPointF(s * 0.72 + dot, y), dot, dot)
+        p.setBrush(Qt.NoBrush)
+    return _paint_stroke_icon(size, _draw, QColor("#A3E635"))
+
+
 def _crosshair_half(size: Optional[float], fallback: float) -> float:
     if size is None:
         return fallback
@@ -182,6 +578,25 @@ _MAG_FACTOR = 6.0
 _MAG_FACTORS = (3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 25.0)
 _ROT_EDIT_MAG_FACTOR = 20.0   # zoom level while editing rotation
 _MAG_MIN_SCALE = 1.0
+
+#: The shared card style of the two panels of the right side.
+_CARD_QSS = """
+QGroupBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 0px;
+    margin-top: 18px;
+    font-weight: bold;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 4px;
+    color: #0D9488;
+    font-size: 11pt;
+}
+"""
 
 
 def _magnifier_scale(board_size: float, vw: int, vh: int,
@@ -200,34 +615,44 @@ def _add_flash(
     cx0: float = 0.0,
     cy0: float = 0.0,
     mirror_x: bool = False,
+    transform: AffineTransform | None = None,
 ) -> None:
     """Append one flash to `path` with the display transform applied.
 
     All geometry (position, polygon vertices, aperture-macro primitives) is
     transformed by the same mirror -> rotate -> offset pipeline used for
     stroked lines, so every layer rotates together.
+
+    The transform can be given ready made: a layer holds a few ten thousand
+    flashes, and preparing the matrix once for the whole layer is much
+    cheaper than a call with a trigonometry for every flash.
     """
-    def _t_abs(x: float, y: float) -> Tuple[float, float]:
-        return apply_transform(x, y, mirror, angle, off_x, off_y, cx0, cy0, mirror_x)
+    if transform is None:
+        transform = AffineTransform(mirror, angle, off_x, off_y, cx0, cy0, mirror_x)
+    # The transform is called directly instead of through a helper: a
+    # layer holds a few ten thousand flashes, and a closure that is made
+    # for every one of them costs more than the transform itself.
+    apply = transform.apply
+    apply_local = transform.apply_local
 
-    def _t_loc(x: float, y: float) -> Tuple[float, float]:
-        return apply_transform(x, y, mirror, angle, 0.0, 0.0, 0.0, 0.0, mirror_x)
-
-    rot = transform_rot(fl.rot, mirror, angle, mirror_x)
+    if angle == 0.0 and not mirror and not mirror_x:
+        rot = fl.rot
+    else:
+        rot = transform_rot(fl.rot, mirror, angle, mirror_x)
 
     if fl.kind == "circle":
-        gx, gy = _t_abs(fl.cx, fl.cy)
+        gx, gy = apply(fl.cx, fl.cy)
         r = fl.w / 2.0
         path.addEllipse(gx - r, -gy - r, 2 * r, 2 * r)
         return
 
     if fl.kind == "rect":
-        gx, gy = _t_abs(fl.cx, fl.cy)
+        gx, gy = apply(fl.cx, fl.cy)
         _add_rect_path(path, gx, gy, fl.w, fl.h, math.radians(rot))
         return
 
     if fl.kind == "oblong":
-        gx, gy = _t_abs(fl.cx, fl.cy)
+        gx, gy = apply(fl.cx, fl.cy)
         if abs(rot) < 0.5 or abs(rot - 360.0) < 0.5:
             r = min(fl.w, fl.h) / 2.0
             path.addRoundedRect(
@@ -238,44 +663,45 @@ def _add_flash(
         return
 
     if fl.kind == "polygon" and fl.pts:
-        if abs(fl.cx) < 1e-9 and abs(fl.cy) < 1e-9:
-            # Absolute points (G36/G37 regions).
-            pts = [QPointF(x, -y) for x, y in (_t_abs(px, py) for px, py in fl.pts)]
-        else:
-            # Local points relative to a flash position.
-            gx, gy = _t_abs(fl.cx, fl.cy)
+        if fl.pts_local:
+            # The points are given relative to the place of the flash.
+            gx, gy = apply(fl.cx, fl.cy)
             pts = [
-                QPointF(gx + lx, -gy - ly)
-                for lx, ly in (_t_loc(px, py) for px, py in fl.pts)
+                (gx + lx, -gy - ly)
+                for lx, ly in (apply_local(px, py) for px, py in fl.pts)
             ]
-        path.addPolygon(QPolygonF(_normalize_winding(pts)))
+        else:
+            # The points are given in the coordinates of the file, like the
+            # points of a region (G36) and of a polygon aperture.
+            pts = [(x, -y) for x, y in (apply(px, py) for px, py in fl.pts)]
+        _add_polygon(path, pts)
         return
 
     if fl.kind == "macro" and fl.macro:
-        gx, gy = _t_abs(fl.cx, fl.cy)
+        gx, gy = apply(fl.cx, fl.cy)
         m = fl.macro
         for mx, my, r in m.circles:
-            lx, ly = _t_loc(mx, my)
+            lx, ly = apply_local(mx, my)
             path.addEllipse(gx + lx - r, -gy - ly - r, 2 * r, 2 * r)
         for poly_pts in m.polygons:
             pts = [
-                QPointF(gx + lx, -gy - ly)
-                for lx, ly in (_t_loc(px, py) for px, py in poly_pts)
+                (gx + lx, -gy - ly)
+                for lx, ly in (apply_local(px, py) for px, py in poly_pts)
             ]
-            path.addPolygon(QPolygonF(_normalize_winding(pts)))
+            _add_polygon(path, pts)
         for x1, y1, x2, y2, width in m.segments:
-            lx1, ly1 = _t_loc(x1, y1)
-            lx2, ly2 = _t_loc(x2, y2)
+            lx1, ly1 = apply_local(x1, y1)
+            lx2, ly2 = apply_local(x2, y2)
             ang = math.atan2(ly2 - ly1, lx2 - lx1)
             n2 = width / 2.0
             dx, dy = -math.sin(ang) * n2, math.cos(ang) * n2
             quad = [
-                QPointF(gx + lx1 + dx, -gy - ly1 - dy),
-                QPointF(gx + lx1 - dx, -gy - ly1 + dy),
-                QPointF(gx + lx2 - dx, -gy - ly2 + dy),
-                QPointF(gx + lx2 + dx, -gy - ly2 - dy),
+                (gx + lx1 + dx, -gy - ly1 - dy),
+                (gx + lx1 - dx, -gy - ly1 + dy),
+                (gx + lx2 - dx, -gy - ly2 + dy),
+                (gx + lx2 + dx, -gy - ly2 - dy),
             ]
-            path.addPolygon(QPolygonF(_normalize_winding(quad)))
+            _add_polygon(path, quad)
 
 
 def _append_arc_path(
@@ -334,6 +760,24 @@ def _normalize_winding(pts: List[QPointF]) -> List[QPointF]:
     return pts
 
 
+def _add_polygon(path: QPainterPath, pts: List[Tuple[float, float]]) -> None:
+    """Add a closed polygon with the winding of the subpath made positive.
+
+    The winding is decided on the plain coordinates, so no call into Qt is
+    needed to read the points back.
+    """
+    n = len(pts)
+    if n >= 3:
+        area = 0.0
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            area += x1 * y2 - x2 * y1
+        if area < 0.0:
+            pts = pts[::-1]
+    path.addPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+
 def _add_rect_path(path: QPainterPath, gx, gy, w, h, rot):
     hw, hh = w / 2.0, h / 2.0
     c, s = math.cos(rot), math.sin(rot)
@@ -341,8 +785,8 @@ def _add_rect_path(path: QPainterPath, gx, gy, w, h, rot):
     for cx0, cy0 in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
         rx = cx0 * c - cy0 * s
         ry = cx0 * s + cy0 * c
-        pts.append(QPointF(gx + rx, -gy - ry))
-    path.addPolygon(QPolygonF(_normalize_winding(pts)))
+        pts.append((gx + rx, -gy - ry))
+    _add_polygon(path, pts)
 
 
 def _add_capsule_path(path: QPainterPath, cx, cy, w, h, rot):
@@ -354,20 +798,33 @@ def _add_capsule_path(path: QPainterPath, cx, cy, w, h, rot):
     for i in range(n_line + 1):
         t = i / n_line
         pts.append((-a + 2 * a * t, h / 2.0))
-    for i in range(n_arc + 1):
-        t = -math.pi / 2.0 + math.pi * i / n_arc
-        pts.append((a + r * math.cos(t), r * math.sin(t)))
+    # The arc is walked with a constant angle, so the trigonometry is done
+    # once for the whole arc instead of once for every point.
+    turn = math.pi / n_arc
+    cos_turn = math.cos(turn)
+    sin_turn = math.sin(turn)
+    px, py = a + r * math.cos(-math.pi / 2.0), r * math.sin(-math.pi / 2.0)
+    for _i in range(n_arc + 1):
+        pts.append((px, py))
+        px, py = (px * cos_turn - py * sin_turn,
+                  px * sin_turn + py * cos_turn)
     for i in range(n_line + 1):
         t = i / n_line
         pts.append((a - 2 * a * t, -h / 2.0))
-    for i in range(n_arc + 1):
-        t = math.pi / 2.0 + math.pi * i / n_arc
-        pts.append((-a + r * math.cos(t), r * math.sin(t)))
+    turn = math.pi / n_arc
+    cos_turn = math.cos(turn)
+    sin_turn = math.sin(turn)
+    px, py = -a + r * math.cos(math.pi / 2.0), r * math.sin(math.pi / 2.0)
+    for _i in range(n_arc + 1):
+        pts.append((px, py))
+        px, py = (px * cos_turn - py * sin_turn,
+                  px * sin_turn + py * cos_turn)
     c, s = math.cos(rot), math.sin(rot)
     out = []
     for gx, gy in pts:
-        out.append(QPointF(cx + gx * c - gy * s, -cy - gx * s - gy * c))
-    path.addPolygon(QPolygonF(_normalize_winding(out)))
+        out.append((cx + gx * c - gy * s, -cy - gx * s - gy * c))
+    _add_polygon(path, out)
+
 
 
 class PickPlaceMarker(QGraphicsItem):
@@ -463,6 +920,8 @@ class MarkerOverlayItem(QGraphicsItem):
         self._show_frame = show_frame
         # Expose option.exposedRect so paint() can skip off-screen markers
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
+        # The marks lie over the artwork, so that a pad never hides them.
+        self.setZValue(Z_PICKPLACE)
         self._rect = self._compute_rect()
         self._build_geom()
 
@@ -619,7 +1078,7 @@ class MeasurementItem(QGraphicsItem):
         self._dist = dist_mm
         self._color = QColor(color)
         self._rect = self._compute_rect()
-        self.setZValue(80)
+        self.setZValue(Z_MEASURE)
         self.setToolTip(tr("Distance: {d:.3f} mm", d=dist_mm))
 
     def _compute_rect(self) -> QRectF:
@@ -733,6 +1192,7 @@ class GerberView(QGraphicsView):
     measure_clicked = Signal(float, float)
     measure_cancel = Signal()
     crosshair_right_clicked = Signal(float, float)
+    origin_picked = Signal(float, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -749,10 +1209,17 @@ class GerberView(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
 
         self._panning = False
+        self._middle_panning = False
+        self._middle_last = QPoint(0, 0)
+        self._auto_pan_direction = QPoint(0, 0)
+        self._auto_pan_timer: Optional[QTimer] = None
         self._grid_active = False
         self._measure_mode = False
+        self._origin_mode = False
 
-        self._full_cross_enabled = False
+        # The crosshair that covers the whole view is always on: it is
+        # how the pointer tells where it stands.
+        self._full_cross_enabled = True
         self._full_cross_pos: Optional[QPointF] = None
 
         self._fast_render = False
@@ -762,10 +1229,38 @@ class GerberView(QGraphicsView):
         self._zoom_ratio: float = 1.0
         self._zoom_anchor: QPoint = QPoint(0, 0)
         self._zoom_active = False
+        self._use_opengl = False
+        self._default_viewport = None
+        self._zoom_controller = create_zoom_controller()
 
         # Pan gesture: blit a frozen snapshot instead of scrolling the scene
         self._pan_pixmap: Optional[QPixmap] = None
         self._pan_offset = QPoint(0, 0)
+
+    def set_use_opengl(self, enabled: bool) -> None:
+        """Draw the view with OpenGL, or with the usual surface.
+
+        The layer is drawn into a picture and put on the canvas, so the
+        picture is the same either way.  OpenGL only changes the way the
+        picture is put on the screen, which is quicker on a big board.
+        """
+        enabled = bool(enabled)
+        if enabled == self._use_opengl:
+            return
+        self._use_opengl = enabled
+        if enabled:
+            from PySide6.QtOpenGLWidgets import QOpenGLWidget
+            self.setViewport(QOpenGLWidget())
+            self.setViewportUpdateMode(
+                QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        else:
+            # The surface that was used before is gone with the switch, a
+            # plain one takes its place.
+            self.setViewport(QWidget())
+            self.setViewportUpdateMode(
+                QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        self.viewport().update()
+
 
     def _set_fast_render(self) -> None:
         if self._fast_render:
@@ -781,12 +1276,49 @@ class GerberView(QGraphicsView):
         self.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.setRenderHint(QPainter.Antialiasing, True)
         if self._zoom_pixmap is not None and self._zoom_ratio != 1.0:
-            self.scale(self._zoom_ratio, self._zoom_ratio)
+            self._apply_zoom_anchor(self._zoom_ratio, self._zoom_anchor)
         self._zoom_pixmap = None
         self._zoom_ratio = 1.0
         self._zoom_active = False
         self.zoom_end.emit()
         self.viewport().update()
+
+    def _apply_zoom_anchor(self, factor: float, anchor: QPoint) -> None:
+        """Change the zoom and keep the point under the anchor where it is.
+
+        ``QGraphicsView.scale()`` always scales around the centre of the
+        viewport, so the anchor has to be restored afterwards.  The view is
+        moved with ``centerOn`` because the scroll bars of a graphics view
+        count device pixels, not scene units.
+        """
+        before = self.mapToScene(anchor)
+        self.scale(factor, factor)
+        try:
+            scale = abs(self.transform().m11())
+        except Exception:
+            scale = 1.0
+        if scale <= 0:
+            return
+        view = self.viewport().rect()
+        centre_x = before.x() + (view.width() / 2.0 - anchor.x()) / scale
+        centre_y = before.y() + (view.height() / 2.0 - anchor.y()) / scale
+        self.centerOn(centre_x, centre_y)
+        self._clamp_zoom()
+
+    def _clamp_zoom(self) -> None:
+        """Limit the zoom to the range the reference implementation uses."""
+        try:
+            scale = abs(self.transform().m11())
+        except Exception:
+            return
+        if scale <= 0:
+            return
+        factor = zoom_factor_from_scale(scale)
+        limited = clamp_zoom_factor(factor)
+        if abs(limited - factor) < 1e-9:
+            return
+        target = scale_from_zoom_factor(limited)
+        self.scale(target / scale, target / scale)
 
     def _schedule_smooth_restore(self) -> None:
         if self._fast_timer is not None:
@@ -801,8 +1333,12 @@ class GerberView(QGraphicsView):
         if self._grid_active:
             event.ignore()
             return
+        rotation = event.angleDelta().y()
+        if rotation == 0:
+            event.ignore()
+            return
         self._set_fast_render()
-        factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
+        factor = self._zoom_controller.scale_for_rotation(rotation)
         if self._zoom_pixmap is None:
             self._zoom_pixmap = self.viewport().grab()
             self._zoom_ratio = 1.0
@@ -830,8 +1366,23 @@ class GerberView(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
         self.viewport().update()
 
+    def set_origin_mode(self, active: bool) -> None:
+        """Enter/exit origin mode: a click places the new origin."""
+        self._origin_mode = bool(active)
+        self.setDragMode(
+            QGraphicsView.NoDrag if active else QGraphicsView.ScrollHandDrag
+        )
+        self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
+        self.viewport().update()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._grid_active:
+            return
+        if self._origin_mode:
+            if event.button() == Qt.LeftButton:
+                sp = self.mapToScene(event.position().toPoint())
+                self.origin_picked.emit(sp.x(), sp.y())
+                event.accept()
             return
         if self._measure_mode:
             if event.button() == Qt.LeftButton:
@@ -841,6 +1392,14 @@ class GerberView(QGraphicsView):
             elif event.button() == Qt.RightButton:
                 self.measure_cancel.emit()
                 event.accept()
+            return
+        if event.button() == Qt.MiddleButton:
+            # The middle button pans the view, the content follows the
+            # pointer while the button is held down.
+            self._middle_panning = True
+            self._middle_last = event.position().toPoint()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
             return
         if event.button() == Qt.RightButton:
             sp = self.mapToScene(event.position().toPoint())
@@ -860,6 +1419,21 @@ class GerberView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._middle_panning:
+            position = event.position().toPoint()
+            delta = position - self._middle_last
+            self._middle_last = position
+            if delta.x() or delta.y():
+                # The artwork is blitted from a frozen snapshot while the
+                # gesture runs, so a big layer does not have to be drawn
+                # again for every mouse move.
+                if self._pan_pixmap is None:
+                    self._pan_pixmap = self.viewport().grab()
+                self._pan_offset = self._pan_offset + delta
+                self.viewport().update()
+            self._update_auto_pan(event.position().toPoint())
+            event.accept()
+            return
         sp = self.mapToScene(event.position().toPoint())
         self.cursor_moved.emit(sp.x(), sp.y())
         self._full_cross_pos = event.position()
@@ -871,6 +1445,43 @@ class GerberView(QGraphicsView):
             event.accept()
             return
         super().mouseMoveEvent(event)
+
+    def _update_auto_pan(self, position: QPoint) -> None:
+        """Scroll the view when the pointer is close to an edge."""
+        rect = self.viewport().rect()
+        if rect.isEmpty():
+            return
+        margin = int(min(rect.width(), rect.height()) * _AUTO_PAN_MARGIN)
+        margin = max(margin, 2)
+        direction = QPoint(0, 0)
+        if position.x() < margin:
+            direction.setX(-(margin - position.x()))
+        elif position.x() > rect.right() - margin:
+            direction.setX(position.x() - (rect.right() - margin))
+        if position.y() < margin:
+            direction.setY(-(margin - position.y()))
+        elif position.y() > rect.bottom() - margin:
+            direction.setY(position.y() - (rect.bottom() - margin))
+        self._auto_pan_direction = direction
+        if direction.x() or direction.y():
+            if self._auto_pan_timer is None:
+                self._auto_pan_timer = QTimer(self)
+                self._auto_pan_timer.setInterval(_AUTO_PAN_INTERVAL_MS)
+                self._auto_pan_timer.timeout.connect(self._auto_pan_tick)
+            self._auto_pan_timer.start()
+        elif self._auto_pan_timer is not None:
+            self._auto_pan_timer.stop()
+
+    def _auto_pan_tick(self) -> None:
+        direction = self._auto_pan_direction
+        if not (direction.x() or direction.y()):
+            if self._auto_pan_timer is not None:
+                self._auto_pan_timer.stop()
+            return
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - direction.x())
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.value() - direction.y())
 
     def leaveEvent(self, event) -> None:
         self.cursor_left.emit()
@@ -885,6 +1496,23 @@ class GerberView(QGraphicsView):
                 sp = self.mapToScene(event.position().toPoint())
                 self.grid_cell_clicked.emit(sp.x(), sp.y())
                 event.accept()
+            return
+        if event.button() == Qt.MiddleButton:
+            self._middle_panning = False
+            self.unsetCursor()
+            if self._auto_pan_timer is not None:
+                self._auto_pan_timer.stop()
+            if self._pan_pixmap is not None:
+                # Apply the whole gesture as a single scroll.
+                off = self._pan_offset
+                self.horizontalScrollBar().setValue(
+                    self.horizontalScrollBar().value() - off.x())
+                self.verticalScrollBar().setValue(
+                    self.verticalScrollBar().value() - off.y())
+                self._pan_pixmap = None
+                self._pan_offset = QPoint(0, 0)
+                self.viewport().update()
+            event.accept()
             return
         if self._measure_mode:
             event.accept()
@@ -907,11 +1535,88 @@ class GerberView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:
-        if self._measure_mode and event.key() == Qt.Key_Escape:
+        key = event.key()
+        if self._measure_mode and key == Qt.Key_Escape:
             self.measure_cancel.emit()
             event.accept()
             return
+        modifiers = event.modifiers()
+        ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        if key == Qt.Key_F1:
+            self._zoom_step(+1)
+            event.accept()
+            return
+        if key == Qt.Key_F2:
+            self._zoom_step(-1)
+            event.accept()
+            return
+        if key == Qt.Key_F4:
+            self._center_on_cursor()
+            event.accept()
+            return
+        if key == Qt.Key_F5 and not ctrl:
+            self.viewport().update()
+            event.accept()
+            return
+        if key == Qt.Key_Home:
+            self.zoom_to_fit()
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # zoom helpers, following the reference implementation
+    # ------------------------------------------------------------------
+    def _current_zoom_factor(self) -> float:
+        try:
+            scale = abs(self.transform().m11())
+        except Exception:
+            scale = 1.0
+        return zoom_factor_from_scale(scale)
+
+    def _zoom_step(self, direction: int) -> None:
+        """Zoom in or out with the keyboard, snapping to the preset levels."""
+        factor = next_preset(self._current_zoom_factor(), direction)
+        self.set_zoom_factor(factor)
+
+    def set_zoom_factor(self, factor: float) -> None:
+        """Set the zoom to a zoom factor, keeping the viewport centre."""
+        try:
+            scale = abs(self.transform().m11())
+        except Exception:
+            return
+        if scale <= 0:
+            return
+        target = scale_from_zoom_factor(clamp_zoom_factor(factor))
+        self.scale(target / scale, target / scale)
+
+    def zoom_to_fit(self, margin: float = 1.04) -> None:
+        """Fit the whole drawing into the viewport.
+
+        The margin keeps a little air around the artwork, the same way the
+        reference implementation reserves room for the status bar.
+        """
+        rect = self.scene().itemsBoundingRect()
+        if rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
+            return
+        view_rect = self.viewport().rect()
+        if view_rect.width() <= 0 or view_rect.height() <= 0:
+            return
+        scale = min(
+            view_rect.width() / rect.width(),
+            view_rect.height() / rect.height(),
+        ) / margin
+        self.resetTransform()
+        self.scale(scale, scale)
+        self.centerOn(rect.center())
+        self._clamp_zoom()
+
+    def _center_on_cursor(self) -> None:
+        """Move the viewport so the cursor is in the middle."""
+        position = self.mapFromGlobal(QCursor.pos())
+        if not self.viewport().rect().contains(position):
+            return
+        self.centerOn(self.mapToScene(position))
 
     def set_full_crosshair_enabled(self, enabled: bool) -> None:
         self._full_cross_enabled = bool(enabled)
@@ -967,45 +1672,43 @@ class GerberView(QGraphicsView):
 
 class GerberLoadWorker(QThread):
     progress = Signal(str, int)
-    finished = Signal(dict)
+    finished = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, gko: str, gtp: str, gbp: str, gto: str, gbo: str, parent=None) -> None:
+    def __init__(self, layers: List[LayerInfo], parent=None) -> None:
         super().__init__(parent)
-        self._gko = gko
-        self._gtp = gtp
-        self._gbp = gbp
-        self._gto = gto
-        self._gbo = gbo
+        self._layers = list(layers or [])
+        #: How each file was read, so the user can be told when a reduced
+        #: parser was used.
+        self.load_info: Dict[str, object] = {}
 
     def run(self) -> None:
         try:
-            data: Dict[str, RenderData] = {}
-            self.progress.emit(tr("Reading GKO (outline)..."), 12)
-            data["outline"] = parse_layer(self._gko)
-
-            data["top"] = RenderData()
-            data["bottom"] = RenderData()
-            data["silk"] = RenderData()
-            data["silk_bottom"] = RenderData()
-
-            if self._gtp and os.path.exists(self._gtp):
-                self.progress.emit(tr("Reading GTP (Top Paste)..."), 30)
-                data["top"] = parse_layer(self._gtp)
-            if self._gbp and os.path.exists(self._gbp):
-                self.progress.emit(tr("Reading GBP (Bottom Paste)..."), 45)
-                data["bottom"] = parse_layer(self._gbp)
-            if self._gto and os.path.exists(self._gto):
-                self.progress.emit(tr("Reading GTO (Silkscreen)..."), 60)
-                data["silk"] = parse_layer(self._gto)
-            if self._gbo and os.path.exists(self._gbo):
-                self.progress.emit(tr("Reading GBO (Silkscreen)..."), 75)
-                data["silk_bottom"] = parse_layer(self._gbo)
-
+            data: List[RenderData] = []
+            count = max(1, len(self._layers))
+            for index, layer in enumerate(self._layers):
+                self.progress.emit(
+                    tr("Reading {name}...", name=layer.name),
+                    int(100 * index / count))
+                if layer.is_drill:
+                    data.append(self._load_drill(layer.path))
+                else:
+                    data.append(self._load(layer.path, layer.key()))
             self.progress.emit(tr("Done."), 100)
             self.finished.emit(data)
         except Exception as e:
             self.failed.emit(str(e))
+
+    def _load(self, path: str, key: str) -> RenderData:
+        """Load one Gerber file and remember how it was read."""
+        data, info = load_layer(path)
+        self.load_info[key] = info
+        return data
+
+    def _load_drill(self, path: str) -> RenderData:
+        data, info = load_drill(path)
+        self.load_info[os.path.normcase(os.path.abspath(path))] = info
+        return data
 
 
 class MagnifierView(QGraphicsView):
@@ -1018,6 +1721,8 @@ class MagnifierView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+
 class GerberViewer(QWidget):
 
     settings_saved = Signal(dict)
@@ -1026,14 +1731,12 @@ class GerberViewer(QWidget):
 
     rotation_edited = Signal(int)
 
+    status_message = Signal(str)
+
     def __init__(
         self,
         records: List[ReviewRecord],
-        gko_path: str,
-        gtp_path: str = "",
-        gbp_path: str = "",
-        gto_path: str = "",
-        gbo_path: str = "",
+        layers: Optional[List[LayerInfo]] = None,
         parent: Optional[QWidget] = None,
         display_settings: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -1051,26 +1754,40 @@ class GerberViewer(QWidget):
         self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
 
         self._records = records
-        self._gko_path = gko_path
-        self._gtp_path = gtp_path
-        self._gbp_path = gbp_path
-        self._gto_path = gto_path
-        self._gbo_path = gbo_path
-
-        self._outline: RenderData = RenderData()
-        self._top: RenderData = RenderData()
-        self._bottom: RenderData = RenderData()
-        self._silk: RenderData = RenderData()
-        self._silk_bottom: RenderData = RenderData()
+        #: The layers of the picture, in the order they are drawn.
+        self._layers: List[LayerInfo] = self._coerce_layers(layers)
+        #: The geometry of every layer.
+        self._layer_data: List[RenderData] = [RenderData() for _ in self._layers]
+        #: The item of every layer in the scene.
+        self._layer_items: List[object] = []
+        #: The colour of every layer.
+        self._layer_colors: List[QColor] = [
+            self._default_layer_color(layer) for layer in self._layers]
+        #: The state of every layer: normal, dimmed or hidden.
+        self._layer_states: List[str] = [
+            LAYER_STATE_NORMAL for _ in self._layers]
+        #: The layer that is shown on top of the others.
+        self._active_layer: int = 0
+        #: The layers that do not lie on the board.
+        self._outside_layers: List[int] = []
+        self._drill_align = None
         self._loaded = False
         self._pads: List[Tuple[float, float, float]] = []
         self._pad_grid_cache: Dict[bool, PadGrid] = {}
         self._scene_key: Optional[tuple] = None
-        self._line_items: Dict[str, List] = {}
-        self._fill_items: Dict[str, Optional[object]] = {}
+        # The index that finds the shape under the pointer, per layer.
+        self._aperture_indices: Dict[int, ApertureIndex] = {}
         self._overlay: Optional[MarkerOverlayItem] = None
         self._goto_pos: Optional[Tuple[float, float]] = None
         self._goto_crosshair: Optional[QGraphicsPathItem] = None
+        #: The mark of the origin of the coordinates of the file.
+        self._origin_marker: Optional[QGraphicsPathItem] = None
+        self._show_origin = True
+        #: The origin of the coordinates, in the coordinates of the file.
+        self._origin_x: float = 0.0
+        self._origin_y: float = 0.0
+        #: True while the operator is choosing a new origin by clicking.
+        self._origin_mode: bool = False
         self._grid_active = False
         self._grid_available = False
         self._grid_opacity = 255
@@ -1083,7 +1800,6 @@ class GerberViewer(QWidget):
         self._measure_snap_item: Optional[QGraphicsEllipseItem] = None
         self._snap_enabled = True
         self._snap_tol = 1.0
-        self._compact_hidden = False
         self._measurements: List[Tuple[float, float, float, float]] = []
         self._measurement_items: List[MeasurementItem] = []
         self._mag_cell_rect: Optional[QRectF] = None
@@ -1107,47 +1823,148 @@ class GerberViewer(QWidget):
         self._rotation_lock_xy: Optional[Tuple[float, float]] = None
         self._show_frame = True
         self._colors: Dict[str, QColor] = {
-            "outline": OUTLINE_COLOR,
-            "paste_top": TOP_PASTE_COLOR,
-            "paste_bottom": BOTTOM_PASTE_COLOR,
-            "silk": SILK_COLOR,
             "cross": CROSS_COLOR,
             "highlight": HIGHLIGHT_COLOR,
         }
         self._color_buttons: Dict[str, QPushButton] = {}
-        self._color_pending: Dict[str, str] = {}
+        #: The colours the Overlay dialog drafts; they join the picture
+        #: only when its Save is pressed.
+        self._pp_color_draft: Dict[str, str] = {}
+        #: What the palette of the colours works on: a layer of the
+        #: picture, the crosshair or the highlight.
+        self._color_target: Tuple[str, int] = ("layer", -1)
+        #: The angle the layers of the picture turn with, in degrees.
+        self._rotation: int = 0
+
+        # --- Hidden state widgets --------------------------------------
+        # The values the dialogs and the saved session edit.  They are
+        # not on the screen: the toolbar and the dialogs hold the look,
+        # and these carry the state that the picture is drawn from.
+        self._chk_flip = QCheckBox()
+        self._chk_flip.toggled.connect(self._on_flip_state_changed)
+        self._chk_mirror_x = QCheckBox()
+        self._chk_mirror_x.toggled.connect(self._on_mirror_x_state_changed)
+        self._chk_pickplace = QCheckBox()
+        self._chk_pickplace.setChecked(True)
+        self._chk_crosshair = QCheckBox()
+        self._chk_crosshair.setChecked(True)
+        self._chk_crosshair.toggled.connect(self._on_crosshair_toggled)
+        self._spin_cross_scale = QDoubleSpinBox()
+        self._spin_cross_scale.setRange(0.5, 5.0)
+        self._spin_cross_scale.setSingleStep(0.1)
+        self._spin_cross_scale.setDecimals(1)
+        self._spin_cross_scale.setValue(1.0)
+        self._spin_cross_scale.valueChanged.connect(
+            self._on_crosshair_scale_changed)
+        self._chk_origin = QCheckBox()
+        self._chk_origin.setChecked(True)
+        self._chk_origin.toggled.connect(self._on_origin_toggled)
+        self._chk_frame = QCheckBox()
+        self._chk_frame.setChecked(True)
+        self._chk_frame.toggled.connect(self._on_frame_toggled)
+        self._spin_arrow_px = QSpinBox()
+        self._spin_arrow_px.setRange(5, 100)
+        self._spin_arrow_px.setSingleStep(5)
+        self._spin_arrow_px.setValue(int(_MIN_ARROW_PX))
+        self._spin_arrow_px.valueChanged.connect(self._on_arrow_size_changed)
+        self._chk_snap = QCheckBox()
+        self._chk_snap.setChecked(True)
+        self._chk_snap.toggled.connect(self._on_snap_toggled)
+        self._spin_snap_tol = QDoubleSpinBox()
+        self._spin_snap_tol.setRange(0.1, 5.0)
+        self._spin_snap_tol.setSingleStep(0.1)
+        self._spin_snap_tol.setDecimals(1)
+        self._spin_snap_tol.setValue(1.0)
+        self._spin_snap_tol.valueChanged.connect(self._on_snap_tol_changed)
+        self._chk_grid = QCheckBox()
+        self._chk_grid.setEnabled(False)
+        self._chk_grid.toggled.connect(self._on_grid_toggled)
+        self._spin_grid_cols = QSpinBox()
+        self._spin_grid_cols.setRange(1, 50)
+        self._spin_grid_cols.setValue(3)
+        self._spin_grid_cols.valueChanged.connect(self._on_grid_params_changed)
+        self._spin_grid_rows = QSpinBox()
+        self._spin_grid_rows.setRange(1, 50)
+        self._spin_grid_rows.setValue(3)
+        self._spin_grid_rows.valueChanged.connect(self._on_grid_params_changed)
+        self._spin_grid_opacity = QSpinBox()
+        self._spin_grid_opacity.setRange(20, 255)
+        self._spin_grid_opacity.setValue(self._grid_opacity)
+        self._spin_grid_opacity.setSingleStep(5)
+        self._spin_grid_opacity.valueChanged.connect(
+            self._on_grid_style_changed)
+        self._spin_grid_width = QDoubleSpinBox()
+        self._spin_grid_width.setRange(1.0, 4.0)
+        self._spin_grid_width.setValue(self._grid_width)
+        self._spin_grid_width.setSingleStep(0.5)
+        self._spin_grid_width.setDecimals(1)
+        self._spin_grid_width.valueChanged.connect(self._on_grid_style_changed)
 
         self._build_ui()
         self._apply_layer()
         self.apply_display_settings(display_settings or {})
         self._start_load()
 
+    def set_use_opengl(self, enabled: bool) -> None:
+        """Draw the picture with OpenGL, or with the usual surface."""
+        self._view.set_use_opengl(bool(enabled))
+
+    def use_opengl(self) -> bool:
+        """True when the picture is drawn with OpenGL."""
+        return bool(self._view._use_opengl)
+
+    @staticmethod
+    def _coerce_layers(layers) -> List[LayerInfo]:
+        """The layers of the picture, whatever the caller gave.
+
+        A list of layers is used as it is.  A folder is looked at, and a
+        single file is taken for the one layer it is.
+        """
+        from services.gerber.layer_scan import layer_from_file, scan_folder
+
+        if not layers:
+            return []
+        if isinstance(layers, str):
+            if os.path.isdir(layers):
+                return scan_folder(layers)
+            layer = layer_from_file(layers)
+            return [layer] if layer is not None else []
+        out: List[LayerInfo] = []
+        for entry in layers:
+            if isinstance(entry, LayerInfo):
+                out.append(entry)
+            elif isinstance(entry, str):
+                layer = layer_from_file(entry)
+                if layer is not None:
+                    out.append(layer)
+        return out
+
     def display_settings(self) -> Dict[str, Any]:
         settings = {
             "layer": self._combo_layer.currentIndex(),
-            "rotation": self._combo_rot.currentData() or 0,
-            "invert_rot": self._chk_invert_rot.isChecked(),
+            "rotation": self._rotation,
             "flip": self._chk_flip.isChecked(),
             "mirror_x": self._chk_mirror_x.isChecked(),
-            "offset_x": self._spin_off_x.value(),
-            "offset_y": self._spin_off_y.value(),
-            "outline": self._chk_outline.isChecked(),
-            "paste": self._chk_paste.isChecked(),
-            "silk": self._chk_silk.isChecked(),
+            "layers": self._layer_settings(),
+            "active_layer": self._active_layer_key(),
             "pickplace": self._chk_pickplace.isChecked(),
             "crosshair": self._chk_crosshair.isChecked(),
+            "show_origin": self._chk_origin.isChecked(),
+            "origin_x": self._origin_x,
+            "origin_y": self._origin_y,
             "frame": self._chk_frame.isChecked(),
             "mag_factor": self._mag_factor,
             "arrow_min_px": self._spin_arrow_px.value(),
             "crosshair_scale": self._spin_cross_scale.value(),
+            "grid": self._chk_grid.isChecked(),
+            "grid_cols": self._spin_grid_cols.value(),
+            "grid_rows": self._spin_grid_rows.value(),
             "grid_opacity": self._grid_opacity,
             "grid_width": self._grid_width,
             "snap": self._chk_snap.isChecked(),
             "snap_tol": self._spin_snap_tol.value(),
-            "compact": self._btn_compact.isChecked(),
-            "full_crosshair": self._chk_full_cross.isChecked(),
         }
-        for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
+        for key in ("cross", "highlight"):
             settings[f"{key}_color"] = self._current_color(key).name(QColor.HexArgb)
         return settings
 
@@ -1159,21 +1976,24 @@ class GerberViewer(QWidget):
             if 0 <= idx < self._combo_layer.count():
                 self._combo_layer.setCurrentIndex(idx)
         if "rotation" in settings:
-            rot = settings.get("rotation")
-            for i in range(self._combo_rot.count()):
-                if self._combo_rot.itemData(i) == rot:
-                    self._combo_rot.setCurrentIndex(i)
-                    break
-        self._chk_invert_rot.setChecked(bool(settings.get("invert_rot", False)))
+            self._set_rotation(int(settings.get("rotation", 0) or 0),
+                               emit=False)
         self._chk_flip.setChecked(bool(settings.get("flip", False)))
         self._chk_mirror_x.setChecked(bool(settings.get("mirror_x", False)))
-        self._spin_off_x.setValue(float(settings.get("offset_x", 0.0)))
-        self._spin_off_y.setValue(float(settings.get("offset_y", 0.0)))
-        self._chk_outline.setChecked(bool(settings.get("outline", True)))
-        self._chk_paste.setChecked(bool(settings.get("paste", True)))
-        self._chk_silk.setChecked(bool(settings.get("silk", True)))
+        self._apply_layer_settings(settings.get("layers"))
+        active = settings.get("active_layer")
+        if active:
+            for index, layer in enumerate(self._layers):
+                if layer.key() == active:
+                    self._active_layer = index
+                    break
         self._chk_pickplace.setChecked(bool(settings.get("pickplace", True)))
         self._chk_crosshair.setChecked(bool(settings.get("crosshair", True)))
+        self._chk_origin.setChecked(bool(settings.get("show_origin", True)))
+        self._show_origin = self._chk_origin.isChecked()
+        if "origin_x" in settings or "origin_y" in settings:
+            self._origin_x = float(settings.get("origin_x", 0.0))
+            self._origin_y = float(settings.get("origin_y", 0.0))
         self._chk_frame.setChecked(bool(settings.get("frame", True)))
         self._show_frame = self._chk_frame.isChecked()
         if "mag_factor" in settings:
@@ -1194,54 +2014,269 @@ class GerberViewer(QWidget):
         self._spin_snap_tol.setValue(float(settings.get("snap_tol", 1.0)))
         self._snap_enabled = self._chk_snap.isChecked()
         self._snap_tol = float(self._spin_snap_tol.value())
-        self._btn_compact.setChecked(bool(settings.get("compact", True)))
-        self._chk_full_cross.setChecked(bool(settings.get("full_crosshair", False)))
-        for key in ("outline", "paste_top", "paste_bottom", "silk", "cross", "highlight"):
+        # The grid is turned up late: while nothing is drawn yet the
+        # state only keeps the wish of the session, and the grid itself
+        # is put on the board when the load has finished.
+        if "grid" in settings or "grid_cols" in settings or "grid_rows" in settings:
+            self._chk_grid.blockSignals(True)
+            self._chk_grid.setChecked(bool(settings.get("grid", False)))
+            self._chk_grid.blockSignals(False)
+            self._spin_grid_cols.setValue(
+                int(settings.get("grid_cols", self._spin_grid_cols.value())))
+            self._spin_grid_rows.setValue(
+                int(settings.get("grid_rows", self._spin_grid_rows.value())))
+        for key in ("cross", "highlight"):
             hex_val = settings.get(f"{key}_color")
             if isinstance(hex_val, str):
                 color = QColor(hex_val)
                 if color.isValid():
                     self._colors[key] = color
+        self._pp_color_draft.clear()
         self._sync_color_buttons()
-
-    def _save_display_settings(self) -> None:
-        self._btn_save_disp.setEnabled(False)
-        self._progress_save.setVisible(True)
-        self._lbl_saving.setVisible(True)
-        for key, hex_val in self._color_pending.items():
-            color = QColor(hex_val)
-            if color.isValid():
-                self._colors[key] = color
-        self._color_pending.clear()
-        self._sync_color_buttons()
-        self._redraw()
-        self.settings_saved.emit(self.display_settings())
-        self._lbl_status.setText(tr("Display settings saved to session."))
-        self._display_dialog.accept()
-
-    def _on_display_rejected(self) -> None:
-        snapshot = getattr(self, "_display_snapshot", None)
-        if snapshot is not None:
-            self._color_pending.clear()
-            self.apply_display_settings(snapshot)
+        self._sync_transform_controls()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        top_bar = QHBoxLayout()
-        _logo_pm = QPixmap(resource_path("assets/icon.ico"))
-        if not _logo_pm.isNull():
-            _logo = QLabel()
-            _logo.setPixmap(_logo_pm.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            top_bar.addWidget(_logo)
-        self._lbl_title = QLabel(tr("Reading Gerber file..."))
-        self._lbl_title.setStyleSheet("font-size: 13px; font-weight: bold;")
-        top_bar.addWidget(self._lbl_title)
-        top_bar.addStretch()
-        layout.addLayout(top_bar)
+        # The toolbar of the page: the origin of the coordinates is
+        # chosen here.
+        self._toolbar = QToolBar()
+        self._toolbar.setMovable(False)
+        self._toolbar.setFloatable(False)
+        self._toolbar.setIconSize(QSize(22, 22))
+        self._toolbar.setStyleSheet("""
+            QToolButton {
+                padding: 2px;
+                text-align: center;
+                border: 1px solid transparent;
+                border-radius: 6px;
+            }
+            QToolButton:hover {
+                background: rgba(148, 163, 184, 0.15);
+            }
+            QToolButton:pressed {
+                background: rgba(148, 163, 184, 0.30);
+            }
+            QToolButton:checked {
+                border: 1px solid #22C55E;
+                background: rgba(34, 197, 94, 0.18);
+                color: #22C55E;
+            }
+            QToolButton:disabled {
+                color: gray;
+            }
+        """)
+        self._btn_set_origin = QToolButton()
+        self._btn_set_origin.setText(tr("Set origin"))
+        self._btn_set_origin.setIcon(_target_icon())
+        # Stacked: the icon in the middle, the name under it.
+        self._btn_set_origin.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self._btn_set_origin.setCheckable(True)
+        self._btn_set_origin.setToolTip(
+            tr("Click the board to choose a new origin"))
+        self._btn_set_origin.clicked.connect(self._on_set_origin_clicked)
+        self._btn_set_origin.toggled.connect(self._on_set_origin_clicked)
+        self._toolbar.addWidget(self._btn_set_origin)
+
+        def _stacked_button(label: str, tooltip: str,
+                            icon_factory, checkable: bool = False) -> QToolButton:
+            button = QToolButton()
+            button.setText(label)
+            button.setToolTip(tooltip)
+            button.setIcon(icon_factory())
+            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            button.setCheckable(checkable)
+            return button
+
+        self._btn_measure = _stacked_button(
+            tr("Measure"),
+            tr("Measure distances on the board. Turning the button off "
+               "clears all measurements. Right-click or Esc cancels the "
+               "current measurement."),
+            _ruler_icon, True)
+        self._btn_measure.setEnabled(False)
+        self._btn_measure.toggled.connect(self._on_measure_toggled)
+        self._toolbar.addWidget(self._btn_measure)
+
+        # The angle the picture turns with, chosen in a small menu.
+        self._btn_rotate = _stacked_button(
+            tr("Rotate"), tr("Rotate Gerber"), _rotate_icon)
+        self._btn_rotate.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        rotate_menu = QMenu(self._btn_rotate)
+        self._rotate_actions = []
+        rotate_group = QActionGroup(rotate_menu)
+        rotate_group.setExclusive(True)
+        for angle in (0, 90, 180, 270):
+            action = rotate_menu.addAction(f"{angle}°")
+            action.setCheckable(True)
+            action.setData(int(angle))
+            rotate_group.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, a=int(angle): self._set_rotation(a))
+            self._rotate_actions.append(action)
+        self._btn_rotate.setMenu(rotate_menu)
+        self._toolbar.addWidget(self._btn_rotate)
+
+        self._btn_flip_x = _stacked_button(
+            tr("Flip X"), tr("Flip Gerber (Mirror X)"), _flip_x_icon, True)
+        self._btn_flip_x.toggled.connect(self._on_flip_x_toggled)
+        self._toolbar.addWidget(self._btn_flip_x)
+
+        self._btn_flip_y = _stacked_button(
+            tr("Flip Y"), tr("Flip Gerber (Mirror Y)"), _flip_y_icon, True)
+        self._btn_flip_y.toggled.connect(self._on_flip_y_toggled)
+        self._toolbar.addWidget(self._btn_flip_y)
+
+        # The layer of the picture: the top or the bottom side.
+        layer_bar = QWidget()
+        layer_row = QHBoxLayout(layer_bar)
+        layer_row.setContentsMargins(6, 0, 6, 0)
+        layer_row.setSpacing(4)
+        layer_row.addWidget(QLabel(tr("Layer:")))
+        self._combo_layer = QComboBox()
+        self._combo_layer.addItem(tr("Top layer (GKO + GTP)"))
+        self._combo_layer.addItem(tr("Bottom layer (GKO + GBP)"))
+        self._combo_layer.currentIndexChanged.connect(self._on_layer_changed)
+        layer_row.addWidget(self._combo_layer)
+        self._toolbar.addWidget(layer_bar)
+
+        self._toolbar.addSeparator()
+        self._btn_pickplace = _stacked_button(
+            tr("PickPlace"),
+            tr("Edit the PickPlace overlay (markers, crosshair, colors)"),
+            _pickplace_icon)
+        self._btn_pickplace.clicked.connect(self._open_pickplace_dialog)
+        self._toolbar.addWidget(self._btn_pickplace)
+
+        self._btn_grid = _stacked_button(
+            tr("Grid"), tr("Grid settings and information"), _grid_icon)
+        self._btn_grid.clicked.connect(self._open_grid_dialog)
+        self._toolbar.addWidget(self._btn_grid)
+
+        self._toolbar.addSeparator()
+        self._btn_check = _stacked_button(
+            tr("Checked"),
+            tr("Mark the selected component as checked"),
+            _check_icon)
+        self._btn_check.clicked.connect(lambda: self._on_check_current(True))
+        self._toolbar.addWidget(self._btn_check)
+
+        self._btn_undo_check = _stacked_button(
+            tr("Undo check"),
+            tr("Uncheck the selected component"),
+            _undo_check_icon)
+        self._btn_undo_check.clicked.connect(
+            lambda: self._on_check_current(False))
+        self._toolbar.addWidget(self._btn_undo_check)
+
+        self._btn_uncheck_all = _stacked_button(
+            tr("Uncheck all"),
+            tr("Clear the checks of all components on this layer"),
+            _uncheck_all_icon)
+        self._btn_uncheck_all.clicked.connect(self._on_uncheck_all)
+        self._toolbar.addWidget(self._btn_uncheck_all)
+
+        self._btn_rotate_records = _stacked_button(
+            tr("Rotate comps"),
+            tr("Rotate all components with their coordinates "
+               "by 0, 90, 180 or 270 degrees around the origin (0, 0)"),
+            _rotate_records_icon)
+        self._btn_rotate_records.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        rotate_records_menu = QMenu(self._btn_rotate_records)
+        for angle in (0, 90, 180, 270):
+            action = rotate_records_menu.addAction(
+                tr("Component {n}\u00b0", n=angle))
+            action.setData(int(angle))
+            action.triggered.connect(
+                lambda _checked=False, a=int(angle): self._on_rotate_records(a))
+        self._btn_rotate_records.setMenu(rotate_records_menu)
+        self._toolbar.addWidget(self._btn_rotate_records)
+
+        self._btn_flip_records = _stacked_button(
+            tr("Flip comps"),
+            tr("Flip all components with their coordinates "
+               "across the X or Y axis"),
+            _flip_records_icon)
+        self._btn_flip_records.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        flip_records_menu = QMenu(self._btn_flip_records)
+        for axis in ("X", "Y"):
+            action = flip_records_menu.addAction(tr("Component Flip {axis}", axis=axis))
+            action.setData(axis)
+            action.triggered.connect(
+                lambda _checked=False, a=axis: self._on_flip_records(a))
+        self._btn_flip_records.setMenu(flip_records_menu)
+        self._toolbar.addWidget(self._btn_flip_records)
+
+        self._btn_check_controls = (self._btn_check, self._btn_undo_check,
+                                    self._btn_uncheck_all,
+                                    self._btn_rotate_records,
+                                    self._btn_flip_records)
+        for btn in self._btn_check_controls:
+            btn.setEnabled(False)
+
+        self._toolbar.addSeparator()
+        self._btn_fit = _stacked_button(
+            tr("Fit View"), tr("Fit the board into the view"), _fit_icon)
+        self._btn_fit.clicked.connect(self._fit_scene)
+        self._toolbar.addWidget(self._btn_fit)
+
+        self._btn_export_image = _stacked_button(
+            tr("Export image..."),
+            tr("Write the picture of the visible layers to a file"),
+            _export_icon)
+        self._btn_export_image.clicked.connect(self._on_export_image)
+        self._toolbar.addWidget(self._btn_export_image)
+
+        self._btn_reload = _stacked_button(
+            tr("Reload"),
+            tr("Reload latest component data from the main window"),
+            _reload_icon)
+        self._btn_reload.clicked.connect(self._on_reload_records)
+        self._toolbar.addWidget(self._btn_reload)
+
+        self._btn_view_transform = (self._btn_rotate, self._btn_flip_x,
+                                    self._btn_flip_y, self._btn_pickplace,
+                                    self._btn_grid)
+        for btn in self._btn_view_transform:
+            btn.setEnabled(False)
+        self._sync_transform_controls()
+        layout.addWidget(self._toolbar)
 
         body = QHBoxLayout()
         body.setSpacing(10)
+
+        # The card of the layers stands at the left of the board, the way
+        # the reference viewer holds it.  It can be folded away, so that
+        # the board gets the whole width.
+        self._card = QWidget()
+        card_outer = QVBoxLayout(self._card)
+        card_outer.setContentsMargins(0, 0, 0, 0)
+        card_outer.setSpacing(4)
+
+        card_header = QHBoxLayout()
+        card_header.setSpacing(2)
+        self._btn_collapse_card = QToolButton()
+        self._btn_collapse_card.setAutoRaise(True)
+        self._btn_collapse_card.setIcon(
+            self.style().standardIcon(QStyle.SP_ArrowLeft))
+        self._btn_collapse_card.setToolTip(tr("Collapse the card"))
+        self._btn_collapse_card.clicked.connect(self._on_collapse_card_clicked)
+        card_header.addWidget(self._btn_collapse_card)
+        self._lbl_card_title = QLabel(tr("Layers + Colors"))
+        self._lbl_card_title.setStyleSheet("font-weight: bold;")
+        card_header.addWidget(self._lbl_card_title, 1)
+        card_outer.addLayout(card_header)
+
+        self._card_content = QWidget()
+        self._card_content_layout = QVBoxLayout(self._card_content)
+        self._card_content_layout.setContentsMargins(0, 0, 0, 0)
+        self._card_content_layout.setSpacing(6)
+        self._build_card_content()
+        card_outer.addWidget(self._card_content, 1)
+        self._card.setFixedWidth(CARD_WIDTH)
+        body.addWidget(self._card)
 
         self._view = GerberView()
         self._scene = QGraphicsScene(self)
@@ -1249,34 +2284,27 @@ class GerberViewer(QWidget):
         body.addWidget(self._view, 1)
 
         panel = QVBoxLayout()
-        panel.setSpacing(8)
+        panel.setSpacing(0)
+        panel.setContentsMargins(0, 0, 0, 0)
+
+        # The upper card: the search, the table and the status of the
+        # components.  The lower card: the magnifier of the details.
+        # A splitter between the two cards lets the operator choose how
+        # much space each of them gets.
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(6)
+        splitter.setChildrenCollapsible(False)
+
+        comp_group = QGroupBox(tr("Components"))
+        comp_group.setStyleSheet(_CARD_QSS)
+        comp_layout = QVBoxLayout(comp_group)
+        comp_layout.setSpacing(6)
+        comp_layout.setContentsMargins(8, 0, 8, 8)
 
         self._options_widget = QWidget()
         self._options_layout = QVBoxLayout(self._options_widget)
         self._options_layout.setSpacing(8)
         self._options_layout.setContentsMargins(0, 0, 0, 0)
-
-        btn_row = QHBoxLayout()
-        btn_disp = QPushButton(tr("Display..."))
-        btn_disp.clicked.connect(self._open_display_dialog)
-        btn_fit = QPushButton(tr("Fit View"))
-        btn_fit.clicked.connect(self._fit_scene)
-        btn_reload = QPushButton(tr("Reload"))
-        btn_reload.setToolTip(tr("Reload latest component data from the main window"))
-        btn_reload.clicked.connect(self._on_reload_records)
-        btn_row.addWidget(btn_disp)
-        btn_row.addWidget(btn_fit)
-        btn_row.addWidget(btn_reload)
-        self._options_layout.addLayout(btn_row)
-
-        layer_row = QHBoxLayout()
-        layer_row.addWidget(QLabel(tr("Layer:")))
-        self._combo_layer = QComboBox()
-        self._combo_layer.addItem(tr("Top layer (GKO + GTP)"))
-        self._combo_layer.addItem(tr("Bottom layer (GKO + GBP)"))
-        self._combo_layer.currentIndexChanged.connect(self._on_layer_changed)
-        layer_row.addWidget(self._combo_layer, 1)
-        self._options_layout.addLayout(layer_row)
 
         comp_row = QHBoxLayout()
         comp_row.addWidget(QLabel(tr("Components:")))
@@ -1289,7 +2317,7 @@ class GerberViewer(QWidget):
         comp_row.addWidget(self._chk_group_mpn)
         self._options_layout.addLayout(comp_row)
 
-        panel.addWidget(self._options_widget)
+        comp_layout.addWidget(self._options_widget)
 
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText(tr("Search designator or MPN..."))
@@ -1299,7 +2327,7 @@ class GerberViewer(QWidget):
         self._search_debounce.setInterval(150)
         self._search_debounce.timeout.connect(self._apply_layer)
         self._search_input.textChanged.connect(self._on_search_changed)
-        panel.addWidget(self._search_input)
+        comp_layout.addWidget(self._search_input)
 
         self._table_components = QTableWidget()
         self._table_components.setColumnCount(5)
@@ -1318,30 +2346,22 @@ class GerberViewer(QWidget):
         self._table_components.cellDoubleClicked.connect(self._on_component_double_clicked)
         self._table_components.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table_components.customContextMenuRequested.connect(self._on_component_menu)
-        panel.addWidget(self._table_components, 1)
+        comp_layout.addWidget(self._table_components, 1)
 
         self._lbl_status = QLabel(tr("No data yet."))
         self._lbl_status.setWordWrap(True)
-        panel.addWidget(self._lbl_status)
+        comp_layout.addWidget(self._lbl_status)
+
+        self._lbl_load_note = QLabel("")
+        self._lbl_load_note.setWordWrap(True)
+        self._lbl_load_note.setStyleSheet(f"color: {err_color()};")
+        self._lbl_load_note.setVisible(False)
+        comp_layout.addWidget(self._lbl_load_note)
+
+        splitter.addWidget(comp_group)
 
         self._mag_group = QGroupBox(tr("Details (Zoom {f:g}x)", f=_MAG_FACTOR))
-        self._mag_group.setStyleSheet("""
-QGroupBox {
-    background-color: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 8px;
-    padding: 0px;
-    margin-top: 18px;
-    font-weight: bold;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 4px;
-    color: #0D9488;
-    font-size: 11pt;
-}
-""")
+        self._mag_group.setStyleSheet(_CARD_QSS)
         mag_layout = QVBoxLayout(self._mag_group)
         mag_layout.setSpacing(4)
         mag_layout.setContentsMargins(0, 0, 0, 0)
@@ -1368,14 +2388,18 @@ QGroupBox::title {
         self._mag_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._mag_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._mag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._mag_view.setMinimumSize(380, 300)
-        self._mag_view.setMaximumHeight(360)
+        self._mag_view.setMinimumSize(380, 200)
         self._mag_view.setScene(self._scene)
         mag_layout.addWidget(self._mag_view, 1)
         self._lbl_mag_hint = QLabel(tr("Hover the drawing / select a component to see details."))
         self._lbl_mag_hint.setWordWrap(True)
         mag_layout.addWidget(self._lbl_mag_hint)
-        panel.addWidget(self._mag_group)
+
+        splitter.addWidget(self._mag_group)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([560, 240])
+        panel.addWidget(splitter, 1)
 
         self._view.cursor_moved.connect(self._update_magnifier)
         self._view.cursor_moved.connect(self._update_coord_label)
@@ -1384,26 +2408,14 @@ QGroupBox::title {
         self._view.zoom_end.connect(self._refresh_magnifier)
         self._view.grid_cell_clicked.connect(self._on_grid_cell_clicked)
         self._view.measure_clicked.connect(self._on_measure_clicked)
+        self._view.origin_picked.connect(self._on_origin_picked)
         self._view.measure_cancel.connect(self._on_measure_cancel)
         self._view.cursor_moved.connect(self._on_measure_move)
         self._view.crosshair_right_clicked.connect(self._on_crosshair_right_clicked)
         self._mag_view.clicked.connect(self._on_mag_clicked)
 
-        self._display_dialog = QDialog(self)
-        self._display_dialog.setWindowTitle(tr("Display settings"))
-        display_layout = QVBoxLayout(self._display_dialog)
-        display_layout.addWidget(self._build_display_group())
-        self._progress_save = QProgressBar()
-        self._progress_save.setRange(0, 0)
-        self._progress_save.setVisible(False)
-        display_layout.addWidget(self._progress_save)
-        self._lbl_saving = QLabel(tr("Saving..."))
-        self._lbl_saving.setVisible(False)
-        display_layout.addWidget(self._lbl_saving)
-        self._btn_save_disp = QPushButton(tr("Save display settings"))
-        self._btn_save_disp.clicked.connect(self._save_display_settings)
-        display_layout.addWidget(self._btn_save_disp)
-        self._display_dialog.rejected.connect(self._on_display_rejected)
+        self._build_pickplace_dialog()
+        self._build_grid_dialog()
 
         panel_widget = QWidget()
         panel_widget.setLayout(panel)
@@ -1416,19 +2428,6 @@ QGroupBox::title {
         self._lbl_coord = QLabel(tr("X: --  Y: --"))
         coord_bar.addWidget(self._lbl_coord)
         coord_bar.addStretch(1)
-        self._btn_measure = QPushButton(tr("Measure"))
-        self._btn_measure.setCheckable(True)
-        self._btn_measure.setEnabled(False)
-        self._btn_measure.setToolTip(
-            tr("Click two points to measure the distance. "
-               "Right-click or Esc cancels the current measurement.")
-        )
-        self._btn_measure.toggled.connect(self._on_measure_toggled)
-        coord_bar.addWidget(self._btn_measure)
-        self._btn_clear_measure = QPushButton(tr("Clear"))
-        self._btn_clear_measure.setEnabled(False)
-        self._btn_clear_measure.clicked.connect(self._clear_measurements)
-        coord_bar.addWidget(self._btn_clear_measure)
         self._btn_snap = QPushButton(tr("Snap"))
         self._btn_snap.setCheckable(True)
         self._btn_snap.setChecked(True)
@@ -1439,15 +2438,6 @@ QGroupBox::title {
         )
         self._btn_snap.toggled.connect(self._on_snap_toggled)
         coord_bar.addWidget(self._btn_snap)
-        self._btn_compact = QPushButton(tr("Compact"))
-        self._btn_compact.setCheckable(True)
-        self._btn_compact.setChecked(True)
-        self._btn_compact.setToolTip(
-            tr("Show/hide the options bar and file stats "
-               "(Outline/Top/Bottom/Silk) to give the component table more space.")
-        )
-        self._btn_compact.toggled.connect(self._on_compact_toggled)
-        coord_bar.addWidget(self._btn_compact)
         coord_bar.addWidget(QLabel(tr("X:")))
         self._spin_goto_x = QDoubleSpinBox()
         self._spin_goto_x.setRange(-100000.0, 100000.0)
@@ -1465,204 +2455,615 @@ QGroupBox::title {
         self._btn_goto = QPushButton(tr("Go"))
         self._btn_goto.clicked.connect(self._goto_coord)
         coord_bar.addWidget(self._btn_goto)
+        self._btn_origin_from_fields = QPushButton(tr("Set origin"))
+        self._btn_origin_from_fields.setToolTip(
+            tr("Move the origin by the X and Y that are written here"))
+        self._btn_origin_from_fields.clicked.connect(self._on_origin_from_fields)
+        coord_bar.addWidget(self._btn_origin_from_fields)
         layout.addLayout(coord_bar)
 
-    def _build_display_group(self) -> QGroupBox:
-        group = QGroupBox(tr("Display"))
-        layout = QVBoxLayout(group)
-        layout.setSpacing(6)
+    def _build_card_content(self) -> None:
+        """Fill the card with the layers, the colours and the overlay."""
+        layout = self._card_content_layout
 
-        # --- Gerber Transform & Offset ---
-        transform_group = QGroupBox(tr("Gerber Transform & Offset"))
-        transform_layout = QVBoxLayout(transform_group)
-        transform_layout.setSpacing(4)
+        # --- The layers of the picture ---
+        layers_group = QGroupBox(tr("Layers"))
+        layers_layout = QVBoxLayout(layers_group)
+        layers_layout.setSpacing(4)
 
-        rot_row = QHBoxLayout()
-        rot_row.addWidget(QLabel(tr("Rotate Gerber:")))
-        self._combo_rot = QComboBox()
-        for angle in (0, 90, 180, 270):
-            self._combo_rot.addItem(f"{angle}°", angle)
-        rot_row.addWidget(self._combo_rot, 1)
-        transform_layout.addLayout(rot_row)
+        layer_buttons = QHBoxLayout()
+        btn_show_all = QPushButton(tr("Show all"))
+        btn_show_all.clicked.connect(
+            lambda: self._set_all_layer_states(LAYER_STATE_NORMAL))
+        layer_buttons.addWidget(btn_show_all)
+        btn_hide_all = QPushButton(tr("Hide all"))
+        btn_hide_all.clicked.connect(
+            lambda: self._set_all_layer_states(LAYER_STATE_HIDDEN))
+        layer_buttons.addWidget(btn_hide_all)
+        btn_only_active = QPushButton(tr("Only active"))
+        btn_only_active.setToolTip(tr("Show only the layer that is active"))
+        btn_only_active.clicked.connect(self._show_only_active_layer)
+        layer_buttons.addWidget(btn_only_active)
+        layers_layout.addLayout(layer_buttons)
 
-        self._chk_invert_rot = QCheckBox(tr("Invert Gerber rotation"))
-        transform_layout.addWidget(self._chk_invert_rot)
+        self._table_layers = QTableWidget()
+        self._table_layers.setColumnCount(3)
+        self._table_layers.setHorizontalHeaderLabels(
+            [tr("Show"), tr("Layer"), tr("File")])
+        self._table_layers.verticalHeader().setVisible(False)
+        self._table_layers.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table_layers.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection)
+        self._table_layers.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._table_layers.setColumnWidth(0, 30)
+        self._table_layers.setColumnWidth(2, 150)
+        self._table_layers.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.Stretch)
+        self._table_layers.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Interactive)
+        self._table_layers.itemChanged.connect(self._on_layer_item_changed)
+        self._table_layers.cellClicked.connect(self._on_layer_cell_clicked)
+        self._table_layers.setMinimumHeight(160)
+        layers_layout.addWidget(self._table_layers, 1)
+        layout.addWidget(layers_group, 1)
 
-        self._chk_flip = QCheckBox(tr("Flip Gerber (Mirror Y)"))
-        transform_layout.addWidget(self._chk_flip)
+        # --- The colours ---
+        colors_group = QGroupBox(tr("Colors"))
+        colors_layout = QVBoxLayout(colors_group)
+        colors_layout.setSpacing(4)
+        target_row = QHBoxLayout()
+        target_row.setSpacing(6)
+        self._lbl_color_chip = QLabel()
+        self._lbl_color_chip.setFixedSize(18, 18)
+        target_row.addWidget(self._lbl_color_chip)
+        self._lbl_color_target = QLabel()
+        self._lbl_color_target.setStyleSheet(
+            f"color: {muted_color()}; font-style: italic;")
+        self._lbl_color_target.setWordWrap(True)
+        target_row.addWidget(self._lbl_color_target, 1)
+        colors_layout.addLayout(target_row)
 
-        self._chk_mirror_x = QCheckBox(tr("Flip Gerber (Mirror X)"))
-        transform_layout.addWidget(self._chk_mirror_x)
+        palette = QGridLayout()
+        palette.setSpacing(3)
+        for index, hex_value in enumerate(LAYER_PALETTE):
+            button = QPushButton()
+            button.setFixedSize(22, 22)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setStyleSheet(
+                f"QPushButton {{ background-color: {hex_value};"
+                " border: 1px solid #888; border-radius: 3px; }")
+            button.setToolTip(hex_value)
+            button.clicked.connect(
+                lambda _checked=False, value=hex_value:
+                self._apply_palette_color(value))
+            palette.addWidget(button, index // 8, index % 8)
+        colors_layout.addLayout(palette)
 
-        off_row = QHBoxLayout()
-        off_row.addWidget(QLabel(tr("Offset X:")))
-        self._spin_off_x = QDoubleSpinBox()
-        self._spin_off_x.setRange(-100000.0, 100000.0)
-        self._spin_off_x.setSingleStep(0.05)
-        self._spin_off_x.setDecimals(2)
-        self._spin_off_x.setValue(0.0)
-        off_row.addWidget(self._spin_off_x, 1)
-        off_row.addWidget(QLabel(tr("Y:")))
-        self._spin_off_y = QDoubleSpinBox()
-        self._spin_off_y.setRange(-100000.0, 100000.0)
-        self._spin_off_y.setSingleStep(0.05)
-        self._spin_off_y.setDecimals(2)
-        self._spin_off_y.setValue(0.0)
-        off_row.addWidget(self._spin_off_y, 1)
-        btn_zero = QPushButton("0")
-        btn_zero.clicked.connect(self._reset_offset)
-        off_row.addWidget(btn_zero)
-        btn_origin = QPushButton(tr("To Origin (0,0)"))
-        btn_origin.clicked.connect(self._bring_gerber_to_origin)
-        off_row.addWidget(btn_origin)
-        transform_layout.addLayout(off_row)
+        btn_custom = QPushButton(tr("Custom..."))
+        btn_custom.setToolTip(tr("Choose a colour of your own"))
+        btn_custom.clicked.connect(self._pick_custom_color)
+        colors_layout.addWidget(btn_custom)
+        layout.addWidget(colors_group)
 
-        layout.addWidget(transform_group)
+        # The marker options of the overlay stand in the PickPlace dialog
+        # that the toolbar of the page opens.
 
-        # --- Visibility ---
-        visibility_group = QGroupBox(tr("Visibility"))
-        visibility_layout = QGridLayout(visibility_group)
-        visibility_layout.setSpacing(6)
+        self._update_color_target_label()
 
-        self._chk_outline = QCheckBox(tr("Show GKO outline"))
-        self._chk_outline.setChecked(True)
-        self._chk_paste = QCheckBox(tr("Show Paste (GTP / GBP)"))
-        self._chk_paste.setChecked(True)
-        self._chk_silk = QCheckBox(tr("Show Silkscreen (GTO / GBO)"))
-        self._chk_silk.setChecked(True)
-        self._chk_pickplace = QCheckBox(tr("Show PickPlace (aligned)"))
-        self._chk_pickplace.setChecked(True)
-        self._chk_crosshair = QCheckBox(tr("Show crosshair"))
-        self._chk_crosshair.setChecked(True)
-        self._chk_frame = QCheckBox(tr("Show frame"))
-        self._chk_frame.setChecked(True)
-        self._chk_frame.toggled.connect(self._on_frame_toggled)
+    # ------------------------------------------------------------------
+    # The dialog of the overlay of the Pick&Place
+    # ------------------------------------------------------------------
+    def _build_pickplace_dialog(self) -> None:
+        """Make the dialog that edits the overlay of the Pick&Place.
 
-        visibility_layout.addWidget(self._chk_outline, 0, 0)
-        visibility_layout.addWidget(self._make_color_swatch("outline"), 0, 1)
-        visibility_layout.addWidget(self._chk_paste, 0, 3)
-        visibility_layout.addWidget(self._make_color_swatch("paste_top"), 0, 4)
-        visibility_layout.addWidget(self._make_color_swatch("paste_bottom"), 0, 5)
-        visibility_layout.addWidget(self._chk_silk, 1, 0)
-        visibility_layout.addWidget(self._make_color_swatch("silk"), 1, 1)
-        visibility_layout.addWidget(self._chk_pickplace, 1, 3)
-        visibility_layout.addWidget(self._make_color_swatch("cross"), 1, 4)
-        visibility_layout.addWidget(self._chk_crosshair, 2, 0)
-        visibility_layout.addWidget(self._chk_frame, 2, 3)
-        visibility_layout.addWidget(self._make_color_swatch("highlight"), 2, 4)
-        visibility_layout.setColumnStretch(2, 1)
-        visibility_layout.setColumnStretch(5, 1)
+        The dialog holds draft widgets: while it is open the picture does
+        not change.  Only the Save takes the drafts over.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("PickPlace overlay"))
+        layout = QVBoxLayout(dialog)
 
-        layout.addWidget(visibility_group)
-
-        # --- PickPlace markers ---
         markers_group = QGroupBox(tr("PickPlace markers"))
         markers_layout = QVBoxLayout(markers_group)
         markers_layout.setSpacing(4)
+        self._pp_chk_pickplace = QCheckBox(tr("Show PickPlace (aligned)"))
+        markers_layout.addWidget(self._pp_chk_pickplace)
+
+        cross_row = QHBoxLayout()
+        self._pp_chk_crosshair = QCheckBox(tr("Show crosshair"))
+        cross_row.addWidget(self._pp_chk_crosshair, 1)
+        cross_row.addWidget(self._make_color_swatch("cross"))
+        markers_layout.addLayout(cross_row)
+
+        highlight_row = QHBoxLayout()
+        highlight_row.addWidget(QLabel(tr("Highlight")))
+        highlight_row.addStretch(1)
+        highlight_row.addWidget(self._make_color_swatch("highlight"))
+        markers_layout.addLayout(highlight_row)
+
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel(tr("Crosshair scale:")))
+        self._pp_spin_cross_scale = QDoubleSpinBox()
+        self._pp_spin_cross_scale.setRange(0.5, 5.0)
+        self._pp_spin_cross_scale.setSingleStep(0.1)
+        self._pp_spin_cross_scale.setDecimals(1)
+        scale_row.addWidget(self._pp_spin_cross_scale, 1)
+        markers_layout.addLayout(scale_row)
 
         arrow_row = QHBoxLayout()
         arrow_row.addWidget(QLabel(tr("Arrow size:")))
-        self._spin_arrow_px = QSpinBox()
-        self._spin_arrow_px.setRange(5, 100)
-        self._spin_arrow_px.setSingleStep(5)
-        self._spin_arrow_px.setValue(int(_MIN_ARROW_PX))
-        self._spin_arrow_px.setSuffix(" px")
-        self._spin_arrow_px.valueChanged.connect(self._on_arrow_size_changed)
-        arrow_row.addWidget(self._spin_arrow_px, 1)
+        self._pp_spin_arrow_px = QSpinBox()
+        self._pp_spin_arrow_px.setRange(5, 100)
+        self._pp_spin_arrow_px.setSingleStep(5)
+        self._pp_spin_arrow_px.setSuffix(" px")
+        arrow_row.addWidget(self._pp_spin_arrow_px, 1)
         markers_layout.addLayout(arrow_row)
 
-        cross_row = QHBoxLayout()
-        cross_row.addWidget(QLabel(tr("Crosshair scale:")))
-        self._spin_cross_scale = QDoubleSpinBox()
-        self._spin_cross_scale.setRange(0.5, 5.0)
-        self._spin_cross_scale.setSingleStep(0.1)
-        self._spin_cross_scale.setDecimals(1)
-        self._spin_cross_scale.setValue(1.0)
-        self._spin_cross_scale.valueChanged.connect(self._on_crosshair_scale_changed)
-        cross_row.addWidget(self._spin_cross_scale, 1)
-        markers_layout.addLayout(cross_row)
-
-        self._chk_full_cross = QCheckBox(tr("Crosshair full screen"))
-        self._chk_full_cross.setToolTip(tr("Show a crosshair across the whole view while hovering"))
-        self._chk_full_cross.toggled.connect(self._on_full_cross_toggled)
-        markers_layout.addWidget(self._chk_full_cross)
-
+        self._pp_chk_frame = QCheckBox(tr("Show frame"))
+        markers_layout.addWidget(self._pp_chk_frame)
         layout.addWidget(markers_group)
 
-        # --- Snapping ---
-        snap_group = QGroupBox(tr("Snapping"))
-        snap_layout = QVBoxLayout(snap_group)
-        snap_layout.setSpacing(4)
+        other_group = QGroupBox(tr("Display"))
+        other_layout = QVBoxLayout(other_group)
+        other_layout.setSpacing(4)
+        self._pp_chk_origin = QCheckBox(tr("Show origin (0,0)"))
+        self._pp_chk_origin.setToolTip(
+            tr("Mark the point the coordinates of the file count from"))
+        other_layout.addWidget(self._pp_chk_origin)
+        note = QLabel(tr("The crosshair of the view follows the pointer "
+                         "across the whole view; it is always on."))
+        note.setStyleSheet(f"color: {muted_color()}; font-style: italic;")
+        note.setWordWrap(True)
+        other_layout.addWidget(note)
+        layout.addWidget(other_group)
 
-        snap_row = QHBoxLayout()
-        self._chk_snap = QCheckBox(tr("Snap to pad center when measuring"))
-        self._chk_snap.setChecked(True)
-        self._chk_snap.setToolTip(
-            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
-        self._chk_snap.toggled.connect(self._on_snap_toggled)
-        snap_row.addWidget(self._chk_snap, 1)
-        snap_row.addWidget(QLabel(tr("Tolerance:")))
-        self._spin_snap_tol = QDoubleSpinBox()
-        self._spin_snap_tol.setRange(0.1, 5.0)
-        self._spin_snap_tol.setSingleStep(0.1)
-        self._spin_snap_tol.setDecimals(1)
-        self._spin_snap_tol.setValue(1.0)
-        self._spin_snap_tol.setSuffix(" mm")
-        self._spin_snap_tol.setToolTip(
-            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
-        self._spin_snap_tol.valueChanged.connect(self._on_snap_tol_changed)
-        snap_row.addWidget(self._spin_snap_tol)
-        snap_layout.addLayout(snap_row)
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        btn_cancel = QPushButton(tr("Cancel"))
+        btn_cancel.clicked.connect(self._cancel_pickplace_dialog)
+        button_row.addWidget(btn_cancel)
+        btn_save = QPushButton(tr("Save"))
+        btn_save.setDefault(True)
+        btn_save.clicked.connect(self._save_pickplace_dialog)
+        button_row.addWidget(btn_save)
+        layout.addLayout(button_row)
 
-        layout.addWidget(snap_group)
+        self._pp_dialog = dialog
 
-        # --- Grid ---
+    def _sync_pickplace_dialog(self) -> None:
+        """Load the state of the overlay into the draft widgets."""
+        self._pp_color_draft.clear()
+        self._pp_chk_pickplace.setChecked(self._chk_pickplace.isChecked())
+        self._pp_chk_crosshair.setChecked(self._chk_crosshair.isChecked())
+        self._pp_chk_origin.setChecked(self._chk_origin.isChecked())
+        self._pp_chk_frame.setChecked(self._chk_frame.isChecked())
+        self._pp_spin_cross_scale.setValue(self._spin_cross_scale.value())
+        self._pp_spin_arrow_px.setValue(self._spin_arrow_px.value())
+        self._sync_color_buttons()
+
+    def _open_pickplace_dialog(self) -> None:
+        self._sync_pickplace_dialog()
+        self._pp_dialog.exec()
+
+    def _cancel_pickplace_dialog(self) -> None:
+        """Throw the drafts away: nothing has changed on the board."""
+        self._pp_color_draft.clear()
+        self._sync_color_buttons()
+        self._pp_dialog.reject()
+
+    def _save_pickplace_dialog(self) -> None:
+        """Take the drafts over and redraw the picture with them."""
+        self._chk_pickplace.setChecked(self._pp_chk_pickplace.isChecked())
+        self._chk_crosshair.setChecked(self._pp_chk_crosshair.isChecked())
+        self._chk_origin.setChecked(self._pp_chk_origin.isChecked())
+        self._chk_frame.setChecked(self._pp_chk_frame.isChecked())
+        self._spin_cross_scale.setValue(self._pp_spin_cross_scale.value())
+        self._spin_arrow_px.setValue(self._pp_spin_arrow_px.value())
+        for key, hex_val in self._pp_color_draft.items():
+            color = QColor(hex_val)
+            if color.isValid():
+                self._colors[key] = color
+        self._pp_color_draft.clear()
+        self._sync_color_buttons()
+        self._redraw()
+        self._emit_layer_settings()
+        self._pp_dialog.accept()
+
+    # ------------------------------------------------------------------
+    # The dialog of the grid
+    # ------------------------------------------------------------------
+    def _build_grid_dialog(self) -> None:
+        """Make the dialog of the grid: drafts and a short information."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("Grid settings"))
+        layout = QVBoxLayout(dialog)
+
         grid_group = QGroupBox(tr("Grid"))
         grid_layout = QVBoxLayout(grid_group)
         grid_layout.setSpacing(4)
 
         grid_row = QHBoxLayout()
-        self._chk_grid = QCheckBox(tr("Show grid"))
-        self._chk_grid.setEnabled(False)
-        self._chk_grid.toggled.connect(self._on_grid_toggled)
-        grid_row.addWidget(self._chk_grid)
+        self._gd_chk_grid = QCheckBox(tr("Show grid"))
+        grid_row.addWidget(self._gd_chk_grid)
         grid_row.addWidget(QLabel(tr("Col:")))
-        self._spin_grid_cols = QSpinBox()
-        self._spin_grid_cols.setRange(1, 50)
-        self._spin_grid_cols.setValue(3)
-        self._spin_grid_cols.valueChanged.connect(self._on_grid_params_changed)
-        grid_row.addWidget(self._spin_grid_cols)
+        self._gd_spin_cols = QSpinBox()
+        self._gd_spin_cols.setRange(1, 50)
+        grid_row.addWidget(self._gd_spin_cols)
         grid_row.addWidget(QLabel(tr("Row:")))
-        self._spin_grid_rows = QSpinBox()
-        self._spin_grid_rows.setRange(1, 50)
-        self._spin_grid_rows.setValue(3)
-        self._spin_grid_rows.valueChanged.connect(self._on_grid_params_changed)
-        grid_row.addWidget(self._spin_grid_rows)
+        self._gd_spin_rows = QSpinBox()
+        self._gd_spin_rows.setRange(1, 50)
+        grid_row.addWidget(self._gd_spin_rows)
         grid_row.addStretch(1)
         grid_layout.addLayout(grid_row)
 
         grid_style_row = QHBoxLayout()
         grid_style_row.addWidget(QLabel(tr("Grid opacity:")))
-        self._spin_grid_opacity = QSpinBox()
-        self._spin_grid_opacity.setRange(20, 255)
-        self._spin_grid_opacity.setValue(self._grid_opacity)
-        self._spin_grid_opacity.setSingleStep(5)
-        self._spin_grid_opacity.valueChanged.connect(self._on_grid_style_changed)
-        grid_style_row.addWidget(self._spin_grid_opacity)
+        self._gd_spin_opacity = QSpinBox()
+        self._gd_spin_opacity.setRange(20, 255)
+        self._gd_spin_opacity.setSingleStep(5)
+        grid_style_row.addWidget(self._gd_spin_opacity)
         grid_style_row.addWidget(QLabel(tr("Grid width:")))
-        self._spin_grid_width = QDoubleSpinBox()
-        self._spin_grid_width.setRange(1.0, 4.0)
-        self._spin_grid_width.setValue(self._grid_width)
-        self._spin_grid_width.setSingleStep(0.5)
-        self._spin_grid_width.setDecimals(1)
-        self._spin_grid_width.valueChanged.connect(self._on_grid_style_changed)
-        grid_style_row.addWidget(self._spin_grid_width)
+        self._gd_spin_width = QDoubleSpinBox()
+        self._gd_spin_width.setRange(1.0, 4.0)
+        self._gd_spin_width.setSingleStep(0.5)
+        self._gd_spin_width.setDecimals(1)
+        grid_style_row.addWidget(self._gd_spin_width)
         grid_style_row.addStretch(1)
         grid_layout.addLayout(grid_style_row)
 
+        self._gd_spin_cols.valueChanged.connect(self._update_grid_info)
+        self._gd_spin_rows.valueChanged.connect(self._update_grid_info)
         layout.addWidget(grid_group)
 
-        return group
+        snap_group = QGroupBox(tr("Snapping"))
+        snap_layout = QVBoxLayout(snap_group)
+        snap_layout.setSpacing(4)
+        snap_row = QHBoxLayout()
+        snap_row.addWidget(QLabel(tr("Tolerance:")))
+        self._gd_spin_tol = QDoubleSpinBox()
+        self._gd_spin_tol.setRange(0.1, 5.0)
+        self._gd_spin_tol.setSingleStep(0.1)
+        self._gd_spin_tol.setDecimals(1)
+        self._gd_spin_tol.setSuffix(" mm")
+        self._gd_spin_tol.setToolTip(
+            tr("Snap tolerance is in mm and applies to the nearest pad center within the radius."))
+        snap_row.addWidget(self._gd_spin_tol)
+        snap_row.addStretch(1)
+        snap_layout.addLayout(snap_row)
+        layout.addWidget(snap_group)
+
+        info_group = QGroupBox(tr("Information"))
+        info_layout = QVBoxLayout(info_group)
+        self._lbl_grid_info = QLabel()
+        self._lbl_grid_info.setWordWrap(True)
+        info_layout.addWidget(self._lbl_grid_info)
+        layout.addWidget(info_group)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        btn_cancel = QPushButton(tr("Cancel"))
+        btn_cancel.clicked.connect(dialog.reject)
+        button_row.addWidget(btn_cancel)
+        btn_save = QPushButton(tr("Save"))
+        btn_save.setDefault(True)
+        btn_save.clicked.connect(self._save_grid_dialog)
+        button_row.addWidget(btn_save)
+        layout.addLayout(button_row)
+
+        self._grid_dialog = dialog
+
+    def _open_grid_dialog(self) -> None:
+        """Load the state of the grid into the draft widgets."""
+        self._gd_chk_grid.setChecked(self._chk_grid.isChecked())
+        self._gd_chk_grid.setEnabled(self._grid_available)
+        self._gd_spin_cols.setValue(self._spin_grid_cols.value())
+        self._gd_spin_rows.setValue(self._spin_grid_rows.value())
+        self._gd_spin_opacity.setValue(self._spin_grid_opacity.value())
+        self._gd_spin_width.setValue(self._spin_grid_width.value())
+        self._gd_spin_tol.setValue(self._spin_snap_tol.value())
+        self._update_grid_info()
+        self._grid_dialog.exec()
+
+    def _save_grid_dialog(self) -> None:
+        """Take the drafts over and put the grid on the board."""
+        if bool(self._gd_chk_grid.isChecked()) != self._chk_grid.isChecked():
+            self._chk_grid.setChecked(bool(self._gd_chk_grid.isChecked()))
+        self._spin_grid_cols.setValue(self._gd_spin_cols.value())
+        self._spin_grid_rows.setValue(self._gd_spin_rows.value())
+        self._spin_grid_opacity.setValue(self._gd_spin_opacity.value())
+        self._spin_grid_width.setValue(self._gd_spin_width.value())
+        self._spin_snap_tol.setValue(self._gd_spin_tol.value())
+        self._emit_layer_settings()
+        self._grid_dialog.accept()
+
+    def _update_grid_info(self) -> None:
+        """Tell how wide one cell of the grid is, and the board as well."""
+        if not self._loaded:
+            self._lbl_grid_info.setText(tr("The board is not drawn yet."))
+            return
+        rect = self._gerber_scene_rect()
+        if rect.isEmpty() or not rect.isValid():
+            self._lbl_grid_info.setText(tr("The board is not drawn yet."))
+            return
+        cols = max(1, self._gd_spin_cols.value())
+        rows = max(1, self._gd_spin_rows.value())
+        cell_w = rect.width() / cols
+        cell_h = rect.height() / rows
+        self._lbl_grid_info.setText(tr(
+            "Board: {w:.2f} x {h:.2f} mm\nOne cell: {cw:.2f} x {ch:.2f} mm",
+            w=rect.width(), h=rect.height(), cw=cell_w, ch=cell_h))
+
+    # ------------------------------------------------------------------
+    # The list of the layers
+    # ------------------------------------------------------------------
+    def _default_layer_color(self, layer: LayerInfo) -> QColor:
+        """The colour a layer has when nothing was chosen for it."""
+        if layer.role == ROLE_PROFILE:
+            return QColor(OUTLINE_COLOR)
+        if layer.role == ROLE_COPPER:
+            return QColor(COPPER_COLOR)
+        if layer.role == ROLE_MASK:
+            return QColor(MASK_COLOR)
+        if layer.role == ROLE_PASTE:
+            return QColor(TOP_PASTE_COLOR if layer.side != SIDE_BOTTOM
+                          else BOTTOM_PASTE_COLOR)
+        if layer.role == ROLE_SILK:
+            return QColor(SILK_COLOR)
+        if layer.role == ROLE_DRILL:
+            return QColor(DRILL_COLOR)
+        return QColor(OTHER_COLOR)
+
+    def _rebuild_layer_list(self) -> None:
+        """Fill the table of the layers."""
+        table = self._table_layers
+        current = table.currentRow()
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(self._layers))
+            for index, layer in enumerate(self._layers):
+                state = self._layer_states[index] if index < len(self._layer_states) \
+                    else LAYER_STATE_NORMAL
+                tick = QTableWidgetItem("")
+                tick.setFlags(
+                    Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                tick.setCheckState(
+                    Qt.Unchecked if state == LAYER_STATE_HIDDEN else Qt.Checked)
+                tick.setData(Qt.ItemDataRole.UserRole, index)
+                table.setItem(index, 0, tick)
+
+                name_item = QTableWidgetItem(layer.name)
+                name_item.setData(Qt.ItemDataRole.UserRole, index)
+                colour = QColor(self._layer_colors[index]) \
+                    if index < len(self._layer_colors) else QColor(OTHER_COLOR)
+                # The tooltip holds the whole name, the place of the file
+                # and the colour of the layer.
+                name_item.setToolTip(
+                    f"{layer.name}\n{layer.path}\n"
+                    + tr("Color: {value}", value=colour.name(QColor.HexArgb)))
+                if index == self._active_layer:
+                    font = name_item.font()
+                    font.setBold(True)
+                    name_item.setFont(font)
+                table.setItem(index, 1, name_item)
+
+                file_item = QTableWidgetItem(layer.file_name)
+                file_item.setToolTip(f"{layer.file_name}\n{layer.path}")
+                table.setItem(index, 2, file_item)
+        finally:
+            table.blockSignals(False)
+        if 0 <= current < table.rowCount():
+            # The layer that was chosen stays chosen.
+            table.selectRow(current)
+
+    def _on_layer_item_changed(self, item: QTableWidgetItem) -> None:
+        """The tick of a layer was clicked."""
+        if item is None or item.column() != 0:
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if index is None:
+            return
+        index = int(index)
+        if index >= len(self._layer_states):
+            return
+        state = LAYER_STATE_HIDDEN \
+            if item.checkState() == Qt.Unchecked else LAYER_STATE_NORMAL
+        if self._layer_states[index] == state:
+            return
+        self._layer_states[index] = state
+        self._rebuild_layer_list()
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _on_layer_cell_clicked(self, row: int, column: int) -> None:
+        """A cell of the table of the layers was clicked."""
+        if column == 0:
+            # The tick is looked after by the change of the item.
+            return
+        # The name of the layer brings it on top of the others, and the
+        # palette of the colours works on it from then on.
+        self._set_active_layer(row)
+
+    def _emit_layer_settings(self) -> None:
+        """Remember the state of the layers, as the display settings are."""
+        try:
+            self.settings_saved.emit(self.display_settings())
+        except RuntimeError:
+            pass
+
+    def _set_color_target(self, kind: str, index: int = -1) -> None:
+        """Choose what the palette of the colours works on.
+
+        The target is a layer of the picture, or the crosshair of the
+        overlay, or the colour of the highlight.
+        """
+        self._color_target = (kind, index)
+        self._update_color_target_label()
+
+    def _color_target_index(self) -> int:
+        """The layer the palette of the colours works on."""
+        _kind, index = getattr(self, "_color_target", ("layer", -1))
+        if 0 <= index < len(self._layers):
+            return index
+        # Nothing was chosen yet: the layer that is active is the one.
+        if 0 <= self._active_layer < len(self._layers):
+            return self._active_layer
+        return -1
+
+    def _update_color_target_label(self) -> None:
+        """Tell what the palette of the colours works on."""
+        kind, _index = getattr(self, "_color_target", ("layer", -1))
+        if kind == "cross":
+            name = tr("Crosshair")
+            colour = QColor(self._current_color("cross"))
+        elif kind == "highlight":
+            name = tr("Highlight")
+            colour = QColor(self._current_color("highlight"))
+        else:
+            index = self._color_target_index()
+            if 0 <= index < len(self._layers) \
+                    and index < len(self._layer_colors):
+                name = self._layers[index].name
+                colour = QColor(self._layer_colors[index])
+            else:
+                name = tr("a layer")
+                colour = QColor("#94A3B8")
+        # The chip shows the hue in full, however see-through the layer is.
+        colour.setAlpha(255)
+        chip = getattr(self, "_lbl_color_chip", None)
+        if chip is not None:
+            chip.setStyleSheet(
+                f"background-color: {colour.name(QColor.HexRgb)};"
+                " border: 2px solid #22C55E; border-radius: 4px;")
+        label = getattr(self, "_lbl_color_target", None)
+        if label is not None:
+            label.setText(tr("Color for: {name}", name=name))
+
+    def _apply_palette_color(self, hex_value: str) -> None:
+        """Give the target of the palette the colour that was picked."""
+        kind, index = getattr(self, "_color_target", ("layer", -1))
+        if kind == "layer":
+            index = self._color_target_index()
+            if not 0 <= index < len(self._layer_colors):
+                return
+            colour = QColor(hex_value)
+            # The transparency of the layer is kept.
+            colour.setAlpha(QColor(self._layer_colors[index]).alpha())
+            self._layer_colors[index] = colour
+            self._rebuild_layer_list()
+            self._update_color_target_label()
+            self._redraw()
+        else:
+            self._colors[kind] = QColor(hex_value)
+            self._update_swatch(kind)
+            self._update_color_target_label()
+            self._redraw()
+        self._emit_layer_settings()
+
+    def _pick_custom_color(self) -> None:
+        """Choose a colour of one's own for the target of the palette."""
+        kind, _index = getattr(self, "_color_target", ("layer", -1))
+        if kind == "layer":
+            index = self._color_target_index()
+            if not 0 <= index < len(self._layer_colors):
+                return
+            initial = QColor(self._layer_colors[index])
+            name = self._layers[index].name
+        else:
+            initial = self._current_color(kind)
+            name = self._color_label(kind)
+        colour = QColorDialog.getColor(
+            initial, self, tr("Choose the color of {name}", name=name),
+            QColorDialog.ShowAlphaChannel)
+        if not colour.isValid():
+            return
+        if kind == "layer":
+            self._layer_colors[index] = colour
+            self._rebuild_layer_list()
+            self._update_color_target_label()
+            self._redraw()
+        else:
+            self._colors[kind] = colour
+            self._update_swatch(kind)
+            self._update_color_target_label()
+            self._redraw()
+        self._emit_layer_settings()
+
+    def _set_all_layer_states(self, state: str) -> None:
+        """Show or hide every layer at once."""
+        for index in range(len(self._layer_states)):
+            self._layer_states[index] = state
+        self._rebuild_layer_list()
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _show_only_active_layer(self) -> None:
+        """Show the layer that is active and hide the others."""
+        for index in range(len(self._layer_states)):
+            self._layer_states[index] = (LAYER_STATE_NORMAL
+                                         if index == self._active_layer
+                                         else LAYER_STATE_HIDDEN)
+        self._rebuild_layer_list()
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _set_active_layer(self, index: int) -> None:
+        """Bring one layer on top of the others."""
+        if index < 0 or index >= len(self._layers):
+            return
+        self._active_layer = index
+        if getattr(self, "_color_target", ("layer", -1))[0] == "layer":
+            # The palette follows the layer that is active.
+            self._color_target = ("layer", index)
+            self._update_color_target_label()
+        self._rebuild_layer_list()
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _layer_settings(self) -> List[Dict[str, Any]]:
+        """The colour and the state of every layer, to be remembered."""
+        settings = []
+        for index, layer in enumerate(self._layers):
+            colour = self._layer_colors[index] \
+                if index < len(self._layer_colors) else QColor(OTHER_COLOR)
+            state = self._layer_states[index] \
+                if index < len(self._layer_states) else LAYER_STATE_NORMAL
+            settings.append({
+                "key": layer.key(),
+                "name": layer.name,
+                "color": colour.name(QColor.HexArgb),
+                "state": state,
+            })
+        return settings
+
+    def _apply_layer_settings(self, settings) -> None:
+        """Give the layers the colours and the states they had."""
+        if not isinstance(settings, list):
+            return
+        by_key = {}
+        for entry in settings:
+            if isinstance(entry, dict) and entry.get("key"):
+                by_key[entry["key"]] = entry
+        for index, layer in enumerate(self._layers):
+            entry = by_key.get(layer.key())
+            if not entry:
+                continue
+            colour = QColor(entry.get("color", ""))
+            if colour.isValid() and index < len(self._layer_colors):
+                self._layer_colors[index] = colour
+            state = entry.get("state")
+            if state == LAYER_STATE_DIMMED:
+                # The card only has a tick now, so a layer that was dimmed
+                # is shown.
+                state = LAYER_STATE_NORMAL
+            if state in (LAYER_STATE_NORMAL, LAYER_STATE_HIDDEN) and index < len(self._layer_states):
+                self._layer_states[index] = state
+        self._rebuild_layer_list()
+
+    def _active_layer_key(self) -> str:
+        """The key of the layer that is active."""
+        if 0 <= self._active_layer < len(self._layers):
+            return self._layers[self._active_layer].key()
+        return ""
 
     def _make_color_swatch(self, key: str) -> QPushButton:
         button = QPushButton()
@@ -1674,16 +3075,28 @@ QGroupBox::title {
         self._update_swatch(key)
         return button
 
+    def _on_collapse_card_clicked(self) -> None:
+        """Fold the card away, or open it again."""
+        collapsed = self._card_content.isVisible()
+        self._card_content.setVisible(not collapsed)
+        self._lbl_card_title.setVisible(not collapsed)
+        self._card.setFixedWidth(
+            CARD_WIDTH_COLLAPSED if collapsed else CARD_WIDTH)
+        self._btn_collapse_card.setIcon(self.style().standardIcon(
+            QStyle.SP_ArrowRight if collapsed else QStyle.SP_ArrowLeft))
+        self._btn_collapse_card.setToolTip(
+            tr("Expand the card") if collapsed else tr("Collapse the card"))
+
+    def _on_crosshair_toggled(self, checked: bool) -> None:
+        """The crosshair of the overlay is shown, or taken away."""
+        self._redraw()
+        self._emit_layer_settings()
+
     def _color_swatch_tooltip(self, key: str) -> str:
         color = self._current_color(key)
         return f"{tr('Color')}: {color.name(QColor.HexArgb)}"
 
     def _current_color(self, key: str) -> QColor:
-        hex_val = self._color_pending.get(key)
-        if hex_val:
-            color = QColor(hex_val)
-            if color.isValid():
-                return color
         return self._colors[key]
 
     def _update_swatch(self, key: str) -> None:
@@ -1702,84 +3115,255 @@ QGroupBox::title {
             self._update_swatch(key)
 
     def _pick_color(self, key: str) -> None:
-        initial = self._current_color(key)
+        # A colour chosen here is a draft: the swatch shows it, and the
+        # picture keeps the old one until the Save of the dialog runs.
+        self._set_color_target(key)
+        draft = self._pp_color_draft.get(key)
+        initial = QColor(draft) if draft else self._current_color(key)
         color = QColorDialog.getColor(
             initial, self, tr("Choose {0} color").format(self._color_label(key)),
             QColorDialog.ShowAlphaChannel,
         )
         if color.isValid():
-            self._color_pending[key] = color.name(QColor.HexArgb)
-            self._update_swatch(key)
+            self._pp_color_draft[key] = color.name(QColor.HexArgb)
+            button = self._color_buttons.get(key)
+            if button is not None:
+                button.setStyleSheet(
+                    f"QPushButton {{ background-color: {color.name(QColor.HexArgb)};"
+                    f" border: 1px solid #888; border-radius: 3px; }}"
+                )
+                button.setToolTip(f"{tr('Color')}: {color.name(QColor.HexArgb)}")
 
     def _color_label(self, key: str) -> str:
         labels = {
-            "outline": tr("Outline"),
-            "paste_top": tr("Paste Top"),
-            "paste_bottom": tr("Paste Bottom"),
-            "silk": tr("Silkscreen"),
             "cross": tr("Crosshair"),
             "highlight": tr("Highlight"),
         }
         return labels.get(key, key)
-
-    def _open_display_dialog(self) -> None:
-        self._display_snapshot = self.display_settings()
-        self._btn_save_disp.setEnabled(True)
-        self._progress_save.setVisible(False)
-        self._lbl_saving.setVisible(False)
-        self._display_dialog.exec()
 
     def _on_arrow_size_changed(self, value: int) -> None:
         self._arrow_min_px = float(value)
 
     def _on_crosshair_scale_changed(self, value: float) -> None:
         self._crosshair_scale = float(value)
+        self._redraw()
 
     def _on_frame_toggled(self, checked: bool) -> None:
         self._show_frame = bool(checked)
 
+    # ------------------------------------------------------------------
+    # The turn and the mirrors of the picture
+    # ------------------------------------------------------------------
+    def _set_rotation(self, angle: int, emit: bool = True) -> None:
+        """Turn the picture by a right angle."""
+        self._rotation = int(angle) % 360
+        self._sync_transform_controls()
+        self._redraw()
+        if emit:
+            self._emit_layer_settings()
+
+    def _on_flip_x_toggled(self, checked: bool) -> None:
+        """The Flip X of the toolbar mirrors the picture about X."""
+        self._chk_mirror_x.blockSignals(True)
+        self._chk_mirror_x.setChecked(bool(checked))
+        self._chk_mirror_x.blockSignals(False)
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _on_flip_y_toggled(self, checked: bool) -> None:
+        """The Flip Y of the toolbar mirrors the picture about Y."""
+        self._chk_flip.blockSignals(True)
+        self._chk_flip.setChecked(bool(checked))
+        self._chk_flip.blockSignals(False)
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _on_flip_state_changed(self, checked: bool) -> None:
+        """The state of Mirror Y moved: follow it in the toolbar."""
+        btn = getattr(self, "_btn_flip_y", None)
+        if btn is not None and btn.isChecked() != bool(checked):
+            btn.blockSignals(True)
+            btn.setChecked(bool(checked))
+            btn.blockSignals(False)
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _on_mirror_x_state_changed(self, checked: bool) -> None:
+        """The state of Mirror X moved: follow it in the toolbar."""
+        btn = getattr(self, "_btn_flip_x", None)
+        if btn is not None and btn.isChecked() != bool(checked):
+            btn.blockSignals(True)
+            btn.setChecked(bool(checked))
+            btn.blockSignals(False)
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _sync_transform_controls(self) -> None:
+        """Let the toolbar show the turn and the mirrors that hold now."""
+        for action in getattr(self, "_rotate_actions", []):
+            action.blockSignals(True)
+            action.setChecked(action.data() == int(self._rotation))
+            action.blockSignals(False)
+        for state_attr, btn_attr in (("_chk_flip", "_btn_flip_y"),
+                                     ("_chk_mirror_x", "_btn_flip_x")):
+            state = getattr(self, state_attr, None)
+            button = getattr(self, btn_attr, None)
+            if state is None or button is None:
+                continue
+            if button.isChecked() != state.isChecked():
+                button.blockSignals(True)
+                button.setChecked(state.isChecked())
+                button.blockSignals(False)
+
     def _start_load(self) -> None:
-        if not self._gko_path or not os.path.exists(self._gko_path):
-            QMessageBox.critical(self, tr("Error"), tr("No valid GKO file."))
+        if not self._layers:
+            QMessageBox.critical(self, tr("Error"), tr("No Gerber file."))
             self.close()
             return
-        self._worker = GerberLoadWorker(
-            self._gko_path, self._gtp_path, self._gbp_path,
-            self._gto_path, self._gbo_path, self,
-        )
+        self._rebuild_layer_list()
+        self._worker = GerberLoadWorker(self._layers, self)
         self._worker.progress.connect(self._on_load_progress)
         self._worker.finished.connect(self._on_load_finished)
         self._worker.failed.connect(self._on_load_failed)
         self._worker.start()
 
     def _on_load_progress(self, message: str, _pct: int) -> None:
-        self._lbl_title.setText(message)
+        self._lbl_status.setText(message)
 
-    def _on_load_finished(self, data: dict) -> None:
-        self._outline = data.get("outline", RenderData())
-        self._top = data.get("top", RenderData())
-        self._bottom = data.get("bottom", RenderData())
-        self._silk = data.get("silk", RenderData())
-        self._silk_bottom = data.get("silk_bottom", RenderData())
+    def _on_load_finished(self, data: list) -> None:
+        self._layer_data = list(data) if data else [
+            RenderData() for _ in self._layers]
+        self._rebuild_layer_list()
+        self._outside_layers = self._hide_layers_outside_the_board()
+        self._align_drill_layer()
         self._loaded = True
         self._board_center = self._compute_board_center()
         self._cross_half = self._board_size() * _CROSS_BOARD_RATIO
         self._apply_layer()
         self._redraw()
         self._fit_scene()
-        self._lbl_title.setText(tr("Gerber View - Overlay PickPlace"))
-        self._lbl_status.setText(
-            tr("Outline: {ol} lines, {of} pads | Top: {tf} pads | Bottom: {bf} pads | "
-               "Silk Top: {st} lines | Silk Bottom: {sb} lines",
-               ol=len(self._outline.lines), of=len(self._outline.flashes),
-               tf=len(self._top.flashes), bf=len(self._bottom.flashes),
-               st=len(self._silk.lines), sb=len(self._silk_bottom.lines))
-        )
+        self._lbl_status.setText("")
+        self._show_load_warnings()
         self._btn_measure.setEnabled(True)
         self._btn_snap.setEnabled(True)
+        for button in getattr(self, "_btn_check_controls", ()):
+            button.setEnabled(True)
+        for button in getattr(self, "_btn_view_transform", ()):
+            button.setEnabled(True)
+
+    def _align_drill_layer(self) -> None:
+        """Put the drill holes on the board.
+
+        A drill file is written in the coordinate system of the CAM job,
+        which is usually not the system the Gerber files of the same board
+        use.  The holes sit in the pads, so the offset between the two
+        systems is found by matching the holes against the paste; when
+        there is no paste the outline is used instead.
+        """
+        self._drill_align = None
+        drills = [d for l, d in zip(self._layers, self._layer_data) if l.is_drill]
+        if not any(d.flashes for d in drills):
+            return
+        holes = []
+        for data in drills:
+            holes += [(f.cx, f.cy) for f in data.flashes]
+        pads = []
+        for data in self._role_datas(ROLE_PASTE):
+            pads += [(f.cx, f.cy) for f in data.flashes]
+        reference = points_bbox(pads) if pads else None
+        if reference is None:
+            lines = []
+            for data in self._role_datas(ROLE_PROFILE):
+                lines += [(l.x1, l.y1) for l in data.lines]
+                lines += [(l.x2, l.y2) for l in data.lines]
+            reference = points_bbox(lines) if lines else None
+        result = align_drill(holes, pads, board_bbox=reference)
+        if result.applied or result.method == "outline":
+            for data in drills:
+                shift_render_data(data, result.offset_x, result.offset_y)
+        self._drill_align = result
+
+    def _layers_outside_the_board(self) -> List[int]:
+        """The layers that do not lie on the board.
+
+        A folder can hold the files of more than one board.  The layers
+        that lie mostly outside the outline belong to another board, and
+        they are hidden so that the picture stays readable.  When the
+        folder has no outline, nothing is told, because the layers of a
+        board can be of very different shapes.
+        """
+        outline = None
+        boxes = []
+        for layer, data in zip(self._layers, self._layer_data):
+            if not (data.lines or data.arcs or data.flashes):
+                boxes.append(None)
+                continue
+            box = data.bbox()
+            boxes.append(box)
+            if layer.role == ROLE_PROFILE and outline is None:
+                outline = box
+        if outline is None:
+            return []
+        out_x, out_y, out_w, out_h = outline
+        out_area = max(out_w * out_h, 1e-9)
+        outside = []
+        for index, box in enumerate(boxes):
+            if box is None or index == len(self._layers):
+                continue
+            if self._layers[index].role == ROLE_PROFILE:
+                continue
+            x, y, w, h = box
+            overlap_w = min(x + w, out_x + out_w) - max(x, out_x)
+            overlap_h = min(y + h, out_y + out_h) - max(y, out_y)
+            if overlap_w <= 0.0 or overlap_h <= 0.0:
+                outside.append(index)
+                continue
+            # The layer has to lie inside the outline; a layer of another
+            # board only touches it.
+            inside = (overlap_w * overlap_h) / max(w * h, 1e-9)
+            if inside < 0.5:
+                outside.append(index)
+        return outside
+
+    def _hide_layers_outside_the_board(self) -> List[int]:
+        """Hide the layers that belong to another board."""
+        outside = self._layers_outside_the_board()
+        for index in outside:
+            if index < len(self._layer_states):
+                self._layer_states[index] = LAYER_STATE_HIDDEN
+        if outside:
+            self._rebuild_layer_list()
+        return outside
+
+    def _show_load_warnings(self) -> None:
+        """Tell the operator when a file was read by a reduced parser.
+
+        The layers that do not lie on the board are told about as well.
+        """
+        notes = []
+        worker = getattr(self, "_worker", None)
+        infos = getattr(worker, "load_info", {}) if worker is not None else {}
+        for key, info in (infos or {}).items():
+            if getattr(info, "degraded", False):
+                notes.append(f"{key}: {getattr(info, 'parser', '?')}")
+        outside = getattr(self, "_outside_layers", []) or []
+        if outside:
+            names = ", ".join(
+                self._layers[index].file_name for index in outside
+                if index < len(self._layers))
+            notes.append(tr("{n} layers of another board (hidden): {files}",
+                            n=len(outside), files=names))
+        if not notes:
+            self._lbl_load_note.setText("")
+            self._lbl_load_note.setVisible(False)
+            return
+        self._lbl_load_note.setText(
+            tr("Gerber layers: {files}", files="; ".join(notes))
+        )
+        self._lbl_load_note.setVisible(True)
 
     def _on_load_failed(self, message: str) -> None:
-        self._lbl_title.setText(tr("Error reading Gerber file"))
+        self._lbl_status.setText(tr("Error reading Gerber file"))
         QMessageBox.critical(self, tr("Error"), tr("Cannot read Gerber:\n{message}", message=message))
 
     def _on_layer_changed(self) -> None:
@@ -1828,6 +3412,8 @@ QGroupBox::title {
                     if not self._record_matches_search(record, search_text):
                         continue
                     x, y, rotation = _record_coord(record)
+                    # The table shows the coordinates of the file; they
+                    # do not change when the origin is moved.
                     row = self._table_components.rowCount()
                     values = [
                         str(row + 1),
@@ -1893,8 +3479,22 @@ QGroupBox::title {
         self._selected_marker_indices = set()
         self._apply_layer()
 
-    def _on_full_cross_toggled(self, checked: bool) -> None:
-        self._view.set_full_crosshair_enabled(bool(checked))
+    def set_selected(self, index: int) -> None:
+        """Show one record as the selected one.
+
+        The viewer is asked to select a record from outside, for instance
+        when a difference of the engineering change list is located in the
+        picture.
+        """
+        self._selected_marker_index = int(index)
+        self._selected_marker_indices = {int(index)}
+        self._apply_layer()
+
+    def set_selected_indices(self, indices) -> None:
+        """Show several records as the selected ones."""
+        self._selected_marker_indices = {int(i) for i in indices}
+        self._selected_marker_index = -1
+        self._apply_layer()
 
     def refresh_records(self, records: List[ReviewRecord]) -> None:
         self._records = records
@@ -1928,12 +3528,15 @@ QGroupBox::title {
                 return i
         return -1
 
-    @staticmethod
-    def _component_info_text(record: ReviewRecord) -> str:
+    def _component_info_text(self, record: ReviewRecord) -> str:
+        """The information of a component, in the coordinates of the file."""
+        x, y, rotation = _record_coord(record)
         return tr(
-            "Designator: {des}\nMPN: {mpn}\nRemark: {remark}",
+            "Designator: {des}\nMPN: {mpn}\n"
+            "X: {x:.3f}  Y: {y:.3f}  Rot: {rot:.0f}\nRemark: {remark}",
             des=record.designator or "-",
             mpn=record.mpn or "-",
+            x=x, y=y, rot=rotation,
             remark=record.remark or "-",
         )
 
@@ -1978,13 +3581,112 @@ QGroupBox::title {
         if item is not None:
             item.setIcon(self._status_icon(checked))
 
-    def _current_paste(self) -> RenderData:
-        return self._top if self._combo_layer.currentIndex() == 0 else self._bottom
+    def _export_layers(self) -> List[ExportLayer]:
+        """The layers that are on the screen, from the bottom to the top."""
+        layers: List[ExportLayer] = []
+        for index, item in enumerate(self._layer_items):
+            if item is None:
+                continue
+            if index < len(self._layer_states) \
+                    and self._layer_states[index] == LAYER_STATE_HIDDEN:
+                continue
+            try:
+                if not item.isVisible():
+                    continue
+                paths = item._paths
+                colour = QColor("#000000")
+            except RuntimeError:
+                continue
+            layers.append(ExportLayer(paths, colour))
+        return layers
+
+    def _on_export_image(self) -> None:
+        """Write the picture of the visible layers to a file."""
+        if not self._loaded:
+            return
+        layers = self._export_layers()
+        if not layers:
+            QMessageBox.information(self, tr("Export image..."),
+                                    tr("There is no layer to export."))
+            return
+        path, _selected = QFileDialog.getSaveFileName(
+            self, tr("Export image..."), "",
+            tr("PNG image (*.png);;PDF document (*.pdf);;SVG picture (*.svg)"))
+        if not path:
+            return
+        suffix = os.path.splitext(path)[1].lower()
+        fmt = {".png": "png", ".pdf": "pdf", ".svg": "svg"}.get(suffix)
+        if fmt is None:
+            QMessageBox.warning(self, tr("Export image..."),
+                                tr("The file name must end with .png, .pdf or .svg."))
+            return
+        try:
+            export_layers(layers, path, fmt, background="#FFFFFF")
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            QMessageBox.critical(self, tr("Export image..."),
+                                 tr("Export failed: {error}").format(error=exc))
+            return
+        self.status_message.emit(tr("Image exported to {path}").format(path=path))
 
     def _update_coord_label(self, x: float, y: float) -> None:
         if not self._loaded:
             return
-        self._lbl_coord.setText(tr("X: {gx:.2f}  Y: {gy:.2f}", gx=x, gy=-y))
+        # The coordinates of the file; the turn of the page is a turn of
+        # the drawing only, so they are read without it.
+        fx, fy = x, -y
+        # The coordinates are counted from the origin that is set now, so
+        # they are the ones the component table shows.
+        gx = fx - self._origin_x
+        gy = fy - self._origin_y
+        aperture = self._aperture_at(x, y)
+        if aperture:
+            self._lbl_coord.setText(tr(
+                "X: {gx:.2f}  Y: {gy:.2f}  ({fx:.2f} / {fy:.2f})  |  {ap}",
+                gx=gx, gy=gy, fx=fx, fy=fy, ap=aperture))
+            return
+        self._lbl_coord.setText(tr(
+            "X: {gx:.2f}  Y: {gy:.2f}  ({fx:.2f} / {fy:.2f})",
+            gx=gx, gy=gy, fx=fx, fy=fy))
+
+    def _aperture_at(self, x: float, y: float) -> str:
+        """The aperture of the shape under the pointer, as text.
+
+        The layers are asked from the last to the first, so that a pad of
+        a layer that lies on top wins over the outline behind it.
+        """
+        best_text = ""
+        best_distance = None
+        for index in sorted(self._aperture_indices.keys(), reverse=True):
+            aperture_index = self._aperture_indices[index]
+            try:
+                fx, fy = aperture_index.to_file(x, y)
+                picked = aperture_index.pick(fx, fy)
+            except RuntimeError:
+                continue
+            if picked is None:
+                continue
+            if best_distance is not None and picked.distance > best_distance:
+                continue
+            best_distance = picked.distance
+            best_text = self._describe_aperture(index, picked)
+        return best_text
+
+    def _describe_aperture(self, index: int, picked) -> str:
+        """The text of the aperture of one picked shape."""
+        data = self._layer_data[index] if index < len(self._layer_data) else None
+        info = data.apertures.get(picked.dcode) if data is not None else None
+        if info is not None:
+            text = info.describe()
+        elif picked.dcode:
+            text = "D%d" % picked.dcode
+        else:
+            return ""
+        if info is not None and info.attributes:
+            extra = ", ".join(
+                "%s=%s" % (name, value) for name, value in info.attributes.items())
+            if extra:
+                text = "%s  (%s)" % (text, extra)
+        return text
 
     def _clear_coord_label(self) -> None:
         self._lbl_coord.setText(tr("X: --  Y: --"))
@@ -1994,10 +3696,126 @@ QGroupBox::title {
             return
         gx = self._spin_goto_x.value()
         gy = self._spin_goto_y.value()
-        self._goto_pos = (gx, -gy)
+        # The fields count from the origin that is set now, in the
+        # coordinates of the board.
+        sx = self._origin_x + gx
+        sy = -(self._origin_y + gy)
+        self._goto_pos = (sx, sy)
         self._update_goto_crosshair()
-        self._view.centerOn(gx, -gy)
-        self._update_magnifier(gx, -gy)
+        self._view.centerOn(sx, sy)
+        self._update_magnifier(sx, sy)
+
+    def _update_scene_rect(self) -> None:
+        """Let the page reach as far as one wants.
+
+        The scene of a graphics view is the area that can be scrolled, so
+        without this the view cannot leave the Gerber.  The area is very
+        big, so that the page is not held back at the edge of the board;
+        the zoom factor still says how far the page can be shrunk.
+        """
+        self._scene.setSceneRect(
+            -SCENE_MARGIN, -SCENE_MARGIN, SCENE_MARGIN * 2.0, SCENE_MARGIN * 2.0)
+
+    def _update_origin_marker(
+        self, angle: float, mirror: bool, off_x: float, off_y: float,
+        mirror_x: bool,
+    ) -> None:
+        """Mark the origin the coordinates of the file count from.
+
+        The mark is two diagonals that make an X, of a fixed size, so that
+        it can be seen at every zoom.  It follows the turn of the page, so
+        it always stands at the origin of the file.
+        """
+        for item in (self._origin_marker,):
+            if item is not None:
+                try:
+                    self._scene.removeItem(item)
+                except RuntimeError:
+                    pass
+        self._origin_marker = None
+        if not self._show_origin or not self._loaded:
+            return
+        transform = AffineTransform(
+            mirror, angle, off_x, off_y,
+            self._board_center[0], self._board_center[1], mirror_x)
+        # The origin is a point of the board, the same the components and
+        # the table are in; it does not follow the turn of the page.
+        x = self._origin_x
+        y = -self._origin_y
+        half = ORIGIN_MARKER_HALF
+        path = QPainterPath()
+        path.moveTo(x - half, y - half)
+        path.lineTo(x + half, y + half)
+        path.moveTo(x - half, y + half)
+        path.lineTo(x + half, y - half)
+        pen = QPen(ORIGIN_COLOR, 2.0)
+        pen.setCosmetic(True)
+        self._origin_marker = self._scene.addPath(path, pen)
+        # Above the layers, the active one lies at 1000.
+        self._origin_marker.setZValue(Z_ORIGIN_MARK)
+
+    def _set_origin(self, gx: float, gy: float) -> None:
+        """Put the origin of the coordinates at a point of the file."""
+        self._origin_x = float(gx)
+        self._origin_y = float(gy)
+        self._origin_mode = False
+        self._view.set_origin_mode(False)
+        self._btn_set_origin.setChecked(False)
+        # The table and the overlay keep the coordinates of the file, so
+        # only the drawing has to be redone.
+        self._redraw()
+        self._emit_layer_settings()
+
+    def _on_set_origin_clicked(self, checked: bool) -> None:
+        """Choose a new origin by clicking on the board."""
+        if not self._loaded and checked:
+            self._btn_set_origin.blockSignals(True)
+            self._btn_set_origin.setChecked(False)
+            self._btn_set_origin.blockSignals(False)
+            return
+        self._origin_mode = bool(checked)
+        if self._origin_mode:
+            self._lbl_status.setText(
+                tr("Origin mode: click the new origin on the board."))
+            self._view.set_origin_mode(True)
+            self._view.setFocus(Qt.MouseFocusReason)
+        else:
+            self._view.set_origin_mode(False)
+
+    def _on_origin_picked(self, sx: float, sy: float) -> None:
+        """The operator chose a new origin by clicking on the board.
+
+        The point is taken in the coordinates of the board, the same the
+        components and the table are in, so that the point that was
+        clicked reads 0,00 from then on.
+        """
+        if not self._loaded:
+            return
+        self._set_origin(sx, -sy)
+        self._lbl_status.setText(
+            tr("Origin set at {x:.2f}, {y:.2f}.", x=sx, y=-sy))
+
+    def _on_origin_from_fields(self) -> None:
+        """Move the origin by the X and Y that are written in the footer.
+
+        The fields count from the origin that is set now, so the origin
+        moves by that much: the point that was written reads 0,00 then.
+        """
+        if not self._loaded:
+            return
+        dx = self._spin_goto_x.value()
+        dy = self._spin_goto_y.value()
+        gx = self._origin_x + dx
+        gy = self._origin_y + dy
+        self._set_origin(gx, gy)
+        self._lbl_status.setText(
+            tr("Origin set at {x:.2f}, {y:.2f}.", x=gx, y=gy))
+
+    def _on_origin_toggled(self, checked: bool) -> None:
+        """The mark of the origin is shown, or taken away."""
+        self._show_origin = bool(checked)
+        self._redraw()
+        self._emit_layer_settings()
 
     def _update_goto_crosshair(self) -> None:
         if self._goto_crosshair is not None:
@@ -2020,7 +3838,7 @@ QGroupBox::title {
         pen = QPen(self._colors["highlight"], 2.0)
         pen.setCosmetic(True)
         self._goto_crosshair = self._scene.addPath(path, pen)
-        self._goto_crosshair.setZValue(100)
+        self._goto_crosshair.setZValue(Z_GOTO_CROSS)
 
     def _on_grid_toggled(self, checked: bool) -> None:
         if checked and not self._grid_available:
@@ -2076,7 +3894,7 @@ QGroupBox::title {
         pen.setStyle(Qt.DashLine)
         pen.setWidthF(self._grid_width)
         self._grid_item = self._scene.addPath(path, pen)
-        self._grid_item.setZValue(60)
+        self._grid_item.setZValue(Z_GRID)
         self._grid_rect = rect
 
     def _on_grid_cell_clicked(self, x: float, y: float) -> None:
@@ -2157,20 +3975,22 @@ QGroupBox::title {
         records = self._current_layer_records()
         if not records:
             return
-        grid = self._pad_grid(self._combo_layer.currentIndex() == 0)
+        # The markers stand in the coordinates of the board, so they are
+        # looked up where they are drawn.
+        markers = self._marker_tuples()
         best = -1
         best_d = float("inf")
         outer = max(self._cross_half * self._crosshair_scale, 0.25)
         outer_d = outer * outer
-        for i, record in enumerate(records):
-            x, y, _rot = _record_coord(record)
-            dx = sx - x
-            dy = sy + y
+        for i, marker in enumerate(markers):
+            if i >= len(records):
+                break
+            mx, my, _rotation, half = marker
+            dx = sx - mx
+            dy = sy - my
             d2 = dx * dx + dy * dy
             if d2 > outer_d:
                 continue
-            size = grid.nearest(x, y)
-            half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
             tol = max(half, 0.25)
             if d2 <= tol * tol and d2 < best_d:
                 best_d = d2
@@ -2208,15 +4028,12 @@ QGroupBox::title {
         self.checked_changed.emit(self._record_index_in_records(record))
 
     def _display_transform(self) -> Tuple[float, bool, bool, float, float]:
-        angle = self._combo_rot.currentData() or 0
-        if self._chk_invert_rot.isChecked():
-            angle = (360 - angle) % 360
         return (
-            angle,
+            float(self._rotation),
             self._chk_flip.isChecked(),
             self._chk_mirror_x.isChecked(),
-            self._spin_off_x.value(),
-            self._spin_off_y.value(),
+            0.0,
+            0.0,
         )
 
     def _scene_to_gerber(self, sx: float, sy: float) -> Tuple[float, float]:
@@ -2239,6 +4056,8 @@ QGroupBox::title {
             self._btn_measure.blockSignals(False)
             return
         self._measure_mode = bool(checked)
+        self._btn_measure.setText(
+            tr("Stop measure") if self._measure_mode else tr("Measure"))
         if self._measure_mode:
             if self._grid_active:
                 self._chk_grid.setChecked(False)
@@ -2250,6 +4069,7 @@ QGroupBox::title {
         else:
             self._view.set_measure_mode(False)
             self._on_measure_cancel()
+            self._clear_measurements()
 
     def _on_snap_toggled(self, checked: bool) -> None:
         self._snap_enabled = bool(checked)
@@ -2268,15 +4088,6 @@ QGroupBox::title {
 
     def _on_snap_tol_changed(self, value: float) -> None:
         self._snap_tol = float(value)
-
-    def _on_compact_toggled(self, checked: bool) -> None:
-        self._compact_hidden = not bool(checked)
-        widget = getattr(self, "_options_widget", None)
-        if widget is not None:
-            widget.setVisible(checked)
-        lbl = getattr(self, "_lbl_status", None)
-        if lbl is not None:
-            lbl.setVisible(checked)
 
     def _snap_info(self, gx: float, gy: float) -> Optional[Tuple[float, float, float]]:
         if not getattr(self, "_snap_enabled", True):
@@ -2343,7 +4154,7 @@ QGroupBox::title {
             pen.setCosmetic(True)
             pen.setStyle(Qt.DashLine)
             self._measure_preview = self._scene.addPath(path, pen)
-            self._measure_preview.setZValue(79)
+            self._measure_preview.setZValue(Z_MEASURE)
         else:
             try:
                 self._measure_preview.setPath(path)
@@ -2367,7 +4178,7 @@ QGroupBox::title {
             brush = QBrush(QColor(MEASURE_COLOR.red(), MEASURE_COLOR.green(),
                                  MEASURE_COLOR.blue(), 50))
             self._measure_snap_item = self._scene.addEllipse(0.0, 0.0, 1.0, 1.0, pen, brush)
-            self._measure_snap_item.setZValue(78)
+            self._measure_snap_item.setZValue(Z_MEASURE)
         r = max(getattr(self, "_snap_tol", 1.0), pad_size)
         self._measure_snap_item.setRect(sx - r, sy - r, 2.0 * r, 2.0 * r)
 
@@ -2399,7 +4210,6 @@ QGroupBox::title {
         self._scene.addItem(item)
         self._measurements.append((x1, y1, x2, y2))
         self._measurement_items.append(item)
-        self._btn_clear_measure.setEnabled(True)
         self._lbl_status.setText(tr("Distance: {d:.3f} mm", d=dist))
 
     def _clear_measurements(self) -> None:
@@ -2412,7 +4222,6 @@ QGroupBox::title {
                 pass
         self._measurement_items = []
         self._measurements = []
-        self._btn_clear_measure.setEnabled(False)
         if self._measure_mode:
             self._lbl_status.setText(tr("Measure mode: click the start point."))
 
@@ -2432,7 +4241,6 @@ QGroupBox::title {
             )
             self._scene.addItem(item)
             self._measurement_items.append(item)
-        self._btn_clear_measure.setEnabled(bool(self._measurements))
 
     def _update_magnifier(self, x: float, y: float) -> None:
         if not self._loaded:
@@ -2514,8 +4322,8 @@ QGroupBox::title {
         if self._selected_marker_index >= 0:
             records = self._current_layer_records()
             if self._selected_marker_index < len(records):
-                x, y, _rot = _record_coord(records[self._selected_marker_index])
-                self._update_magnifier(x, -y)
+                mx, my = self._marker_pos(records[self._selected_marker_index])
+                self._update_magnifier(mx, my)
 
     def _on_component_double_clicked(self, row: int, _col: int) -> None:
         if not (0 <= row < len(self._component_index)):
@@ -2527,8 +4335,8 @@ QGroupBox::title {
         records = self._current_layer_records()
         if not (0 <= idx < len(records)):
             return
-        x, y, _rotation = _record_coord(records[idx])
-        self._update_magnifier(x, -y)
+        mx, my = self._marker_pos(records[idx])
+        self._update_magnifier(mx, my)
 
     def _on_component_menu(self, pos) -> None:
         table = self._table_components
@@ -2554,6 +4362,222 @@ QGroupBox::title {
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
         if chosen == act_edit:
             self._edit_rotation_for_row(row)
+
+    def _on_check_current(self, checked: bool) -> None:
+        """Check/uncheck the component that is chosen in the table."""
+        if not self._loaded:
+            return
+        records = self._current_layer_records()
+        if not records:
+            return
+        row = self._table_components.currentRow()
+        if not (0 <= row < len(self._component_index)):
+            self._lbl_status.setText(
+                tr("Select a component in the table first."))
+            return
+        if self._group_by_mpn and row < len(self._group_rows):
+            self._apply_check_to_group(row, checked)
+            return
+        idx = self._component_index[row]
+        if not (0 <= idx < len(records)):
+            return
+        record = records[idx]
+        if record.checked == checked:
+            return
+        record.checked = checked
+        if self._overlay is not None:
+            self._overlay.set_checked_indices(self._checked_layer_indices())
+        self._refresh_component_status_row(idx)
+        self.checked_changed.emit(self._record_index_in_records(record))
+
+    def _apply_check_to_group(self, row: int, checked: bool) -> None:
+        records = self._current_layer_records()
+        group = self._group_rows[row]
+        if not group or not all(0 <= i < len(records) for i in group):
+            return
+        changed = False
+        for i in group:
+            if records[i].checked != checked:
+                records[i].checked = checked
+                changed = True
+        if not changed:
+            return
+        if self._overlay is not None:
+            self._overlay.set_checked_indices(self._checked_layer_indices())
+        self._refresh_component_status()
+        for i in group:
+            self.checked_changed.emit(self._record_index_in_records(records[i]))
+
+    def _on_uncheck_all(self) -> None:
+        """Clear the checks of the whole layer that is on the screen."""
+        if not self._loaded:
+            return
+        records = self._current_layer_records()
+        if not records or not any(r.checked for r in records):
+            return
+        ret = QMessageBox.question(
+            self, tr("Confirm"),
+            tr("Clear the checks of all components on this layer?"),
+        )
+        if ret != QMessageBox.Yes:
+            return
+        for record in records:
+            record.checked = False
+        if self._overlay is not None:
+            self._overlay.set_checked_indices(self._checked_layer_indices())
+        self._refresh_component_status()
+        for record in records:
+            self.checked_changed.emit(self._record_index_in_records(record))
+
+    def _on_rotate_records(self, angle: int) -> None:
+        """Rotate every component and its coordinates around the origin.
+
+        Angle 0 keeps the coordinates and resets every rotation to 0°.
+        """
+        if not self._loaded:
+            return
+        if not self._records:
+            return
+        if angle == 0:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Reset the rotation of {n} components to 0\u00b0?",
+                   n=len(self._records)),
+            )
+            busy_text = tr("Resetting rotation...")
+        else:
+            ret = QMessageBox.question(
+                self, tr("Confirm"),
+                tr("Rotate {n} components by {a}\u00b0 around the origin (0, 0)?",
+                   n=len(self._records), a=angle),
+            )
+            busy_text = tr("Rotating components...")
+        if ret != QMessageBox.Yes:
+            return
+        changed = []
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rad = math.radians(angle)
+        c, s = math.cos(rad), math.sin(rad)
+        progress = QProgressDialog(
+            busy_text, "", 0, len(self._records), self)
+        progress.setWindowTitle(tr("Please wait"))
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        for count, record in enumerate(self._records, start=1):
+            base_x = record.new_x if record.new_x is not None else record.old_x
+            base_y = record.new_y if record.new_y is not None else record.old_y
+            new_x = round(base_x * c - base_y * s, 4)
+            new_y = round(base_x * s + base_y * c, 4)
+            if new_x == 0.0:
+                new_x = 0.0
+            if new_y == 0.0:
+                new_y = 0.0
+            base_rot = (record.new_rotation
+                        if record.new_rotation is not None
+                        else record.old_rotation)
+            new_rot = (0.0 if angle == 0
+                       else round((base_rot + angle) % 360.0, 4))
+            # The base values are the values that are on the screen now,
+            # so the record only changes when the target differs.
+            if (abs(base_x - new_x) < 1e-9 and abs(base_y - new_y) < 1e-9
+                    and abs(base_rot - new_rot) < 1e-9):
+                progress.setValue(count)
+                QApplication.processEvents()
+                continue
+            record.new_x = new_x
+            record.new_y = new_y
+            record.new_rotation = new_rot
+            record.status = "Edited"
+            record.review_time = timestamp
+            changed.append(record)
+            progress.setValue(count)
+            QApplication.processEvents()
+        progress.close()
+        self._apply_layer()
+        self._redraw()
+        self._fit_scene()
+        self._rebuild_marker_overlay()
+        for record in changed:
+            self.rotation_edited.emit(self._record_index_in_records(record))
+        if changed:
+            if angle == 0:
+                self.status_message.emit(
+                    tr("Reset the rotation of {n} components to 0\u00b0",
+                       n=len(changed)))
+            else:
+                self.status_message.emit(
+                    tr("Rotated {n} components by {a}\u00b0",
+                       n=len(changed), a=angle))
+        else:
+            self._lbl_status.setText(
+                tr("Components are already at the rotated position."))
+
+    def _on_flip_records(self, axis: str) -> None:
+        """Flip every component and its coordinates across an axis."""
+        if not self._loaded:
+            return
+        if not self._records:
+            return
+        ret = QMessageBox.question(
+            self, tr("Confirm"),
+            tr("Flip {n} components across the {axis} axis?",
+               n=len(self._records), axis=axis),
+        )
+        if ret != QMessageBox.Yes:
+            return
+        changed = []
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        progress = QProgressDialog(
+            tr("Flipping components..."), "", 0, len(self._records), self)
+        progress.setWindowTitle(tr("Please wait"))
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        for count, record in enumerate(self._records, start=1):
+            base_x = record.new_x if record.new_x is not None else record.old_x
+            base_y = record.new_y if record.new_y is not None else record.old_y
+            new_x = round(-base_x, 4) if axis == "Y" else base_x
+            new_y = round(-base_y, 4) if axis == "X" else base_y
+            if new_x == 0.0:
+                new_x = 0.0
+            if new_y == 0.0:
+                new_y = 0.0
+            base_rot = (record.new_rotation
+                        if record.new_rotation is not None
+                        else record.old_rotation)
+            new_rot = round((-base_rot) % 360.0, 4)
+            # The base values are the values that are on the screen now,
+            # so the record only changes when the target differs.
+            if (abs(base_x - new_x) < 1e-9 and abs(base_y - new_y) < 1e-9
+                    and abs(base_rot - new_rot) < 1e-9):
+                progress.setValue(count)
+                QApplication.processEvents()
+                continue
+            record.new_x = new_x
+            record.new_y = new_y
+            record.new_rotation = new_rot
+            record.status = "Edited"
+            record.review_time = timestamp
+            changed.append(record)
+            progress.setValue(count)
+            QApplication.processEvents()
+        progress.close()
+        self._apply_layer()
+        self._redraw()
+        self._fit_scene()
+        self._rebuild_marker_overlay()
+        for record in changed:
+            self.rotation_edited.emit(self._record_index_in_records(record))
+        if changed:
+            self.status_message.emit(
+                tr("Flipped {n} components across the {axis} axis",
+                   n=len(changed), axis=axis))
+        else:
+            self._lbl_status.setText(
+                tr("Components are already at the flipped position."))
 
     def _on_group_checked_action(self, row: int) -> None:
         if not self._group_by_mpn or not (0 <= row < len(self._group_rows)):
@@ -2617,6 +4641,9 @@ QGroupBox::title {
             return
         record = records[idx]
         x, y, cur_rot = _record_coord(record)
+        # The mark of the part stands where the origin was put, so that
+        # is where the view and the magnifier have to look.
+        mx, my = self._marker_pos(record)
 
         # If a dialog is already open, close it first
         if self._rotation_dialog is not None:
@@ -2627,14 +4654,14 @@ QGroupBox::title {
             self._rotation_dialog = None
 
         # Auto-jump view to the component being edited
-        self._center_view_on(x, -y)
+        self._center_view_on(mx, my)
+
 
         # Boost magnifier zoom for detailed inspection during rotation edit
         self._rot_mag_saved = self._mag_factor
         self._set_mag_factor(_ROT_EDIT_MAG_FACTOR)
         # Lock magnifier on this component while editing
-        self._rotation_lock_xy = (x, -y)
-
+        self._rotation_lock_xy = (mx, my)
         dlg = RotationEditDialog(record, parent=self,
                                  preview_cb=lambda v: self.show_rotation_preview(idx, v))
         dlg.accepted.connect(self._on_rotation_edit_accepted)
@@ -2693,99 +4720,58 @@ QGroupBox::title {
         self._rotation_dialog = None
         self._rotation_ctx = None
 
-    def _render_lines(
+    def _render_layer(
         self,
+        index: int,
         render_data: RenderData,
-        color: QColor,
         angle: float,
         mirror: bool,
         off_x: float,
         off_y: float,
         mirror_x: bool = False,
-        key: str = "",
-    ) -> List[QGraphicsPathItem]:
-        if not render_data.lines and not render_data.arcs:
-            self._line_items[key] = []
-            return []
-        center_x, center_y = self._board_center
-        try:
-            scale = abs(self._view.transform().m11())
-        except Exception:
-            scale = self._scene_scale
-        min_w = (1.0 / scale) if scale > 0 else 1.05
-        buckets: Dict[float, QPainterPath] = {}
-        for ln in render_data.lines:
-            w = round(max(ln.width, min_w), 3)
-            path = buckets.get(w)
-            if path is None:
-                path = QPainterPath()
-                buckets[w] = path
-            x1, y1, x2, y2 = ln.x1, ln.y1, ln.x2, ln.y2
-            x1, y1 = apply_transform(x1, y1, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
-            x2, y2 = apply_transform(x2, y2, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
-            path.moveTo(x1, -y1)
-            path.lineTo(x2, -y2)
-        for ar in render_data.arcs:
-            w = round(max(ar.width, min_w), 3)
-            path = buckets.get(w)
-            if path is None:
-                path = QPainterPath()
-                buckets[w] = path
-            _append_arc_path(path, ar, mirror, angle, off_x, off_y, center_x, center_y, mirror_x)
-        items: List[QGraphicsPathItem] = []
-        for w, path in buckets.items():
-            pen = QPen(color, w)
-            pen.setCosmetic(False)
-            items.append(self._scene.addPath(path, pen))
-        self._line_items[key] = items
-        return items
+    ) -> None:
+        """Draw one layer, compositing the negative content when there is any.
 
-    def _render_fills(
-        self,
-        render_data: RenderData,
-        color: QColor,
-        angle: float,
-        mirror: bool,
-        off_x: float,
-        off_y: float,
-        mirror_x: bool = False,
-        key: str = "",
-    ) -> Optional[QGraphicsPathItem]:
-        if not render_data.flashes:
-            self._fill_items[key] = None
-            return None
-        center_x, center_y = self._board_center
-        final = _build_fill_path(
-            render_data.flashes, mirror, angle, off_x, off_y,
-            center_x, center_y, mirror_x,
+        A layer without negative content is drawn with the plain scene
+        items, which is the fast path.  A layer that removes artwork is
+        drawn into an offscreen buffer so the clear objects really erase
+        what is underneath them.
+        """
+        paths = build_layer_paths(
+            render_data, angle, mirror, off_x, off_y, mirror_x, self._board_center,
         )
-        item = self._scene.addPath(final, QPen(Qt.NoPen), QBrush(color))
-        self._fill_items[key] = item
-        return item
+        # Every layer is drawn through the same item, so that the negative
+        # content is composited the way the format means it and so that the
+        # result can be kept as an image between two repaints.
+        item = LayerItem(paths, self._layer_draw_color(index))
+        self._scene.addItem(item)
+        while len(self._layer_items) <= index:
+            self._layer_items.append(None)
+        self._layer_items[index] = item
+        # The index finds the shape under the pointer; its grid is only
+        # built when the pointer is used.
+        self._aperture_indices[index] = ApertureIndex(
+            render_data, mirror, angle, off_x, off_y,
+            (self._board_center[0], self._board_center[1]), mirror_x)
 
     def _redraw(self) -> None:
         if not self._loaded:
             return
 
-        angle = self._combo_rot.currentData() or 0
-        if self._chk_invert_rot.isChecked():
-            angle = (360 - angle) % 360
+        angle = float(self._rotation)
         mirror = self._chk_flip.isChecked()
         mirror_x = self._chk_mirror_x.isChecked()
-        off_x = self._spin_off_x.value()
-        off_y = self._spin_off_y.value()
         is_top = self._combo_layer.currentIndex() == 0
-        try:
-            key_scale = round(abs(self._view.transform().m11()), 4)
-        except Exception:
-            key_scale = self._scene_scale
-        key = (is_top, angle, mirror, mirror_x, round(off_x, 4), round(off_y, 4), key_scale)
+        # The zoom is deliberately not part of the key: the geometry is
+        # drawn in scene coordinates and the view transform scales it, so a
+        # zoom does not have to rebuild the paths.
+        key = (is_top, angle, mirror, mirror_x, 0.0, 0.0)
 
         if self._scene_key != key:
             self._scene_key = key
-            self._rebuild_scene(angle, mirror, mirror_x, off_x, off_y, is_top)
+            self._rebuild_scene(angle, mirror, mirror_x, 0.0, 0.0, is_top)
         else:
-            self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top)
+            self._apply_style(angle, mirror, mirror_x, 0.0, 0.0, is_top)
 
         self._restore_highlight()
         self._refresh_magnifier()
@@ -2800,15 +4786,35 @@ QGroupBox::title {
         self._grid_item = None
         self._measure_preview = None
         self._measure_snap_item = None
-        self._line_items = {}
-        self._fill_items = {}
+        self._aperture_indices = {}
+        self._layer_items = []
         self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top)
         self._update_goto_crosshair()
         self._update_grid()
         self._rebuild_measurements()
+        # The page may be scrolled anywhere, not only over the board.
+        self._update_scene_rect()
+
+    def _marker_pos(self, record: ReviewRecord) -> Tuple[float, float]:
+        """Where the mark of a component stands on the board.
+
+        The parts of the Pick&Place stand on the board, whose (0,0) is
+        the point the origin was put on, so the mark is the origin plus
+        the coordinates of the record.
+        """
+        x, y, _rotation = _record_coord(record)
+        return x + self._origin_x, -(y + self._origin_y)
 
     def _marker_tuples(self) -> List[Tuple[float, float, float, float]]:
-        """Build marker tuples (x, -y, rotation, half) for current layer records.
+        """Build marker tuples (x, y, rotation, half) for current layer records.
+
+        The parts of the Pick&Place stand on the board, whose (0,0) is
+        the point the origin was put on.  Their position is therefore the
+        origin plus the coordinates of the record.
+
+        The Pick&Place stands in the coordinates of the board, so the
+        marks do not follow the turn of the page: it is the layers of
+        the Gerber that are turned, so that they come to the parts.
 
         IC-convention records draw at (rot + 45) so the arrow matches the knob
         needle direction used while editing; the live preview override (set
@@ -2826,7 +4832,10 @@ QGroupBox::title {
                 rotation = self._rotation_preview[1]
             size = grid.nearest(x, y)
             half = _crosshair_half(size, self._cross_half) * self._crosshair_scale
-            markers.append((x, -y, rotation, half))
+            # The origin is where the board counts from; the parts of the
+            # Pick&Place stand on the board, so they follow it.
+            markers.append((x + self._origin_x, -(y + self._origin_y),
+                            rotation, half))
         return markers
 
     def _rebuild_marker_overlay(self) -> None:
@@ -2885,45 +4894,23 @@ QGroupBox::title {
         self, angle: float, mirror: bool, mirror_x: bool,
         off_x: float, off_y: float, is_top: bool,
     ) -> None:
-        paste = self._top if is_top else self._bottom
-        silk = self._silk if is_top else self._silk_bottom
+        """Draw every layer that is not hidden.
 
-        if self._chk_outline.isChecked():
-            if "outline" not in self._line_items:
-                self._render_lines(
-                    self._outline, self._colors["outline"], angle, mirror,
-                    off_x, off_y, mirror_x, "outline",
-                )
-        if self._chk_silk.isChecked():
-            if "silk" not in self._line_items:
-                self._render_lines(
-                    silk, self._colors["silk"], angle, mirror,
-                    off_x, off_y, mirror_x, "silk",
-                )
-            if "silk" not in self._fill_items:
-                self._render_fills(
-                    silk, self._colors["silk"], angle, mirror,
-                    off_x, off_y, mirror_x, "silk",
-                )
-        if self._chk_paste.isChecked():
-            paste_color = self._colors["paste_top"] if is_top else self._colors["paste_bottom"]
-            if "paste" not in self._line_items:
-                self._render_lines(
-                    paste, paste_color, angle, mirror,
-                    off_x, off_y, mirror_x, "paste",
-                )
-            if "paste" not in self._fill_items:
-                self._render_fills(
-                    paste, paste_color, angle, mirror,
-                    off_x, off_y, mirror_x, "paste",
-                )
-
-        self._update_layer_visibility("outline", self._chk_outline.isChecked(), self._colors["outline"])
-        self._update_layer_visibility("silk", self._chk_silk.isChecked(), self._colors["silk"])
-        self._update_fill_visibility("silk", self._chk_silk.isChecked(), self._colors["silk"])
-        paste_color = self._colors["paste_top"] if is_top else self._colors["paste_bottom"]
-        self._update_layer_visibility("paste", self._chk_paste.isChecked(), paste_color)
-        self._update_fill_visibility("paste", self._chk_paste.isChecked(), paste_color)
+        The layers are drawn in the order of the list, and the layer that
+        is active is drawn last, so that it lies on top of the others.
+        """
+        for index in range(len(self._layers)):
+            data = self._layer_data[index] if index < len(self._layer_data) else None
+            if data is None:
+                continue
+            if self._layer_states[index] == LAYER_STATE_HIDDEN:
+                self._hide_layer_item(index)
+                continue
+            if index >= len(self._layer_items) or self._layer_items[index] is None:
+                self._render_layer(index, data, angle, mirror,
+                                   off_x, off_y, mirror_x)
+            else:
+                self._update_layer_item(index)
 
         if self._chk_pickplace.isChecked():
             self._rebuild_marker_overlay()
@@ -2931,57 +4918,68 @@ QGroupBox::title {
             self._scene.removeItem(self._overlay)
             self._overlay = None
 
-    def _update_layer_visibility(self, key: str, visible: bool, color: QColor) -> None:
-        items = self._line_items.get(key)
-        if not items:
-            return
-        valid_items = []
-        for item in items:
-            try:
-                item.setVisible(visible)
-                pen = item.pen()
-                pen.setColor(color)
-                item.setPen(pen)
-                valid_items.append(item)
-            except RuntimeError:
-                pass
-        if len(valid_items) != len(items):
-            self._line_items[key] = valid_items
+        # The mark of the origin follows the turn of the page.
+        self._update_origin_marker(angle, mirror, off_x, off_y, mirror_x)
 
-    def _update_fill_visibility(self, key: str, visible: bool, color: QColor) -> None:
-        item = self._fill_items.get(key)
+    def _hide_layer_item(self, index: int) -> None:
+        """Take one layer out of the picture."""
+        if index >= len(self._layer_items):
+            return
+        item = self._layer_items[index]
         if item is None:
             return
         try:
-            item.setVisible(visible)
-            item.setBrush(QBrush(color))
+            item.setVisible(False)
         except RuntimeError:
-            self._fill_items[key] = None
+            pass
+
+    def _update_layer_item(self, index: int) -> None:
+        """Give one layer its colour and its place in the picture."""
+        if index >= len(self._layer_items):
+            return
+        item = self._layer_items[index]
+        if item is None:
+            return
+        color = self._layer_draw_color(index)
+        try:
+            item.setVisible(True)
+            item.set_color(color)
+            item.setZValue(1000.0 if index == self._active_layer else index)
+        except RuntimeError:
+            pass
+
+    def _layer_draw_color(self, index: int) -> QColor:
+        """The colour a layer is drawn with, dimmed when it is not active."""
+        color = QColor(self._layer_colors[index])
+        if self._layer_states[index] == LAYER_STATE_DIMMED:
+            color.setAlpha(LAYER_DIMMED_ALPHA)
+        return color
+
 
     def _pad_grid(self, is_top: bool) -> PadGrid:
         grid = self._pad_grid_cache.get(is_top)
         if grid is None:
-            paste = self._top if is_top else self._bottom
-            pads = [(f.cx, f.cy, _flash_size(f)) for f in paste.flashes]
+            side = SIDE_TOP if is_top else SIDE_BOTTOM
+            pads = []
+            for data in self._role_datas(ROLE_PASTE, side):
+                pads += [(f.cx, f.cy, _flash_size(f)) for f in data.flashes]
             grid = PadGrid(pads)
             self._pad_grid_cache[is_top] = grid
         return grid
 
     def _gerber_content_bbox(self) -> Tuple[float, float, float, float]:
-        for data in (self._outline, self._top, self._bottom):
+        for data in self._layer_data:
             if data.lines or data.arcs or data.flashes:
                 return data.bbox()
         return 0.0, 0.0, 0.0, 0.0
 
     def _gerber_scene_rect(self) -> QRectF:
         min_x, min_y, max_x, max_y = self._gerber_content_bbox()
-        angle = self._combo_rot.currentData() or 0
-        if self._chk_invert_rot.isChecked():
-            angle = (360 - angle) % 360
+        angle = float(self._rotation)
         mirror = self._chk_flip.isChecked()
         mirror_x = self._chk_mirror_x.isChecked()
-        off_x = self._spin_off_x.value()
-        off_y = self._spin_off_y.value()
+        off_x = 0.0
+        off_y = 0.0
         center_x, center_y = self._board_center
         xs, ys = [], []
         for px, py in ((min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)):
@@ -3015,74 +5013,61 @@ QGroupBox::title {
             self._redraw()
         self._grid_available = True
         self._chk_grid.setEnabled(True)
+        if self._chk_grid.isChecked():
+            self._on_grid_toggled(True)
 
-    def _compute_board_center(self) -> Tuple[float, float]:
-        xs, ys = [], []
-        for ln in self._outline.lines:
-            xs += [ln.x1, ln.x2]
-            ys += [ln.y1, ln.y2]
-        for ar in self._outline.arcs:
-            xs += [ar.x1, ar.x2]
-            ys += [ar.y1, ar.y2]
-        for fl in self._outline.flashes:
-            xs.append(fl.cx)
-            ys.append(fl.cy)
-        if not xs:
-            for fl in self._top.flashes + self._bottom.flashes:
+    def _role_datas(self, role: str, side: str = "") -> List[RenderData]:
+        """The geometry of the layers of one role.
+
+        When no layer of that role is on that side of the board, the
+        layers of the role itself are used, so that a job without a
+        top and a bottom paste is still shown.
+        """
+        found = []
+        for layer, data in zip(self._layers, self._layer_data):
+            if layer.role != role:
+                continue
+            if side and layer.side and layer.side != side:
+                continue
+            found.append(data)
+        if found or not side:
+            return found
+        return self._role_datas(role)
+
+    def _layer_points(self) -> Tuple[List[float], List[float]]:
+        """The places of every layer of the picture."""
+        xs: List[float] = []
+        ys: List[float] = []
+        for data in self._layer_data:
+            for ln in data.lines:
+                xs += [ln.x1, ln.x2]
+                ys += [ln.y1, ln.y2]
+            for ar in data.arcs:
+                xs += [ar.x1, ar.x2]
+                ys += [ar.y1, ar.y2]
+            for fl in data.flashes:
                 xs.append(fl.cx)
                 ys.append(fl.cy)
+        return xs, ys
+
+    def _compute_board_center(self) -> Tuple[float, float]:
+        xs, ys = self._layer_points()
         if not xs:
             return 0.0, 0.0
         return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
 
     def _board_size(self) -> float:
-        xs, ys = [], []
-        for ln in self._outline.lines:
-            xs += [ln.x1, ln.x2]
-            ys += [ln.y1, ln.y2]
-        for ar in self._outline.arcs:
-            xs += [ar.x1, ar.x2]
-            ys += [ar.y1, ar.y2]
-        for fl in self._outline.flashes:
-            xs.append(fl.cx)
-            ys.append(fl.cy)
-        if not xs:
-            for fl in self._top.flashes + self._bottom.flashes:
-                xs.append(fl.cx)
-                ys.append(fl.cy)
+        xs, ys = self._layer_points()
         if not xs:
             return 1.0
         return max(max(xs) - min(xs), max(ys) - min(ys))
 
-    def _reset_offset(self) -> None:
-        self._spin_off_x.setValue(0.0)
-        self._spin_off_y.setValue(0.0)
-        self._chk_flip.setChecked(False)
-        self._chk_mirror_x.setChecked(False)
-
     def _outline_min_corner(self) -> Tuple[float, float]:
-        if self._outline.lines or self._outline.arcs or self._outline.flashes:
-            min_x, min_y, _max_x, _max_y = self._outline.bbox()
-            return min_x, min_y
-        for data in (self._top, self._bottom):
+        for data in self._role_datas(ROLE_PROFILE) + self._role_datas(ROLE_PASTE):
             if data.lines or data.arcs or data.flashes:
                 min_x, min_y, _max_x, _max_y = data.bbox()
                 return min_x, min_y
         return 0.0, 0.0
-
-    def _bring_gerber_to_origin(self) -> None:
-        if not self._loaded:
-            return
-        angle = self._combo_rot.currentData() or 0
-        if self._chk_invert_rot.isChecked():
-            angle = (360 - angle) % 360
-        mirror = self._chk_flip.isChecked()
-        mirror_x = self._chk_mirror_x.isChecked()
-        center_x, center_y = self._board_center
-        min_x, min_y = self._outline_min_corner()
-        tx, ty = apply_transform(min_x, min_y, mirror, angle, 0.0, 0.0, center_x, center_y, mirror_x)
-        self._spin_off_x.setValue(-tx)
-        self._spin_off_y.setValue(-ty)
 
     def _on_reload_records(self) -> None:
         """Re-sync the component table and markers from the live record list.

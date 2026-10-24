@@ -23,6 +23,13 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "&Export": "&Xuất",
         "Export Review Report": "Xuất báo cáo review",
         "Export PickPlace Fixed": "Xuất PickPlace đã sửa",
+        "Export BOM Fixed": "Xuất BOM đã sửa",
+        "Export PickPlace Fixed Top": "Xuất PickPlace Fixed Top",
+        "Export PickPlace Fixed Bottom": "Xuất PickPlace Fixed Bottom",
+        "Export PickPlace Fixed {suffix}": "Xuất PickPlace Fixed {suffix}",
+        "No Top data to export.": "Không có dữ liệu Top để xuất.",
+        "No Bottom data to export.": "Không có dữ liệu Bottom để xuất.",
+        "No BOM data to export.": "Không có dữ liệu BOM để xuất.",
         "Exit": "Thoát",
         "&Edit": "&Sửa",
         "Undo": "Hoàn tác",
@@ -40,10 +47,22 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Open Session (Ctrl+O)": "Mở phiên (Ctrl+O)",
         "Save Session (Ctrl+S)": "Lưu phiên (Ctrl+S)",
         "Open PickPlace Excel": "Mở file PickPlace Excel",
+        "Open PickPlace Excel (Ctrl+W)": "Mở file PickPlace Excel (Ctrl+W)",
+        "Excel": "Excel",
+        "Open BOM Excel": "Mở file BOM Excel",
+        "Open BOM Excel...": "Mở file BOM Excel...",
         "Align PickPlace Origin": "Canh gốc PickPlace",
         "Gerber View": "Xem Gerber",
         "Export Review Report": "Xuất báo cáo review",
         "Export PickPlace Fixed": "Xuất PickPlace đã sửa",
+        "Export BOM Fixed": "Xuất BOM đã sửa",
+        "Export PickPlace Fixed Top": "Xuất PickPlace Fixed Top",
+        "Export PickPlace Fixed Bottom": "Xuất PickPlace Fixed Bottom",
+        "Export PickPlace Fixed {suffix}": "Xuất PickPlace Fixed {suffix}",
+        "No Top data to export.": "Không có dữ liệu Top để xuất.",
+        "No Bottom data to export.": "Không có dữ liệu Bottom để xuất.",
+        "Export": "Xuất",
+        "Enter report title:": "Nhập tiêu đề báo cáo:",
         "Batch Edit": "Sửa hàng loạt",
         "PCB Info": "Thông tin PCB",
         "OK Checked": "Đánh OK các dòng đã chọn",
@@ -154,6 +173,39 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Changes": "Thay đổi",
         "No history": "Chưa có lịch sử chỉnh sửa",
         "No value change": "Không đổi giá trị",
+        # BOM
+        "BOM": "BOM",
+        "PickPlace": "PickPlace",
+        "PickPlace (Extra: {n})": "PickPlace (Thừa: {n})",
+        "BOM ({n})": "BOM ({n})",
+        "Extra": "Thừa",
+        "Description": "Mô tả",
+        "Quantity": "Số lượng",
+        "Note": "Ghi chú",
+        "Missing Pickplace": "Thiếu trong PickPlace",
+        "No BOM data. Use File -> Open BOM Excel...":
+            "Chưa có dữ liệu BOM. Dùng File -> Mở file BOM Excel...",
+        "BOM Column Mapping": "Ánh xạ cột BOM",
+        "Designator column is required.": "Cột Designator là bắt buộc.",
+        "Auto-filled MPN for {n} records": "Đã tự điền MPN cho {n} dòng",
+        "{k} conflicts ignored, first row wins":
+            "{k} xung đột được bỏ qua, dòng trước thắng",
+        "Loaded {count} BOM rows from {name}": "Đã nạp {count} dòng BOM từ {name}",
+        "BOM quantity {q} differs from {n} designators":
+            "Số lượng BOM {q} khác với {n} designator",
+        "BOM row {stt} lists MPN {mpn}": "Dòng BOM {stt} ghi MPN {mpn}",
+        "BOM Summary": "Tóm tắt BOM",
+        "BOM Row:": "Dòng BOM:",
+        "Top:": "Top:",
+        "Bottom:": "Bottom:",
+        "Missing:": "Thiếu:",
+        "BOM Row {stt} — {n} records": "Dòng BOM {stt} — {n} linh kiện",
+        "Qty:": "SL:",
+        "Top ({n} pcs):": "Top ({n} pcs):",
+        "Bottom ({n} pcs):": "Bottom ({n} pcs):",
+        "Missing ({n} pcs):": "Thiếu ({n} pcs):",
+        "Share:": "Tỉ lệ:",
+        "Not in BOM": "Không có trong BOM",
         "Actions": "Thao tác",
         "Previous": "Trước",
         "Next": "Sau",
@@ -278,7 +330,8 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "GKO (Outline) *:": "GKO (Outline) *:",
         "GTP (Top Paste):": "GTP (Paste lớp trên):",
         "GBP (Bottom Paste):": "GBP (Paste lớp dưới):",
-        "GTO (Top Overlay / Silkscreen):": "GTO (Silkscreen lớp trên):",
+        "NC Drill (Excellon):": "NC Drill (Excellon):",
+    "GTO (Top Overlay / Silkscreen):": "GTO (Silkscreen lớp trên):",
         "GBO (Bottom Overlay / Silkscreen):": "GBO (Silkscreen lớp dưới):",
         "(not selected)": "(chưa chọn)",
         "(optional)": "(tùy chọn)",
@@ -289,7 +342,8 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Select GTP file": "Chọn file GTP",
         "Select GBP file": "Chọn file GBP",
         "Select GTO file": "Chọn file GTO",
-        "Select GBO file": "Chọn file GBO",
+        "Select NC Drill file": "Chọn file NC Drill",
+    "Select GBO file": "Chọn file GBO",
         "Please select the GKO (Outline) file.": "Vui lòng chọn file GKO (Outline).",
         "Analyzing Gerber...": "Đang phân tích Gerber...",
         "Cannot read GKO: {e}": "Không đọc được GKO: {e}",
@@ -395,6 +449,44 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # Panelize
         "Panelize...": "Panelize bảng...",
         "Clear Panelize": "Xóa Panelize",
+        # ECO compare
+        "Compare Revisions (ECO)...": "So sánh bản sửa (ECO)...",
+        "No data to compare.": "Không có dữ liệu để so sánh.",
+        "Old (current session): {n} records from {src}":
+            "Cũ (phiên hiện tại): {n} dòng từ {src}",
+        "current session": "phiên hiện tại",
+        "Open New PickPlace File": "Mở file PickPlace mới",
+        "Custom column mapping applied.": "Đã áp dụng ánh xạ cột tùy chỉnh.",
+        "Move tol (mm):": "Dung sai dịch (mm):",
+        "Rotation tol (°):": "Dung sai xoay (°):",
+        "Compare": "So sánh",
+        "Comparing revisions...": "Đang so sánh các bản...",
+        "No differences found.": "Không phát hiện khác biệt.",
+        "ECO Result": "Kết quả ECO",
+        "Old {old} ({old_u} codes) → New {new} ({new_u} codes): +{a} added · −{r} removed · ~{m} moved · ⇄{p} MPN · ⧉{d} duplicated":
+            "Cũ {old} ({old_u} mã) → Mới {new} ({new_u} mã): +{a} thêm · −{r} mất · ~{m} dịch · ⇄{p} MPN · ⧉{d} trùng",
+        "Added": "Thêm",
+        "Removed": "Mất",
+        "Moved": "Dịch chuyển",
+        "MPN changed": "Đổi MPN",
+        "Duplicates": "Trùng lặp",
+        "duplicated": "trùng lặp",
+        "Old": "Cũ",
+        "New": "Mới",
+        "Change": "Thay đổi",
+        "+new": "+mới",
+        "−gone": "−mất",
+        "Export ECO Report...": "Xuất báo cáo ECO...",
+        "Export ECO Report": "Xuất báo cáo ECO",
+        "Apply to current session": "Áp vào phiên hiện tại",
+        "Apply ECO to current session": "Áp ECO vào phiên hiện tại",
+        "No ECO data to export.": "Không có dữ liệu ECO để xuất.",
+        "+{a} new records (Pending)\n−{r} kept with remark \"ECO removed\"\n~{m} coordinates updated, back to Pending\n⇄{p} MPN updated":
+            "+{a} dòng mới (Pending)\n−{r} dòng giữ lại + ghi chú \"ECO removed\"\n~{m} dòng cập nhật tọa độ, về Pending\n⇄{p} dòng cập nhật MPN",
+        "Export ECO report (.xlsx) after applying":
+            "Xuất báo cáo ECO (.xlsx) sau khi áp",
+        "Applied ECO: +{a} −{r} ~{m} ⇄{p}":
+            "Đã áp ECO: +{a} −{r} ~{m} ⇄{p}",
         "Panelize": "Panelize",
         "Panelize - Multiply Board Coordinates": "Panelize - Nhân tọa độ theo Panel",
         "No data to panelize.": "Không có dữ liệu để panelize.",
@@ -431,15 +523,84 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "Block {b}: gốc=({x:.4f}, {y:.4f}), xoay={rot}\u00b0",
         # Gerber viewer
         "Gerber View - Overlay PickPlace": "Gerber View - Overlay PickPlace",
-        "Display settings saved to session.": "Đã lưu cài đặt hiển thị vào phiên.",
+        # --- the list of the layers ---
+        "Layers": "Cac lop",
+        "Layers + Colors": "Các lớp + Màu",
+        "Show": "Hien",
+        "Colors": "Mau sac",
+        "Custom...": "Tuy chon...",
+        "Choose a colour of your own": "Chon mot mau tuy y",
+        "Color for: {name}": "Mau cho: {name}",
+        "a layer": "mot lop",
+        "Collapse the card": "Thu gon card",
+        "Show origin (0,0)": "Hien goc toa do (0,0)",
+        "Set origin": "Dat goc toa do",
+        "X: {gx:.2f}  Y: {gy:.2f}  ({fx:.2f} / {fy:.2f})":
+            "X: {gx:.2f}  Y: {gy:.2f}  ({fx:.2f} / {fy:.2f})",
+        "X: {gx:.2f}  Y: {gy:.2f}  ({fx:.2f} / {fy:.2f})  |  {ap}":
+            "X: {gx:.2f}  Y: {gy:.2f}  ({fx:.2f} / {fy:.2f})  |  {ap}",
+        "Designator: {des}\nMPN: {mpn}\nX: {x:.3f}  Y: {y:.3f}  Rot: {rot:.0f}\nRemark: {remark}":
+            "Designator: {des}\nMPN: {mpn}\nX: {x:.3f}  Y: {y:.3f}  Rot: {rot:.0f}\nRemark: {remark}",
+        "Click the board to choose a new origin":
+            "Bam vao board de chon goc moi",
+        "Move the origin by the X and Y that are written here":
+            "Doi goc toa do theo X va Y dang ghi o day",
+        "Origin mode: click the new origin on the board.":
+            "Che do dat goc: bam vao vi tri goc moi tren board.",
+        "Origin set at {x:.2f}, {y:.2f}.":
+            "Da dat goc toa do tai {x:.2f}, {y:.2f}.",
+        "Mark the point the coordinates of the file count from":
+            "Dau diem ma toa do cua file tinh tu",
+        "Expand the card": "Mo rong card",
+        "Tick a layer to show it, click the name to bring it on top "
+        "and to change its colour with the palette below.":
+            "Tick vao mot lop de hien no, bam ten de dua lop len tren "
+            "cung va de doi mau bang bang mau ben duoi.",
+        "Show all": "Hien tat ca",
+        "Hide all": "An tat ca",
+        "Only active": "Chi lop active",
+        "Layer": "Lop",
+        "File": "File",
+        "Color: {value}": "Mau: {value}",
+        "Choose the color of {name}": "Chon mau cho {name}",
+        "Click the eye to hide a layer, click the colour to change it, "
+        "click the name to bring the layer on top.":
+            "Bam con mat de an mot lop, bam o mau de doi mau, "
+            "bam ten lop de dua lop len tren cung.",
+        "Reading {name}...": "Dang doc {name}...",
+        "No Gerber file.": "Khong co file Gerber.",
+        # --- the dialog of the files ---
+        "Select the folder of the Gerber files": "Chon thu muc chua file Gerber",
+        "Rescan": "Quet lai",
+        "Add file...": "Them file...",
+        "Remove": "Bo",
+        "Folder:": "Thu muc:",
+        "Every file of the folder that holds artwork becomes a layer.\n"
+        "The name of a layer is taken from the attributes of the file when "
+        "it has them, and from the name of the file when it has not.":
+            "Moi file trong thu muc co hinh deu la mot lop.\n"
+            "Ten lop lay tu thuoc tinh cua file khi co, va lay tu ten file "
+            "khi khong co.",
+        "{n} files found · {m} layers": "Tim thay {n} file · {m} lop",
+        "This file holds no artwork.": "File nay khong co hinh.",
+        "No file of this folder holds artwork. Choose another folder.":
+            "Khong file nao trong thu muc nay co hinh. Hay chon thu muc khac.",
+
+        "X: {gx:.2f}  Y: {gy:.2f}  |  {ap}": "X: {gx:.2f}  Y: {gy:.2f}  |  {ap}",
+        "Export image...": "Xuất ảnh...",
+        "Export PNG": "Xuất PNG",
+        "Export PDF": "Xuất PDF",
+        "Export SVG": "Xuất SVG",
+        "Image exported to {path}": "Đã xuất ảnh tới {path}",
+        "Export failed": "Xuất thất bại",
         "Reading GKO (outline)...": "Đang đọc GKO (outline)...",
         "Reading GTP (Top Paste)...": "Đang đọc GTP (Paste trên)...",
         "Reading GBP (Bottom Paste)...": "Đang đọc GBP (Paste dưới)...",
         "Reading GTO (Silkscreen)...": "Đang đọc GTO (Silkscreen)...",
-        "Reading GBO (Silkscreen)...": "Đang đọc GBO (Silkscreen)...",
+        "Reading NC Drill...": "Đang đọc NC Drill...",
+    "Reading GBO (Silkscreen)...": "Đang đọc GBO (Silkscreen)...",
         "Reading Gerber file...": "Đang đọc file Gerber...",
         "Done.": "Xong.",
-        "Display...": "Hiển thị...",
         "Fit View": "Vừa khung",
         "Reset": "Đặt lại",
         "Export PDF...": "Xuất PDF...",
@@ -464,37 +625,96 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Attribute filters": "Bộ lọc thuộc tính",
         "Coordinate range": "Khoảng tọa độ",
         "Display settings": "Cài đặt hiển thị",
-        "Save display settings": "Lưu cài đặt hiển thị",
         "Display": "Hiển thị",
-        "Gerber Transform & Offset": "Biến đổi Gerber & Offset",
-        "Visibility": "Hiển thị",
         "PickPlace markers": "Marker PickPlace",
         "Snapping": "Snap",
         "Grid": "Lưới",
-        "Rotate Gerber:": "Xoay Gerber:",
-        "Invert Gerber rotation": "Đảo chiều xoay Gerber",
+        # --- toolbar của trang Gerber View ---
+        "Rotate": "Xoay",
+        "Flip X": "Lật X",
+        "Flip Y": "Lật Y",
+        "PickPlace": "PickPlace",
+        "Rotate Gerber": "Xoay Gerber",
+        "Edit the PickPlace overlay (markers, crosshair, colors)":
+            "Chỉnh overlay PickPlace (marker, crosshair, màu)",
+        "Grid settings and information": "Lưới — cài đặt và thông tin",
+        # --- dialog Overlay PickPlace ---
+        "PickPlace overlay": "Overlay PickPlace",
+        "Show frame": "Hiện khung",
+        "Highlight": "Highlight",
+        "The crosshair of the view follows the pointer across the whole "
+        "view; it is always on.":
+            "Crosshair của view chạy theo con trỏ trên toàn khung hình; luôn bật.",
+        # --- dialog Grid ---
+        "Grid settings": "Cài đặt lưới",
+        "Col:": "Cột:",
+        "Row:": "Hàng:",
+        "Grid opacity:": "Độ mờ lưới:",
+        "Grid width:": "Độ dày đường lưới:",
+        "Information": "Thông tin",
+        "The board is not drawn yet.": "Bản vẽ chưa được nạp.",
+        "Board: {w:.2f} x {h:.2f} mm\nOne cell: {cw:.2f} x {ch:.2f} mm":
+            "Board: {w:.2f} x {h:.2f} mm\nMỗi ô: {cw:.2f} x {ch:.2f} mm",
         "Flip Gerber (Mirror Y)": "Lật Gerber (Mirror Y)",
         "Flip Gerber (Mirror X)": "Lật mặt Gerber (Mirror X)",
-        "Offset X:": "Offset X:",
-        "To Origin (0,0)": "Về gốc (0,0)",
-        "Show GKO outline": "Hiện outline GKO",
+        "Read with a reduced parser: {files}": "Đọc bằng parser giảm: {files}",
+        "Gerber layers: {files}": "Cac lop Gerber: {files}",
+        "{n} layers of another board (hidden): {files}":
+            "{n} lop cua board khac (da an): {files}",
+        " | {note}": " | {note}",
+        "Drill: offset {x:+.3f} / {y:+.3f} mm, {m}/{t} holes matched, residual {r:.3f} mm": "Đện khoan: dịch {x:+.3f} / {y:+.3f} mm, khớp {m}/{t} lỗ, sai số {r:.3f} mm",
+        "Show NC Drill": "Điện lõ khoan (NC Drill)",
+    "Show GKO outline": "Hiện outline GKO",
         "Show Paste (GTP / GBP)": "Hiện Paste (GTP / GBP)",
         "Show Silkscreen (GTO / GBO)": "Hiện Silkscreen (GTO / GBO)",
         "Show PickPlace (aligned)": "Hiện PickPlace (đã canh)",
         "Show crosshair": "Hiện crosshair",
         "Checked": "Đã check",
+        "Mark the selected component as checked": "Đánh dấu component đang chọn đã kiểm tra",
+        "Undo check": "Bỏ check",
+        "Uncheck the selected component": "Bỏ check component đang chọn",
+        "Uncheck all": "Hủy check tất cả",
+        "Clear the checks of all components on this layer": "Hủy check tất cả component của layer này",
+        "Clear the checks of all components on this layer?": "Hủy check tất cả component của layer này?",
+        "Select a component in the table first.": "Chọn một component trong bảng trước.",
+        "Rotate comps": "Xoay component",
+        "Rotate all components with their coordinates by 0, 90, 180 or 270 degrees around the origin (0, 0)":
+            "Xoay tất cả component cùng tọa độ 0, 90, 180 hoặc 270 độ quanh gốc (0, 0)",
+        "Component {n}\u00b0": "Component {n}\u00b0",
+        "Rotate {n} components by {a}\u00b0 around the origin (0, 0)?":
+            "Xoay {n} component {a}\u00b0 quanh gốc (0, 0)?",
+        "Rotated {n} components by {a}\u00b0": "Đã xoay {n} component {a}\u00b0",
+        "Components are already at the rotated position.":
+            "Các component đã nằm ở vị trí sau xoay.",
+        "Flip comps": "Lật component",
+        "Flip all components with their coordinates across the X or Y axis":
+            "Lật tất cả component cùng tọa độ theo trục X hoặc Y",
+        "Component Flip {axis}": "Lật component {axis}",
+        "Flip {n} components across the {axis} axis?":
+            "Lật {n} component theo trục {axis}?",
+        "Flipped {n} components across the {axis} axis":
+            "Đã lật {n} component theo trục {axis}",
+        "Components are already at the flipped position.":
+            "Các component đã nằm ở vị trí sau lật.",
+        "Rotating components...": "Đang xoay component...",
+        "Flipping components...": "Đang lật component...",
+        "Resetting rotation...": "Đang đặt lại góc xoay...",
+        "Reset the rotation of {n} components to 0\u00b0?":
+            "Đặt lại góc xoay của {n} component về 0\u00b0?",
+        "Reset the rotation of {n} components to 0\u00b0":
+            "Đã đặt lại góc xoay của {n} component về 0\u00b0",
         "Arrow size:": "Kích thước mũi tên:",
         "Crosshair scale:": "Tỷ lệ crosshair:",
-        "Crosshair full screen": "Dấu thập toàn màn hình",
-        "Show a crosshair across the whole view while hovering":
-            "Hiển thị dấu thập toàn bộ màn hình khi di chuột",
         "No valid GKO file.": "Không có file GKO hợp lệ.",
-        "Outline: {ol} lines, {of} pads | Top: {tf} pads | Bottom: {bf} pads | Silk Top: {st} lines | Silk Bottom: {sb} lines":
+        "Outline: {ol} lines, {of} pads | Top: {tf} pads | Bottom: {bf} pads | Silk Top: {st} lines | Silk Bottom: {sb} lines | Drill: {dr} holes":
             "Outline: {ol} đường, {of} pad | Trên: {tf} pad | Dưới: {bf} pad | Silk Trên: {st} đường | Silk Dưới: {sb} đường",
         "Error reading Gerber file": "Lỗi đọc file Gerber",
         "Cannot read Gerber:\n{message}": "Không đọc được Gerber:\n{message}",
         "Measure": "Đo kích thước",
         "Clear": "Xóa",
+        "Stop measure": "Dừng đo",
+        "Measure distances on the board. Turning the button off clears all measurements. Right-click or Esc cancels the current measurement.":
+            "Đo khoảng cách trên bảng. Tắt nút sẽ xóa hết các phép đo. Click chuột phải hoặc Esc để hủy phép đo đang vẽ.",
         "Click two points to measure the distance. Right-click or Esc cancels the current measurement.":
             "Click 2 điểm để đo khoảng cách. Click chuột phải hoặc Esc để hủy phép đo đang vẽ.",
         "Measure mode: click the start point.":
@@ -511,11 +731,6 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Toggle snap to pad center when measuring. Hold Ctrl while clicking to bypass snap for that click.":
             "Bật/tắt bám tâm pad khi đo. Giữ Ctrl khi click để tạm thời không bám cho lần click đó.",
         "Distance: {d:.3f} mm (snap off)": "Khoảng cách: {d:.3f} mm (không bám)",
-        "Compact": "Thu gọn",
-        "Show/hide the options bar (buttons, layer, component settings). Search stays visible.":
-            "Ẩn/hiện nhóm tùy chọn (nút chức năng, layer, cài đặt component). Ô tìm kiếm vẫn hiển thị.",
-        "Show/hide the options bar and file stats (Outline/Top/Bottom/Silk) to give the component table more space.":
-            "Ẩn/hiện nhóm tùy chọn và dòng thống kê file (Outline/Top/Bottom/Silk) để bảng component cao hơn.",
         # PCB Info dialog
         "Hotkey {hk}: point the mouse at the desired position in CAM350 then press the hotkey to read coordinates.\nThe macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills Boc 2, the 3rd time fills Boc 3. The Save button appears after enough data.":
             "Hotkey {hk}: di chuyển chuột đến vị trí mong muốn trong CAM350 rồi nhấn hotkey để đọc toạ độ.\nMacro tự điền X Boc 1 & Y Boc 1, lần thứ 2 điền Boc 2, lần thứ 3 điền Boc 3. Nút Save hiện ra khi đủ dữ liệu.",
@@ -623,6 +838,20 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "Đang cập nhật bảng thành phần...",
         "Please wait":
             "Vui lòng đợi",
+        "Reading file headers...":
+            "Đang đọc tiêu đề cột...",
+        "Opening PickPlace...":
+            "Đang mở PickPlace...",
+        "Loading components...":
+            "Đang nạp linh kiện...",
+        "Opening BOM...":
+            "Đang mở BOM...",
+        "Loading BOM...":
+            "Đang nạp BOM...",
+        "Reading session...":
+            "Đang đọc phiên...",
+        "Opening session...":
+            "Đang mở phiên...",
         "📌 DUP = Duplicate — two components share coordinates":
             "📌 DUP = Duplicate — hai linh kiện trùng tọa độ",
         "(within {tol:g} mm)": "(trong phạm vi {tol:g} mm)",

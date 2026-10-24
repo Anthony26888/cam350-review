@@ -13,7 +13,10 @@ from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QMouseEvent, QPen, QPainterPath  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGraphicsScene  # noqa: E402
 
-from ui.gerber_viewer import GerberView, GerberViewer, MeasurementItem, PadGrid
+from ui.gerber_viewer import (
+    Z_MEASURE, GerberView, GerberViewer, MeasurementItem, PadGrid,
+)
+from gerber_layers_helper import LAYERS, make_layers, set_layer_data
 from services.gerber.gerber_render import FlashShape, RenderData  # noqa: E402
 from models.review import ReviewRecord  # noqa: E402
 
@@ -67,7 +70,8 @@ def test_measurement_item_render(qapp):
     view.viewport().grab()          # exercises paint()
     assert item.boundingRect().contains(QPointF(100.0, 100.0))
     assert item.boundingRect().contains(QPointF(250.0, 160.0))
-    assert item.zValue() == 80
+    # The measurement lies over the artwork, so that a pad never hides it.
+    assert item.zValue() == Z_MEASURE
 
 
 def test_measure_mode_click_emits_points(qapp):
@@ -121,11 +125,11 @@ class _NoopGerberViewer(GerberViewer):
 
 
 def _make_viewer():
-    viewer = _NoopGerberViewer([], r"C:\nonexistent.gko")
-    viewer._top = RenderData(flashes=[
+    viewer = _NoopGerberViewer([], list(LAYERS))
+    set_layer_data(viewer, "paste", RenderData(flashes=[
         FlashShape(cx=50.0, cy=60.0, kind="circle", w=1.0, h=1.0),
         FlashShape(cx=120.0, cy=-30.0, kind="circle", w=1.0, h=1.0),
-    ])
+    ]), "top")
     viewer._pad_grid_cache = {}
     viewer._loaded = True
     return viewer
@@ -298,40 +302,6 @@ def test_ctrl_bypass_move_no_snap_indicator(qapp, monkeypatch):
     assert "snap off" in viewer._lbl_status.text()
 
 
-def test_compact_default_shows_options(qapp):
-    viewer = _make_viewer()
-    assert viewer._btn_compact.isChecked()
-    assert viewer._compact_hidden is False
-    assert viewer._options_widget.isHidden() is False
-    assert viewer._lbl_status.isHidden() is False
-
-
-def test_compact_toggle_hides_options_and_stats_keeps_search(qapp):
-    viewer = _make_viewer()
-    viewer._btn_compact.setChecked(False)
-    assert viewer._compact_hidden is True
-    assert viewer._options_widget.isHidden() is True
-    assert viewer._lbl_status.isHidden() is True
-    assert viewer._search_input.isHidden() is False
-    assert viewer._table_components.isHidden() is False
-    viewer._btn_compact.setChecked(True)
-    assert viewer._compact_hidden is False
-    assert viewer._options_widget.isHidden() is False
-    assert viewer._lbl_status.isHidden() is False
-    assert viewer._search_input.isHidden() is False
-    assert viewer._table_components.isHidden() is False
-
-
-def test_display_settings_compact_round_trip(qapp):
-    viewer = _make_viewer()
-    assert viewer.display_settings()["compact"] is True
-    viewer.apply_display_settings({"compact": False})
-    assert viewer._compact_hidden is True
-    assert viewer.display_settings()["compact"] is False
-    viewer.apply_display_settings({"compact": True})
-    assert viewer._compact_hidden is False
-
-
 def _make_records():
     return [
         ReviewRecord(designator="C1", mpn="CAP-100UF", layer="top",
@@ -344,10 +314,10 @@ def _make_records():
 
 
 def _make_viewer_with_records():
-    viewer = _NoopGerberViewer(_make_records(), r"C:\nonexistent.gko")
-    viewer._top = RenderData(flashes=[
+    viewer = _NoopGerberViewer(_make_records(), list(LAYERS))
+    set_layer_data(viewer, "paste", RenderData(flashes=[
         FlashShape(cx=50.0, cy=60.0, kind="circle", w=1.0, h=1.0),
-    ])
+    ]), "top")
     viewer._pad_grid_cache = {}
     viewer._loaded = True
     return viewer

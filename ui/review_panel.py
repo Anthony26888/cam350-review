@@ -4,8 +4,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QGroupBox, QFormLayout, QFrame, QSizePolicy,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QStackedWidget,
 )
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QFont
 
 from models.review import ReviewRecord
 from ui.i18n import tr
@@ -14,6 +16,30 @@ try:
     from models.history import HistoryEntry
 except Exception:  # pragma: no cover - for minimal test envs
     HistoryEntry = object  # type: ignore
+
+
+def share_percents(top: int, bottom: int, missing: int, total: int):
+    """Integer percents summing to 100 (remainder goes to the largest part)."""
+    counts = [max(int(top), 0), max(int(bottom), 0), max(int(missing), 0)]
+    total = max(int(total), sum(counts))
+    if total <= 0:
+        return (0, 0, 0)
+    raw = [c * 100.0 / total for c in counts]
+    out = [int(v) for v in raw]
+    rest = 100 - sum(out)
+    order = sorted(range(3), key=lambda i: (raw[i], -i), reverse=True)
+    for i in order:
+        if rest <= 0:
+            break
+        if counts[i] > 0:
+            out[i] += 1
+            rest -= 1
+    return tuple(out)
+
+
+def share_legend_text(top: int, bottom: int, missing: int, total: int) -> str:
+    t, b, m = share_percents(top, bottom, missing, total)
+    return f"Top {t}% · Bottom {b}% · Missing {m}%"
 
 
 class ReviewPanel(QWidget):
@@ -36,6 +62,8 @@ class ReviewPanel(QWidget):
 
         self._build_stats_section()
         self._build_info_section()
+        self._build_bom_summary_section()
+        self._build_info_stack()
         self._layout.addSpacing(10)
         self._build_history_section()
 
@@ -84,8 +112,8 @@ class ReviewPanel(QWidget):
                 label.setText(str(v))
 
     def _build_info_section(self) -> None:
-        info_group = QGroupBox(tr("Component Information"))
-        info_layout = QFormLayout(info_group)
+        self._info_group = QGroupBox(tr("Component Information"))
+        info_layout = QFormLayout(self._info_group)
 
         selectable = Qt.TextSelectableByMouse
         self._lbl_designator = QLabel("-")
@@ -137,7 +165,92 @@ class ReviewPanel(QWidget):
         info_layout.addRow(tr("Remark:"), self._lbl_remark)
         info_layout.addRow(tr("Progress:"), self._lbl_progress)
 
-        self._layout.addWidget(info_group)
+    def _build_info_stack(self) -> None:
+        # Information and BOM Summary share one slot so both cards always
+        # have identical geometry; only one page is visible at a time.
+        self._info_stack = QStackedWidget()
+        self._info_stack.addWidget(self._info_group)
+        self._info_stack.addWidget(self._bom_summary_group)
+        self._info_stack.setCurrentIndex(0)
+        self._layout.addWidget(self._info_stack)
+
+    def show_info_card(self) -> None:
+        self._info_stack.setCurrentIndex(0)
+
+    def show_bom_summary_card(self) -> None:
+        self._info_stack.setCurrentIndex(1)
+
+    def _build_bom_summary_section(self) -> None:
+        self._bom_summary_group = QGroupBox(tr("BOM Summary"))
+        form = QFormLayout(self._bom_summary_group)
+        selectable = Qt.TextSelectableByMouse
+        self._lbl_bom_mpn = QLabel("-")
+        bold = QFont()
+        bold.setBold(True)
+        self._lbl_bom_mpn.setFont(bold)
+        self._lbl_bom_mpn.setWordWrap(True)
+        self._lbl_bom_mpn.setTextInteractionFlags(selectable)
+        self._lbl_bom_qty = QLabel("-")
+        self._lbl_bom_qty.setTextInteractionFlags(selectable)
+        self._lbl_bom_top_cap = QLabel(tr("Top ({n} pcs):", n=0))
+        self._lbl_bom_top = QLabel("-")
+        self._lbl_bom_top.setWordWrap(True)
+        self._lbl_bom_top.setTextInteractionFlags(selectable)
+        self._lbl_bom_bottom_cap = QLabel(tr("Bottom ({n} pcs):", n=0))
+        self._lbl_bom_bottom = QLabel("-")
+        self._lbl_bom_bottom.setWordWrap(True)
+        self._lbl_bom_bottom.setTextFormat(Qt.RichText)
+        self._lbl_bom_bottom.setTextInteractionFlags(selectable)
+        self._lbl_bom_missing_cap = QLabel(tr("Missing ({n} pcs):", n=0))
+        self._lbl_bom_missing = QLabel("-")
+        self._lbl_bom_missing.setWordWrap(True)
+        self._lbl_bom_missing.setTextInteractionFlags(selectable)
+        self._lbl_bom_share = QLabel("-")
+        self._lbl_bom_share.setWordWrap(True)
+        self._lbl_bom_share.setTextInteractionFlags(selectable)
+        form.addRow(tr("MPN:"), self._lbl_bom_mpn)
+        form.addRow(tr("Qty:"), self._lbl_bom_qty)
+        form.addRow(self._lbl_bom_top_cap, self._lbl_bom_top)
+        form.addRow(self._lbl_bom_bottom_cap, self._lbl_bom_bottom)
+        form.addRow(self._lbl_bom_missing_cap, self._lbl_bom_missing)
+        form.addRow(tr("Share:"), self._lbl_bom_share)
+
+    def display_bom_summary(self, summary) -> None:
+        self._lbl_bom_mpn.setText(summary.mpn if summary.mpn else "-")
+        self._lbl_bom_qty.setText(f"{summary.quantity} pcs")
+        self._lbl_bom_top_cap.setText(tr("Top ({n} pcs):", n=len(summary.top)))
+        self._lbl_bom_top.setText(
+            ", ".join(summary.top) if summary.top else "-")
+        self._lbl_bom_bottom_cap.setText(
+            tr("Bottom ({n} pcs):", n=len(summary.bottom)))
+        bot_names = ", ".join(
+            f'<span style="color:#DC2626;">{d}</span>'
+            for d in summary.bottom) if summary.bottom else "-"
+        self._lbl_bom_bottom.setText(bot_names)
+        miss = list(summary.missing) + [
+            f"{d} (mixed)" for d in summary.mixed_layers]
+        self._lbl_bom_missing_cap.setText(
+            tr("Missing ({n} pcs):", n=len(miss)))
+        self._lbl_bom_missing.setText(", ".join(miss) if miss else "-")
+        self._lbl_bom_share.setText(share_legend_text(
+            len(summary.top), len(summary.bottom), len(miss),
+            len(summary.top) + len(summary.bottom) + len(miss)))
+        self.show_bom_summary_card()
+
+    def clear_bom_summary(self) -> None:
+        self._lbl_bom_mpn.setText("-")
+        self._lbl_bom_qty.setText("-")
+        self._lbl_bom_top_cap.setText(tr("Top ({n} pcs):", n=0))
+        self._lbl_bom_top.setText("-")
+        self._lbl_bom_bottom_cap.setText(tr("Bottom ({n} pcs):", n=0))
+        self._lbl_bom_bottom.setText("-")
+        self._lbl_bom_missing_cap.setText(tr("Missing ({n} pcs):", n=0))
+        self._lbl_bom_missing.setText("-")
+        self._lbl_bom_share.setText("-")
+        self.show_info_card()
+
+    def set_history_title(self, text: str) -> None:
+        self._lbl_hist_title.setText(text)
 
     def _build_history_section(self) -> None:
         hist_group = QGroupBox(tr("History"))
@@ -229,6 +342,7 @@ class ReviewPanel(QWidget):
             )
 
         self._lbl_hist_title.setText(record.designator)
+        self.clear_bom_summary()
 
     def reload_history(self, entries: List) -> None:
         table = self._history_table
@@ -277,6 +391,7 @@ class ReviewPanel(QWidget):
         self._lbl_datasheet.setText("-")
         self._lbl_progress.setText("-")
         self._lbl_hist_title.setText("-")
+        self.clear_bom_summary()
         table = self._history_table
         try:
             table.clearSpans()
@@ -319,6 +434,14 @@ def history_change_text(e) -> str:
     parts.append(_fmt_change("Y", oy, ny))
     parts.append(_fmt_change("Rot", orot, nrot, suffix="°"))
     parts = [p for p in parts if p]
+    mo, mn = (getattr(e, "mpn_old", "") or "").strip(), (getattr(e, "mpn_new", "") or "").strip()
+    if mo or mn:
+        if not mo and mn:
+            parts.append(f"MPN: {mn}")
+        elif mo and not mn:
+            parts.append(f"MPN: {mo} -> -")
+        elif mo != mn:
+            parts.append(f"MPN: {mo}->{mn}")
     remark = (getattr(e, "remark", "") or "").strip()
     if remark:
         parts.append(f"Remark: {remark}")

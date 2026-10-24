@@ -105,7 +105,7 @@ def test_save_and_load(tmp_path):
     record = _make_record()
     SessionService.save(str(path), [record], source_file="src.xlsx", current_index=2)
     loaded = SessionService.load(str(path))
-    assert loaded.version == 7
+    assert loaded.version == 8
     assert loaded.source_file == "src.xlsx"
     assert loaded.current_index == 2
     assert len(loaded.records) == 1
@@ -125,7 +125,7 @@ def test_save_and_load_gerber_paths(tmp_path):
         gerberGbo=r"D:\gerber\b.GBO",
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 7
+    assert loaded.version == 8
     assert loaded.gerberGko == r"D:\gerber\b.GKO"
     assert loaded.gerberGtp == r"D:\gerber\b.GTP"
     assert loaded.gerberGbp == r"D:\gerber\b.GBP"
@@ -223,7 +223,7 @@ def test_save_and_load_column_mapping(tmp_path):
         str(path), [record], source_file="src.xlsx", column_mapping=mapping
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 7
+    assert loaded.version == 8
     assert loaded.column_mapping == mapping
     assert loaded.column_mapping["x"] == "Xpos"
 
@@ -261,7 +261,7 @@ def test_save_and_load_gerber_files(tmp_path):
         gerber_files=gerber_files,
     )
     loaded = SessionService.load(str(path))
-    assert loaded.version == 7
+    assert loaded.version == 8
     assert loaded.gerber_files is not None
     assert decompress_text(loaded.gerber_files["gerberGko"]) == "GKO-CONTENT\n%MOMM*%\nM02*"
     assert decompress_text(loaded.gerber_files["gerberGtp"]) == "GTP-CONTENT"

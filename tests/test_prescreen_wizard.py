@@ -210,11 +210,14 @@ def test_prescreen_stats_gauge_line(app):
     assert "no paste data" in w._prescreen_summary.text()
 
 
-def test_paste_file_filters_include_gpt_gpb():
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    dlg_src = (root / "ui" / "gerber_file_dialog.py").read_text(encoding="utf-8")
-    assert ".gpt" in dlg_src and ".gpb" in dlg_src
+def test_the_paste_layers_are_found_by_their_role():
+    # The paste layers used to be picked by the extension of the file;
+    # now the role of a layer comes from the attributes of the file, and
+    # from the name of the file when it has none.
+    from services.gerber.layer_scan import role_from_extension
+
+    assert role_from_extension("board.gtp") == ("paste", "top")
+    assert role_from_extension("board.gbp") == ("paste", "bottom")
 
 
 def test_get_prescreen_context_returns_paths_and_ctx(app):

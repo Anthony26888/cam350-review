@@ -1,12 +1,18 @@
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 MM_PER_INCH = 25.4
 
 
-@dataclass
+def _format_number(value: float) -> str:
+    """One number of an aperture template, without a tail of zeros."""
+    text = ("%.6f" % float(value)).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+@dataclass(slots=True)
 class LineShape:
     x1: float = 0.0
     y1: float = 0.0
@@ -14,9 +20,15 @@ class LineShape:
     y2: float = 0.0
     width: float = 0.1
     negative: bool = False
+    #: The aperture (D code) the stroke was drawn with.
+    dcode: int = 0
+    #: The place of the stroke in the file.  The order of the file
+    #: matters, because a negative object removes the artwork that was
+    #: drawn before it.
+    seq: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class ArcShape:
     x1: float = 0.0
     y1: float = 0.0
@@ -27,9 +39,13 @@ class ArcShape:
     clockwise: bool = True
     width: float = 0.1
     negative: bool = False
+    #: The aperture (D code) the arc was drawn with.
+    dcode: int = 0
+    #: The place of the arc in the file.
+    seq: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class FlashShape:
     cx: float = 0.0
     cy: float = 0.0
@@ -40,6 +56,14 @@ class FlashShape:
     pts: Optional[List[Tuple[float, float]]] = None
     macro: Optional["ApertureMacro"] = None
     negative: bool = False
+    #: The aperture (D code) the shape was flashed with.
+    dcode: int = 0
+    #: The place of the shape in the file.
+    seq: int = 0
+    #: True when the points of a polygon are given relative to the place
+    #: of the flash.  The points of a region (G36) and of a polygon
+    #: aperture are given in the coordinates of the file.
+    pts_local: bool = False
 
 
 @dataclass
@@ -47,33 +71,199 @@ class ApertureMacro:
     circles: List[Tuple[float, float, float]] = field(default_factory=list)  # (cx, cy, r) mm
     polygons: List[List[Tuple[float, float]]] = field(default_factory=list)  # point lists mm
     segments: List[Tuple[float, float, float, float, float]] = field(default_factory=list)  # (x1,y1,x2,y2,width)
+    # Shapes with exposure off inside the macro are holes in the aperture.
+    hole_circles: List[Tuple[float, float, float]] = field(default_factory=list)
+    hole_polygons: List[List[Tuple[float, float]]] = field(default_factory=list)
+
+
+def _lines_from_array(array) -> List[LineShape]:
+    """Build the stroke objects of a layer from its flat arrays."""
+    if array is None:
+        return []
+    lines = []
+    for x1, y1, x2, y2, width, negative, dcode in array.tolist():
+        lines.append(LineShape(x1, y1, x2, y2, width, bool(negative), int(dcode)))
+    return lines
 
 
 @dataclass
+class ApertureInfo:
+    """What an aperture of a file looks like.
+
+    The number is the D code of the aperture, the kind is the
+    template of the format (circle, rectangle, obround, polygon or
+    a macro) and the parameters are the numbers of the template.
+    """
+
+    number: int = 0
+    kind: str = ""
+    params: Tuple[float, ...] = ()
+    attributes: Dict[str, str] = field(default_factory=dict)
+    macro_name: str = ""
+
+    def describe(self) -> str:
+        """A short description, the way the format writes it."""
+        if not self.kind:
+            return "D%d" % self.number
+        letter = {"circle": "C", "rect": "R", "obround": "O",
+                  "polygon": "P"}.get(self.kind, "")
+        if self.kind == "macro":
+            return "D%d %s" % (self.number, self.macro_name or "macro")
+        numbers = "X".join(_format_number(p) for p in self.params)
+        if numbers:
+            return "D%d %s,%s" % (self.number, letter, numbers)
+        return "D%d %s" % (self.number, letter)
+
+
+@dataclass(init=False)
 class RenderData:
-    lines: List[LineShape] = field(default_factory=list)
+    #: The strokes of the file as flat arrays: the four coordinates, the
+    #: width, the polarity and the D code of every stroke, in millimetres.
+    #: A large file holds a few hundred thousand strokes, and the renderer
+    #: works on these arrays; the objects are only built when something
+    #: asks for them.
+    _stroke_array: Optional[Any] = None
+    _lines: Optional[List[LineShape]] = None
     arcs: List[ArcShape] = field(default_factory=list)
     flashes: List[FlashShape] = field(default_factory=list)
+    #: The apertures of the file, by their D code.
+    apertures: Dict[int, ApertureInfo] = field(default_factory=dict)
+    #: The parts of the file in the order they are in, as the number
+    #: of strokes, of arcs and of flashed shapes of every part, and
+    #: whether the part is negative.  The order matters, because a
+    #: negative object removes the artwork that was drawn before it.
+    runs: List[Tuple[bool, int, int, int]] = field(default_factory=list)
+
+    def __init__(self, lines=None, arcs=None, flashes=None, apertures=None,
+                 runs=None) -> None:
+        self._stroke_array = None
+        self._lines = list(lines) if lines is not None else None
+        self.arcs = list(arcs) if arcs is not None else []
+        self.flashes = list(flashes) if flashes is not None else []
+        self.apertures = dict(apertures) if apertures is not None else {}
+        self.runs = list(runs) if runs is not None else []
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        self._bbox_cache: Optional[Tuple[float, float, float, float]] = None
+
+    @property
+    def lines(self) -> List[LineShape]:
+        """The strokes of the file, as objects.
+
+        The objects are built from the flat arrays when they are asked for
+        and are not there yet.  A file that is only drawn never builds
+        them.
+        """
+        if self._lines is None:
+            self._lines = _lines_from_array(self._stroke_array)
+        return self._lines
+
+    @lines.setter
+    def lines(self, value) -> None:
+        self._lines = list(value)
+        self._stroke_array = None
+
+    def set_stroke_array(self, array) -> None:
+        """Take the strokes of the file as flat arrays."""
+        self._stroke_array = array
+        self._lines = None
+
+    def stroke_array(self):
+        """The strokes of the file as flat arrays, or None."""
+        return self._stroke_array
+
+    @property
+    def stroke_count(self) -> int:
+        """The number of strokes, without building them."""
+        if self._lines is not None:
+            return len(self._lines)
+        if self._stroke_array is not None:
+            return len(self._stroke_array)
+        return 0
+
+    def set_bbox(self, bbox: Optional[Tuple[float, float, float, float]]) -> None:
+        """Remember the area of the layer, when it is already known.
+
+        The parser knows the area while it reads the file, and handing it
+        over saves walking every primitive a second time.
+        """
+        self._bbox_cache = bbox
 
     def bbox(self) -> Tuple[float, float, float, float]:
-        xs: List[float] = []
-        ys: List[float] = []
-        for ln in self.lines:
-            xs += [ln.x1, ln.x2]
-            ys += [ln.y1, ln.y2]
+        """The area the layer covers, in millimetres."""
+        if self._bbox_cache is not None:
+            return self._bbox_cache
+        min_x = min_y = math.inf
+        max_x = max_y = -math.inf
+        if self._stroke_array is not None and len(self._stroke_array):
+            # The strokes are in flat arrays, and the area is found without
+            # building the objects.
+            array = self._stroke_array
+            xs = array[:, 0:3:2]
+            ys = array[:, 1:4:2]
+            min_x = float(xs.min())
+            max_x = float(xs.max())
+            min_y = float(ys.min())
+            max_y = float(ys.max())
+        if self._stroke_array is None:
+            for ln in self.lines:
+                x1 = ln.x1
+                x2 = ln.x2
+                y1 = ln.y1
+                y2 = ln.y2
+                if x1 < min_x:
+                    min_x = x1
+                if x2 < min_x:
+                    min_x = x2
+                if x1 > max_x:
+                    max_x = x1
+                if x2 > max_x:
+                    max_x = x2
+                if y1 < min_y:
+                    min_y = y1
+                if y2 < min_y:
+                    min_y = y2
+                if y1 > max_y:
+                    max_y = y1
+                if y2 > max_y:
+                    max_y = y2
         for ar in self.arcs:
-            for sx, sy in _sample_arc(ar.x1, ar.y1, ar.x2, ar.y2, ar.cx, ar.cy, ar.clockwise, 12):
-                xs.append(sx)
-                ys.append(sy)
+            # The arc lies inside the circle around its centre.
+            radius = math.hypot(ar.x1 - ar.cx, ar.y1 - ar.cy)
+            if ar.cx - radius < min_x:
+                min_x = ar.cx - radius
+            if ar.cx + radius > max_x:
+                max_x = ar.cx + radius
+            if ar.cy - radius < min_y:
+                min_y = ar.cy - radius
+            if ar.cy + radius > max_y:
+                max_y = ar.cy + radius
         for f in self.flashes:
-            xs.append(f.cx)
-            ys.append(f.cy)
+            half_w = f.w / 2.0
+            half_h = f.h / 2.0
+            if f.cx - half_w < min_x:
+                min_x = f.cx - half_w
+            if f.cx + half_w > max_x:
+                max_x = f.cx + half_w
+            if f.cy - half_h < min_y:
+                min_y = f.cy - half_h
+            if f.cy + half_h > max_y:
+                max_y = f.cy + half_h
             if f.pts:
-                xs += [p[0] for p in f.pts]
-                ys += [p[1] for p in f.pts]
-        if not xs:
+                for px, py in f.pts:
+                    if px < min_x:
+                        min_x = px
+                    if px > max_x:
+                        max_x = px
+                    if py < min_y:
+                        min_y = py
+                    if py > max_y:
+                        max_y = py
+        if min_x > max_x or min_y > max_y:
             return 0.0, 0.0, 0.0, 0.0
-        return min(xs), min(ys), max(xs), max(ys)
+        self._bbox_cache = (min_x, min_y, max_x, max_y)
+        return self._bbox_cache
 
 
 def _polygon_verts(diameter: float, n: int, rotation: float) -> List[Tuple[float, float]]:
@@ -504,7 +694,8 @@ def _make_flash(ap: _Aperture, cx: float, cy: float) -> FlashShape:
     if ap.kind == "oblong":
         return FlashShape(cx, cy, kind="oblong", w=ap.w, h=ap.h, rot=ap.rot)
     if ap.kind == "polygon":
-        return FlashShape(cx, cy, kind="polygon", w=ap.w, h=ap.h, rot=ap.rot, pts=ap.pts)
+        return FlashShape(cx, cy, kind="polygon", w=ap.w, h=ap.h, rot=ap.rot,
+                          pts=ap.pts, pts_local=True)
     return FlashShape(cx, cy, kind="circle", w=0.3, h=0.3)
 
 

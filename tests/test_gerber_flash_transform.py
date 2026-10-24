@@ -65,7 +65,8 @@ def test_polygon_region_offset_shifts_points(app):
 
 
 def test_local_polygon_flash_keeps_position_after_rotation(app):
-    fl = FlashShape(100.0, 200.0, "polygon", 0.0, 0.0, 0.0, list(SQUARE))
+    fl = FlashShape(100.0, 200.0, "polygon", 0.0, 0.0, 0.0, list(SQUARE),
+                     pts_local=True)
     path = QPainterPath()
     _add_flash(path, fl, mirror=False, angle=90.0)
     # center (100,200) rotated 90 -> (-200,100) gerber -> scene (-200,-100);

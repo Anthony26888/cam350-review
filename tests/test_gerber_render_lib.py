@@ -11,7 +11,7 @@ from services.gerber.gerber_render import (
     parse_render,
     _sample_arc,
 )
-from services.gerber.gerber_render_lib import parse_layer, parse_render_std
+from services.gerber.gerber_render_lib import load_layer, parse_layer
 from ui.gerber_viewer import _append_arc_path
 
 from PySide6.QtGui import QPainterPath
@@ -23,7 +23,7 @@ def test_circle_flash(tmp_path):
         "%FSLAX44Y44*%\n%MOMM*%\n%ADD11C,2.000000*%\n"
         "D11*\nX100000Y200000D03*\n"
     )
-    d = parse_render_std(str(p))
+    d = parse_layer(str(p))
     assert len(d.flashes) == 1
     fl = d.flashes[0]
     assert fl.kind == "circle"
@@ -40,7 +40,7 @@ def test_rect_flash(tmp_path):
         "%FSLAX36Y36*%\n%MOIN*%\n%ADD12R,0.100000X0.050000*%\n"
         "D12*\nX393701Y787402D03*\n"
     )
-    d = parse_render_std(str(p))
+    d = parse_layer(str(p))
     assert len(d.flashes) == 1
     fl = d.flashes[0]
     assert fl.kind == "rect"
@@ -59,7 +59,7 @@ def test_arc_g02_becomes_arcshape(tmp_path):
         "X0Y100000D02*\n"
         "G02X100000Y0I100000J0D01*\n"
     )
-    d = parse_render_std(str(p))
+    d = parse_layer(str(p))
     assert len(d.arcs) == 1
     ar = d.arcs[0]
     assert ar.x1 == pytest.approx(0.0)
@@ -82,7 +82,7 @@ def test_region_polygon(tmp_path):
         "X0Y0D02*\nX393701Y0D01*\nX393701Y393701D01*\nX0Y393701D01*\nX0Y0D01*\n"
         "G37*\n"
     )
-    d = parse_render_std(str(p))
+    d = parse_layer(str(p))
     polys = [f for f in d.flashes if f.kind == "polygon" and f.pts]
     assert len(polys) == 1
     assert polys[0].pts[0] == pytest.approx((0.0, 0.0))
@@ -98,7 +98,7 @@ def test_negative_region_from_lpc(tmp_path):
         "X0Y0D02*\nX100000Y0D01*\nX100000Y100000D01*\nX0Y100000D01*\nX0Y0D01*\n"
         "G37*\n"
     )
-    d = parse_render_std(str(p))
+    d = parse_layer(str(p))
     polys = [f for f in d.flashes if f.kind == "polygon" and f.pts]
     assert len(polys) == 1
     assert polys[0].negative is True

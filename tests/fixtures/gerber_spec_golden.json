@@ -1,0 +1,226 @@
+{
+  "entries": {
+    "data0/NC Drill/GS.DSP-4.0_NC Drill Files_2026-02-27.TXT": {
+      "bbox": null,
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "items": 0,
+      "warnings": 0
+    },
+    "data0/PCB ETRIGGER_CTRL_3.0-working gerber/ETRIGGER_CTRL_3.0.drl": {
+      "bbox": [
+        4.30618,
+        1.64314,
+        177.61669,
+        83.35683
+      ],
+      "hash": "b5de5644154ee1a000ff09fe87d24b2fa5ae65d39662bd55674b06e4b5a04609",
+      "items": 664,
+      "warnings": 0
+    },
+    "data0/PCB ETRIGGER_CTRL_3.0-working gerber/ETRIGGER_CTRL_3.0.gko": {
+      "bbox": [
+        -0.1,
+        -0.0755,
+        180.09999,
+        85.0755
+      ],
+      "hash": "743d50608b019c344693eca1d27a95073b2958a3e9d3208797c6e80d0b738e6f",
+      "items": 702,
+      "warnings": 0
+    },
+    "data0/PCB ETRIGGER_CTRL_3.0-working gerber/ETRIGGER_CTRL_3.0.gto": {
+      "bbox": [
+        -0.225,
+        -0.20049,
+        180.22499,
+        85.20049
+      ],
+      "hash": "150e26c16582a0909fe962168bc1c3a3814d5dcfc3e8af10b3fb3491ad21542f",
+      "items": 5557,
+      "warnings": 0
+    },
+    "data0/PCB ETRIGGER_CTRL_3.0-working gerber/ETRIGGER_CTRL_3.0.gtp": {
+      "bbox": [
+        10.10704,
+        2.14825,
+        172.744,
+        82.85175
+      ],
+      "hash": "8d771588b2b9970910a787fa03484ccbfb470cc3014ae2165b9220832824825d",
+      "items": 1199,
+      "warnings": 0
+    },
+    "data09/2nd-PCB FFC.MAIN-4.0-working gerber/PCB FFC.MAIN-4.0.gtp": {
+      "bbox": [
+        -0.0762,
+        110.02459,
+        264.07621,
+        231.17701
+      ],
+      "hash": "487993ca126f772bfe8ea426d75cbbce8d1e266bb1356fb900df2b5bce463024",
+      "items": 5809,
+      "warnings": 0
+    },
+    "data12/Stencil BFS MAIN TOP-BOT/working gerber/wf.drl": {
+      "bbox": [
+        1.47499,
+        1.47499,
+        89.30501,
+        65.82499
+      ],
+      "hash": "0e26b587ce61f821eaece82a3757e2b18b0af1edf2b787304c62db9cfd15e030",
+      "items": 80,
+      "warnings": 0
+    },
+    "data12/Stencil BFS MAIN TOP-BOT/working gerber/wf.gtl": {
+      "bbox": [
+        0.54607,
+        0.54933,
+        90.23027,
+        66.75001
+      ],
+      "hash": "afb7b4426b1e6287d97b97401c410f2c0ed976ca9fa9f7014e03e9480d0b0e99",
+      "items": 6176,
+      "warnings": 0
+    },
+    "data12/Stencil BFS MAIN TOP-BOT/working gerber/wf.gto": {
+      "bbox": [
+        6.81833,
+        6.81502,
+        83.96214,
+        60.48002
+      ],
+      "hash": "92d838ef1453cc5a370f56263627fd14caebb657fce6562aeac8af50ee2524f2",
+      "items": 3150,
+      "warnings": 0
+    },
+    "data13/GDT.PC_V2.1 PCB Documents 04072025/NC Drill/GDT.PC.V2.1-SlotHoles.TXT": {
+      "bbox": null,
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "items": 0,
+      "warnings": 0
+    },
+    "data13/stencil GDT.PC + TRX91 (0.1mm)/TLSX GDT.PC V2.1-working gerber/GDT.PC V2.1.gbs": {
+      "bbox": [
+        -0.0762,
+        -10.0755,
+        100.0762,
+        82.07549
+      ],
+      "hash": "dbd4f75b860cc54d07d7572e094ca81cedee8ad6d78cac7d8e28110c90ffe7d7",
+      "items": 2974,
+      "warnings": 0
+    },
+    "data17/data/Gerber+drill/MRFBC_Ver03.5_1W_Copper_Signal_Top.gbr": {
+      "bbox": [
+        0.3091,
+        0.3091,
+        63.7409,
+        53.8808
+      ],
+      "hash": "8b20676da82306dc1e787cae86adfb3355b498d606c1e0065c70ded15e2fcda6",
+      "items": 3636,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/2rd": {
+      "bbox": [
+        6.11176,
+        14.5979,
+        6.81176,
+        21.07894
+      ],
+      "hash": "9033e8fc016d97d354f09741cf0b9d49f5b6919db0df1a0c2c31e065b62adfdc",
+      "items": 2,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/bl": {
+      "bbox": [
+        -0.2032,
+        -0.2032,
+        89.42324,
+        80.27416
+      ],
+      "hash": "4433991f66d84017d651d9cf9482f30c1e1cc41cdc1c0e7fa7b7259000730898",
+      "items": 14093,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/bs": {
+      "bbox": [
+        -0.1016,
+        -0.1016,
+        89.32164,
+        80.17256
+      ],
+      "hash": "9791649a173ae3df0f8d9e68af07ab07d910946d1fbc5a6a977a0a4087115dd1",
+      "items": 71,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/drl": {
+      "bbox": [
+        0.73138,
+        0.55866,
+        88.72996,
+        79.55802
+      ],
+      "hash": "2be87f74f64f7f9027e65f10adcd2d3a68550309cec36ce7f5febc110b5b69cb",
+      "items": 822,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/rout.gko": {
+      "bbox": [
+        -0.127,
+        -0.127,
+        89.34704,
+        80.19796
+      ],
+      "hash": "a253dedaa0ce9e453b69fa67c75e8a3457b040677ab62fdf4591edbfb5da41cf",
+      "items": 4,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/tl": {
+      "bbox": [
+        -0.2032,
+        -0.2032,
+        89.42324,
+        80.27416
+      ],
+      "hash": "86d484f3ad68e0b1fcd2cdcd058c9ac3ae5bc51cf91c690c2ddae2adf8e86d77",
+      "items": 44953,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/tp.gtp": {
+      "bbox": [
+        1.50246,
+        0.48924,
+        89.00068,
+        77.83619
+      ],
+      "hash": "166cf6044b80c7b07d627c72be7ddaeb598448adaf5f0eb540dde3b11c9b18f5",
+      "items": 704,
+      "warnings": 0
+    },
+    "data21/PSU_PCB wf/ts": {
+      "bbox": [
+        -0.1016,
+        -0.1016,
+        89.32164,
+        80.17256
+      ],
+      "hash": "506a7bf8b2a7b745737f8083079f1317a646421984510c4eee42f03367249d65",
+      "items": 2141,
+      "warnings": 0
+    },
+    "data23/Headset_Flexi-Rigid_PCB_A_170826-working gerber/PCB_LUC1_09_3000_Headset_Flexi-Rigid_PCB_A_170826.gbs": {
+      "bbox": [
+        -17.99445,
+        -7.06839,
+        103.05026,
+        130.60266
+      ],
+      "hash": "3f05c8f16bec094844fdb363d90a49dacfbfe70fa682420ed9093a7a147bb4ac",
+      "items": 8756,
+      "warnings": 0
+    }
+  },
+  "root": "D:\\Test"
+}

@@ -8,6 +8,13 @@ from PySide6.QtGui import QPainter, QPainterPath, QPen, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QGraphicsScene
 
 from ui.gerber_viewer import GerberView, MarkerOverlayItem
+from ui.zoom_controller import (
+    ZOOM_FACTOR_MAX,
+    ZOOM_FACTOR_MIN,
+    ZOOM_PRESETS,
+    scale_from_zoom_factor,
+    zoom_factor_from_scale,
+)
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +57,9 @@ def test_wheel_zoom_is_deferred(qapp):
     view = _make_view()
     view.wheelEvent(_wheel(view))
     assert view._zoom_pixmap is not None
-    assert view._zoom_ratio == pytest.approx(1.15)
+    # One wheel notch changes the zoom by the factor of the reference
+    # implementation (1.5 on Windows).
+    assert view._zoom_ratio == pytest.approx(1.5)
     assert view._fast_render is True
     assert view._zoom_active is True
     assert view.transform().m11() == pytest.approx(1.0)
@@ -68,11 +77,79 @@ def test_restore_applies_transform_and_clears_state(qapp):
     view = _make_view()
     view.wheelEvent(_wheel(view))
     view._restore_smooth_render()
-    assert view.transform().m11() == pytest.approx(1.15)
+    assert view.transform().m11() == pytest.approx(1.5)
     assert view._zoom_pixmap is None
     assert view._zoom_ratio == pytest.approx(1.0)
     assert view._zoom_active is False
     assert view._fast_render is False
+
+
+def test_zoom_is_anchored_at_the_pointer(qapp):
+    """The point under the pointer must not move when the zoom changes."""
+    view = _make_view()
+    view.show()
+    view.viewport().grab()
+    # The pointer is at the position the wheel event reports.
+    anchor = QPoint(100, 100)
+    before = view.mapToScene(anchor)
+    view.wheelEvent(_wheel(view))
+    view._restore_smooth_render()
+    after = view.mapToScene(anchor)
+    assert after.x() == pytest.approx(before.x(), abs=0.5)
+    assert after.y() == pytest.approx(before.y(), abs=0.5)
+
+
+def test_zoom_is_limited(qapp):
+    view = _make_view()
+    view.set_zoom_factor(1e9)
+    assert view._current_zoom_factor() <= zoom_factor_from_scale(
+        scale_from_zoom_factor(ZOOM_FACTOR_MAX)) + 1e-6
+    view.set_zoom_factor(1e-9)
+    assert view._current_zoom_factor() >= zoom_factor_from_scale(
+        scale_from_zoom_factor(ZOOM_FACTOR_MIN)) - 1e-6
+
+
+def test_keyboard_zoom_snaps_to_a_preset(qapp):
+    view = _make_view()
+    view.set_zoom_factor(1.0)
+    view._zoom_step(+1)
+    factor = view._current_zoom_factor()
+    assert any(abs(factor - preset) < 1e-6 for preset in ZOOM_PRESETS)
+
+
+def test_zoom_to_fit_shows_the_whole_drawing(qapp):
+    view = _make_view()
+    view.zoom_to_fit()
+    rect = view.scene().itemsBoundingRect()
+    visible = view.mapToScene(view.viewport().rect()).boundingRect()
+    assert visible.width() >= rect.width() * 0.9
+    assert visible.height() >= rect.height() * 0.9
+
+
+def test_middle_button_pans_the_view(qapp):
+    view = _make_view()
+    hbar, vbar = view.horizontalScrollBar(), view.verticalScrollBar()
+    base_h, base_v = hbar.value(), vbar.value()
+    press = QMouseEvent(QMouseEvent.Type.MouseButtonPress, QPointF(200, 150),
+                        Qt.MouseButton.MiddleButton, Qt.MouseButton.MiddleButton,
+                        Qt.KeyboardModifier.NoModifier)
+    move = QMouseEvent(QMouseEvent.Type.MouseMove, QPointF(240, 180),
+                       Qt.MouseButton.NoButton, Qt.MouseButton.MiddleButton,
+                       Qt.KeyboardModifier.NoModifier)
+    release = QMouseEvent(QMouseEvent.Type.MouseButtonRelease, QPointF(240, 180),
+                          Qt.MouseButton.MiddleButton, Qt.MouseButton.NoButton,
+                          Qt.KeyboardModifier.NoModifier)
+    view.mousePressEvent(press)
+    assert view._middle_panning is True
+    view.mouseMoveEvent(move)
+    # The content follows the pointer from a frozen snapshot, so the
+    # scroll bars only move once the gesture ends.
+    assert view._pan_offset == QPoint(40, 30)
+    assert hbar.value() == base_h and vbar.value() == base_v
+    view.mouseReleaseEvent(release)
+    assert view._middle_panning is False
+    assert hbar.value() == base_h - 40
+    assert vbar.value() == base_v - 30
 
 
 def test_pan_snapshot_defers_render_and_applies_once(qapp):

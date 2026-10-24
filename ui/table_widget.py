@@ -35,6 +35,8 @@ _BLOCK_COLORS = [
 ]
 
 _FLAG_COLOR = QColor("#F59E0B")
+_MPN_MISMATCH_COLOR = QColor("#DC2626")
+_EXTRA_BG = QColor("#FEF3C7")
 
 _FLAG_DESCRIPTIONS = {
     "ROT": ("Unusual rotation", "góc xoay bất thường"),
@@ -106,6 +108,8 @@ class TableWidget(QWidget):
         self._records: List[ReviewRecord] = []
         self._filtered: List[int] = []
         self._checked_set: set[int] = set()
+        self._extra_set: set = set()
+        self._mpn_mismatch: dict = {}
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -125,7 +129,7 @@ class TableWidget(QWidget):
         self._layer_filter.setMaximumWidth(150)
 
         self._status_filter = QComboBox()
-        for _status in ["All", "Pending", "OK", "Edited", "Aligned"]:
+        for _status in ["All", "Pending", "OK", "Edited", "Aligned", "Extra"]:
             self._status_filter.addItem(tr(_status), userData=_status)
         self._status_filter.currentTextChanged.connect(self._on_filter)
         self._status_filter.setMinimumWidth(100)
@@ -271,7 +275,11 @@ class TableWidget(QWidget):
                 continue
             if layer_filter and rec.layer.strip().lower() != layer_filter.lower():
                 continue
-            if status_filter != "All" and rec.status != status_filter:
+            if status_filter != "All" and status_filter != "Extra" \
+                    and rec.status != status_filter:
+                continue
+            if status_filter == "Extra" \
+                    and rec.designator.strip().upper() not in self._extra_set:
                 continue
             if checked_filter == "Checked" and not rec.checked:
                 continue
@@ -423,12 +431,30 @@ class TableWidget(QWidget):
         remark_item.setData(Qt.UserRole, idx)
         self._table.setItem(row, _REMARK_COLUMN, remark_item)
 
+        key = rec.designator.strip().upper()
+        mismatch = self._mpn_mismatch.get(key)
+        if mismatch is not None:
+            _pp_mpn, bom_mpn, bom_stt = mismatch
+            mpn_item = self._table.item(row, 4)
+            if mpn_item is not None:
+                mpn_item.setForeground(_MPN_MISMATCH_COLOR)
+                mpn_item.setToolTip(tr(
+                    "BOM row {stt} lists MPN {mpn}",
+                    stt=bom_stt, mpn=bom_mpn))
+
         color = bg_colors.get(rec.status)
         if color:
             for col in range(len(_COLUMNS)):
                 item = self._table.item(row, col)
                 if item:
                     item.setBackground(color)
+        if key in self._extra_set:
+            for col in range(len(_COLUMNS)):
+                item = self._table.item(row, col)
+                if item:
+                    item.setBackground(_EXTRA_BG)
+                    if not item.toolTip():
+                        item.setToolTip(tr("Not in BOM"))
 
     def select_record(self, record_index: int) -> None:
         for row, idx in enumerate(self._filtered):
@@ -472,6 +498,20 @@ class TableWidget(QWidget):
                                      bg_colors=bg_colors)
         finally:
             self._bulk_fill_end(state)
+
+    def set_bom_overlay(self, extra_set: set,
+                          mpn_mismatch: dict) -> None:
+        """Overlay BOM compare results onto PickPlace rows.
+
+        extra_set: UPPER designators absent from BOM.
+        mpn_mismatch: UPPER designator -> (pickplace mpn, bom mpn, bom STT).
+        """
+        self._extra_set = {k.upper() for k in (extra_set or set())}
+        self._mpn_mismatch = dict(mpn_mismatch or {})
+        self.update_all_rows()
+
+    def clear_bom_overlay(self) -> None:
+        self.set_bom_overlay(set(), {})
 
     def _on_context_menu(self, pos) -> None:
         row = self._table.rowAt(pos.y())

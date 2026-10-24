@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Any, Dict, List
 
 
 def _default_column_profiles() -> Dict[str, Dict[str, str]]:
@@ -81,11 +81,19 @@ class AppConfig:
     gerberGbp: str = ""
     gerberGto: str = ""
     gerberGbo: str = ""
+    gerberDrill: str = ""
+    #: The folder the Gerber files were taken from.
+    gerberFolder: str = ""
+    #: The layers of the picture: the file of every layer, its name, its
+    #: colour and its state.
+    gerberLayers: List[Dict[str, Any]] = field(default_factory=list)
     theme: str = "light"
     language: str = "en"
     columnProfiles: Dict[str, Dict[str, str]] = field(default_factory=_default_column_profiles)
     lastColumnProfile: str = ""
     prescreen: PrescreenConfig = field(default_factory=PrescreenConfig)
+    ecoMoveTol: float = 0.01
+    ecoRotTol: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -100,16 +108,15 @@ class AppConfig:
             "lastSessionFile": self.lastSessionFile,
             "geometry": self.geometry,
             "licenseKey": self.licenseKey,
-            "gerberGko": self.gerberGko,
-            "gerberGtp": self.gerberGtp,
-            "gerberGbp": self.gerberGbp,
-            "gerberGto": self.gerberGto,
-            "gerberGbo": self.gerberGbo,
+            "gerberFolder": self.gerberFolder,
+            "gerberLayers": self.gerberLayers,
             "theme": self.theme,
             "language": self.language,
             "columnProfiles": self.columnProfiles,
             "lastColumnProfile": self.lastColumnProfile,
             "prescreen": self.prescreen.to_dict(),
+            "ecoMoveTol": self.ecoMoveTol,
+            "ecoRotTol": self.ecoRotTol,
         }
 
     @staticmethod
@@ -131,9 +138,14 @@ class AppConfig:
             gerberGbp=data.get("gerberGbp", ""),
             gerberGto=data.get("gerberGto", ""),
             gerberGbo=data.get("gerberGbo", ""),
+    gerberDrill=data.get("gerberDrill", ""),
+            gerberFolder=data.get("gerberFolder", ""),
+            gerberLayers=list(data.get("gerberLayers", []) or []),
             theme=data.get("theme", "light"),
             language=data.get("language", "en"),
             columnProfiles=data.get("columnProfiles") or _default_column_profiles(),
             lastColumnProfile=data.get("lastColumnProfile", ""),
             prescreen=PrescreenConfig.from_dict(data.get("prescreen") or {}),
+            ecoMoveTol=float(data.get("ecoMoveTol", 0.01)),
+            ecoRotTol=float(data.get("ecoRotTol", 1.0)),
         )

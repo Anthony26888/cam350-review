@@ -42,6 +42,52 @@ def apply_transform(
     return x + off_x, y + off_y
 
 
+class AffineTransform:
+    """The display transform, prepared once for many points.
+
+    The pipeline of :func:`apply_transform` is affine, so it can be written
+    as a single matrix.  Preparing it once and applying it to a whole layer
+    avoids a function call and a trigonometry per point, which is what
+    dominates the building of the paths of a large layer.
+    """
+
+    __slots__ = ("a11", "a12", "a21", "a22", "bx", "by", "identity")
+
+    def __init__(self, mirror: bool = False, angle: float = 0.0,
+                 off_x: float = 0.0, off_y: float = 0.0,
+                 center_x: float = 0.0, center_y: float = 0.0,
+                 mirror_x: bool = False):
+        sx = -1.0 if mirror else 1.0
+        sy = -1.0 if mirror_x else 1.0
+        theta = math.radians(angle)
+        c, s = math.cos(theta), math.sin(theta)
+        self.a11 = c * sx
+        self.a12 = -s * sy
+        self.a21 = s * sx
+        self.a22 = c * sy
+        mx = 2.0 * center_x if mirror else 0.0
+        my = 2.0 * center_y if mirror_x else 0.0
+        self.bx = mx * c - my * s + off_x
+        self.by = mx * s + my * c + off_y
+        self.identity = (self.a11 == 1.0 and self.a12 == 0.0
+                         and self.a21 == 0.0 and self.a22 == 1.0
+                         and self.bx == 0.0 and self.by == 0.0)
+
+    def apply(self, x: float, y: float) -> Tuple[float, float]:
+        """Transform one point."""
+        return (self.a11 * x + self.a12 * y + self.bx,
+                self.a21 * x + self.a22 * y + self.by)
+
+    def apply_local(self, x: float, y: float) -> Tuple[float, float]:
+        """Transform a point that is relative to a flash position.
+
+        The offset and the centre of the board do not apply to it, only the
+        mirror and the rotation do.
+        """
+        return (self.a11 * x + self.a12 * y,
+                self.a21 * x + self.a22 * y)
+
+
 def apply_inverse_transform(
     x: float,
     y: float,

@@ -9,6 +9,7 @@ from PySide6.QtCore import QRectF, QObject, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from models.review import ReviewRecord
+from gerber_layers_helper import make_layers
 from services.gerber.gerber_render import LineShape, RenderData
 from ui.gerber_viewer import GerberViewer, MarkerOverlayItem, _ROT_EDIT_MAG_FACTOR
 
@@ -33,8 +34,8 @@ def _make_records():
 
 @pytest.fixture()
 def viewer(app):
-    v = _NoopGerberViewer(_make_records(), r"C:\nonexistent.gko")
-    v._outline = RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])
+    v = _NoopGerberViewer(_make_records(), make_layers())
+    v._layer_data = [RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])]
     v._loaded = True
     v.show()
     v._redraw()  # Build initial scene including pickplace overlay
@@ -231,12 +232,11 @@ def test_refresh_records_clamps_stale_selection(viewer):
 
 def test_refresh_records_keeps_rendered_layers(viewer):
     _enable_grid(viewer)
-    viewer._chk_outline.setChecked(True)
     viewer._redraw()
-    outline_before = list(viewer._line_items.get("outline", []))
+    outline_before = list(viewer._layer_items)
     assert outline_before
     viewer.refresh_records(viewer._records[:2])
-    assert viewer._line_items.get("outline") == outline_before
+    assert viewer._layer_items == outline_before
     overlays = [it for it in viewer._scene.items() if isinstance(it, MarkerOverlayItem)]
     assert len(overlays) == 1
     assert len(overlays[0]._markers) == 2
@@ -571,8 +571,8 @@ def _build_group_records():
 
 
 def _group_viewer(recs, monkeypatch=None):
-    v = _NoopGerberViewer(recs, r"C:\nonexistent.gko")
-    v._outline = RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])
+    v = _NoopGerberViewer(recs, make_layers())
+    v._layer_data = [RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])]
     v._loaded = True
     v.show()
     v._chk_group_mpn.setChecked(True)
@@ -627,3 +627,98 @@ def test_group_mpn_partial_checked_state_defaults_unchecked(monkeypatch):
     layer = v._current_layer_records()
     assert layer[0].checked is True
     assert layer[1].checked is True
+
+
+# ---------------------------------------------------------------------------
+# Toolbar check buttons
+# ---------------------------------------------------------------------------
+
+def _enable_check_buttons(v):
+    for b in v._btn_check_controls:
+        b.setEnabled(True)
+
+def test_check_buttons_disabled_before_load(app):
+    v = _NoopGerberViewer(_make_records(), make_layers())
+    assert all(not b.isEnabled() for b in v._btn_check_controls)
+
+
+def test_check_button_marks_selected_component(viewer):
+    viewer._table_components.selectRow(0)
+    _enable_check_buttons(viewer)
+    emitted = []
+    viewer.checked_changed.connect(emitted.append)
+    viewer._btn_check.click()
+    assert viewer._records[0].checked is True
+    assert viewer._records[1].checked is False
+    assert emitted == [0]
+    col = viewer._table_components.columnCount() - 1
+    assert viewer._table_components.item(0, col).icon().cacheKey() == \
+        GerberViewer._status_icon(True).cacheKey()
+
+
+def test_undo_check_button_unchecks_selected_component(viewer):
+    viewer._records[0].checked = True
+    viewer._table_components.selectRow(0)
+    _enable_check_buttons(viewer)
+    emitted = []
+    viewer.checked_changed.connect(emitted.append)
+    viewer._btn_undo_check.click()
+    assert viewer._records[0].checked is False
+    assert emitted == [0]
+
+
+def test_check_button_without_selection_reports_status(viewer):
+    viewer._table_components.setCurrentCell(-1, -1)
+    _enable_check_buttons(viewer)
+    viewer._btn_check.click()
+    assert viewer._records[0].checked is False
+    assert "Select a component" in viewer._lbl_status.text()
+
+
+def test_check_button_group_mpn_checks_group(monkeypatch):
+    v = _group_viewer(_build_group_records(), monkeypatch)
+    v._table_components.selectRow(0)
+    _enable_check_buttons(v)
+    emitted = []
+    v.checked_changed.connect(emitted.append)
+    v._btn_check.click()
+    layer = v._current_layer_records()
+    assert layer[0].checked is True
+    assert layer[1].checked is True
+    assert layer[2].checked is False
+    assert emitted == [v._record_index_in_records(layer[0]),
+                       v._record_index_in_records(layer[1])]
+
+
+def test_uncheck_all_button_clears_current_layer(viewer, monkeypatch):
+    monkeypatch.setattr("ui.gerber_viewer.QMessageBox", _FakeMsgBox)
+    viewer._records[0].checked = True
+    viewer._records[1].checked = True
+    viewer._records[2].checked = True
+    _enable_check_buttons(viewer)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    emitted = []
+    viewer.checked_changed.connect(emitted.append)
+    viewer._btn_uncheck_all.click()
+    assert viewer._records[0].checked is False
+    assert viewer._records[1].checked is False
+    assert viewer._records[2].checked is True
+    assert set(emitted) == {0, 1}
+    assert "Clear the checks" in _FakeMsgBox.last_text
+
+
+def test_uncheck_all_declined_keeps_checks(viewer, monkeypatch):
+    monkeypatch.setattr("ui.gerber_viewer.QMessageBox", _FakeMsgBox)
+    viewer._records[0].checked = True
+    _enable_check_buttons(viewer)
+    _FakeMsgBox.answer = QMessageBox.No
+    viewer._btn_uncheck_all.click()
+    assert viewer._records[0].checked is True
+
+
+def test_uncheck_all_without_checks_skips_dialog(viewer, monkeypatch):
+    monkeypatch.setattr("ui.gerber_viewer.QMessageBox", _FakeMsgBox)
+    _enable_check_buttons(viewer)
+    _FakeMsgBox.last_text = "unset"
+    viewer._btn_uncheck_all.click()
+    assert _FakeMsgBox.last_text == "unset"

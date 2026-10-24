@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 from models.review import ReviewRecord
 
 
-SESSION_VERSION = 7
+SESSION_VERSION = 8
 
 
 def compress_text(text: str) -> str:
@@ -31,6 +31,8 @@ class SessionData:
         self.gerberGbp: str = ""
         self.gerberGto: str = ""
         self.gerberGbo: str = ""
+        self.gerberFolder: str = ""
+        self.gerberLayers: List[Dict[str, Any]] = []
         self.gerber_view: Optional[Dict[str, Any]] = None
         self.column_mapping: Optional[Dict[str, str]] = None
         self.gerber_files: Optional[Dict[str, str]] = None
@@ -38,6 +40,8 @@ class SessionData:
         self.prescreen_ctx: Optional[Dict[str, Any]] = None
         self.panel_config: Optional[Dict[str, Any]] = None
         self.history: List[Dict[str, Any]] = []
+        self.bom_rows: List[Dict[str, Any]] = []
+        self.bom_source_file: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -51,6 +55,8 @@ class SessionData:
             "gerberGbp": self.gerberGbp,
             "gerberGto": self.gerberGto,
             "gerberGbo": self.gerberGbo,
+            "gerberFolder": self.gerberFolder,
+            "gerberLayers": self.gerberLayers,
             "gerber_view": self.gerber_view,
             "column_mapping": self.column_mapping,
             "gerber_files": self.gerber_files,
@@ -58,6 +64,8 @@ class SessionData:
             "prescreen_ctx": self.prescreen_ctx,
             "panel_config": self.panel_config,
             "history": self.history,
+            "bom_rows": self.bom_rows,
+            "bom_source_file": self.bom_source_file,
         }
 
     @staticmethod
@@ -80,6 +88,8 @@ class SessionData:
         obj.prescreen_ctx = data.get("prescreen_ctx") or None
         obj.panel_config = data.get("panel_config") or None
         obj.history = list(data.get("history") or [])
+        obj.bom_rows = list(data.get("bom_rows") or [])
+        obj.bom_source_file = data.get("bom_source_file", "") or ""
         return obj
 
 
@@ -153,6 +163,8 @@ class SessionService:
         gerberGbp: str = "",
         gerberGto: str = "",
         gerberGbo: str = "",
+        gerberFolder: str = "",
+        gerberLayers: Optional[List[Dict[str, Any]]] = None,
         gerber_view: Optional[Dict[str, Any]] = None,
         column_mapping: Optional[Dict[str, str]] = None,
         gerber_files: Optional[Dict[str, str]] = None,
@@ -160,6 +172,8 @@ class SessionService:
         prescreen_ctx: Optional[Dict[str, Any]] = None,
         panel_config: Optional[Dict[str, Any]] = None,
         history: Optional[List[Dict[str, Any]]] = None,
+        bom_rows: Optional[List[Dict[str, Any]]] = None,
+        bom_source_file: str = "",
     ) -> None:
         data = SessionData()
         data.source_file = source_file
@@ -171,6 +185,8 @@ class SessionService:
         data.gerberGbp = gerberGbp
         data.gerberGto = gerberGto
         data.gerberGbo = gerberGbo
+        data.gerberFolder = gerberFolder
+        data.gerberLayers = list(gerberLayers or [])
         data.gerber_view = gerber_view
         data.column_mapping = column_mapping
         data.gerber_files = gerber_files
@@ -178,6 +194,8 @@ class SessionService:
         data.prescreen_ctx = prescreen_ctx or None
         data.panel_config = panel_config or None
         data.history = list(history or [])
+        data.bom_rows = list(bom_rows or [])
+        data.bom_source_file = bom_source_file or ""
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data.to_dict(), f, indent=2, ensure_ascii=False)

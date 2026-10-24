@@ -261,7 +261,9 @@ def _mw_holder(records, bundle=None):
     for name in ["_open_prescreen_dialog", "_apply_prescreen_issues",
                  "_on_prescreen_dialog_closed", "_close_prescreen_dialog",
                  "_apply_prescreen_result", "_sync_viewer_flags",
-                 "_current_flagged_indices", "_restore_prescreen_bundle"]:
+                 "_current_flagged_indices", "_restore_prescreen_bundle",
+                 "_gerber_path_of_role", "_existing_gerber_layers",
+                 "_migrate_gerber_layers"]:
         setattr(h, name, getattr(mw.MainWindow, name).__get__(h))
     return h
 

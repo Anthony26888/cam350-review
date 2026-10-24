@@ -118,6 +118,8 @@ class Database:
                 new_x REAL,
                 new_y REAL,
                 new_rotation REAL,
+                mpn_old TEXT DEFAULT '',
+                mpn_new TEXT DEFAULT '',
                 remark TEXT DEFAULT '',
                 created_at TEXT DEFAULT ''
             )
@@ -130,6 +132,14 @@ class Database:
             """
         )
         conn.commit()
+        hist_cursor = conn.execute("PRAGMA table_info(component_history)")
+        hist_columns = {row[1] for row in hist_cursor.fetchall()}
+        if "mpn_old" not in hist_columns:
+            conn.execute("ALTER TABLE component_history ADD COLUMN mpn_old TEXT DEFAULT ''")
+            conn.commit()
+        if "mpn_new" not in hist_columns:
+            conn.execute("ALTER TABLE component_history ADD COLUMN mpn_new TEXT DEFAULT ''")
+            conn.commit()
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pcb_info (

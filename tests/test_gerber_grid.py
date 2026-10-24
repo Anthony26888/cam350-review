@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from gerber_layers_helper import make_layers
 from services.gerber.gerber_render import LineShape, RenderData
 from ui.gerber_viewer import GerberViewer, _magnifier_scale
 
@@ -22,8 +23,8 @@ class _NoopGerberViewer(GerberViewer):
 
 @pytest.fixture()
 def viewer(app):
-    v = _NoopGerberViewer([], r"C:\nonexistent.gko")
-    v._outline = RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])
+    v = _NoopGerberViewer([], make_layers())
+    v._layer_data = [RenderData(lines=[LineShape(x1=0.0, y1=0.0, x2=100.0, y2=100.0)])]
     v._loaded = True
     v.show()
     return v

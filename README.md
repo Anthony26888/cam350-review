@@ -20,7 +20,7 @@ A Windows desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM
 - Built with **Python 3 + PySide6 (Qt)** and **openpyxl**
 - Targets **Windows** (uses `win32gui` / `pyautogui` to drive CAM350)
 - Current version: **2.2.3** (`utils/version.py`)
-- Session format: **v7** (`.cam350review`, backward-compatible load)
+- Session format: **v8** (`.cam350review`, backward-compatible load)
 
 ---
 
@@ -35,11 +35,30 @@ A Windows desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM
 
 ---
 
+## User Guide (print-ready, A4)
+
+Full end-user manual covering installation, calibration, review workflow,
+history, Gerber align, sessions, and export:
+
+- `docs/USER_GUIDE.md` — source (English)
+- `exports/USER_GUIDE_A4.pdf` — print-ready A4 PDF
+- `exports/USER_GUIDE_A4.docx` — editable A4 Word file
+
+Regenerate both exports after editing the source:
+
+```bash
+pip install python-docx reportlab
+python tools/build_user_guide.py
+```
+
+---
+
 ## What's new in 2.2.x
 
-- **Component History table** (`ui/review_panel.py`): the old `Actions` group was replaced by a `History` table with 3 columns — `Time (HH:MM:SS) | Step (Import/Align/Edit/OK/Batch/Delete) | Changes (X/Y/Rot old-&gt;new + remark)`. Newest entry first; unchanged fields are hidden.
+- **Component History table** (`ui/review_panel.py`): the old `Actions` group was replaced by a `History` table with 3 columns — `Time (HH:MM:SS) | Step (Import/Align/Edit/OK/Batch/Delete/BOM) | Changes (X/Y/Rot/MPN old-&gt;new + remark)`. Newest entry first; unchanged fields are hidden.
 - **Persistent history** (`models/history.py`, `database/history_repo.py`): append-only `component_history` SQLite table keyed by `(designator, block)`, indexed for fast per-component lookup. Survives undo/redo and panelize (new panel blocks start with empty history).
-- **Session v7** (`services/session_service.py`): `history[]` is saved/loaded with `.cam350review` alongside records, Gerber paths, embedded Gerber files, prescreen state, and panel config.
+- **Session v8** (`services/session_service.py`): `history[]` and `bom_rows[]` are saved/loaded with `.cam350review` alongside records, Gerber paths, embedded Gerber files, prescreen state, and panel config.
+- **Compare Revisions (ECO)** (`services/eco_diff.py`): diff the open session against a new PickPlace file (Added/Removed/Moved/MPN), apply in one undo step, export an ECO report.
 - **Actions removed from the side panel**: `Previous/Next` are now `Up/Down`, `OK` is `Space`, `Edit` is `Ctrl+E`; `Jump CAM350` remains available from the table and the always-on-top `JumpPopup`.
 
 ---
@@ -95,11 +114,23 @@ A Windows desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM
 - **Export PickPlace Fixed** — corrected PickPlace file, preserving original columns and skipping deleted records.
 - Both exports run in background threads.
 
+### BOM compare (BOM tab)
+
+- Open a BOM Excel file with column mapping; dirty Designator cells are
+  cleaned and ranges expanded (`C1-C4` → `C1,C2,C3,C4`).
+- Dedicated **BOM** tab next to **PickPlace**: `STT | Designator | MPN |
+  Description | Quantity | Note | Missing Pickplace`; Bottom-layer
+  designators render red, quantity mismatches highlight yellow.
+- Two-way compare: extra PickPlace rows tint orange (+ status filter
+  `Extra`), MPN mismatches highlight red, empty MPN cells are auto-filled
+  from BOM on load (logged as `BOM` history, single undo step). BOM rows
+  persist in session v8.
+
 ### Sessions
-- Save / load / restore the whole review session (`.cam350review` files, v7).
+- Save / load / restore the whole review session (`.cam350review` files, v8).
 - The last session path is remembered for the next launch.
 - **Gerber files are embedded** in the session (zlib+base64) so a `.cam350review` opened on another machine renders Gerber View even when the original Gerber files are not present. Existing local Gerber paths are preferred when they still exist.
-- History, prescreen dismissals, panel config, PCB info, and Gerber view settings are all part of the session.
+- History, prescreen dismissals, panel config, PCB info, BOM rows, and Gerber view settings are all part of the session.
 
 ### Settings & calibration
 - Calibration wizard to capture the on-screen positions of CAM350's X/Y text boxes and window title.
@@ -174,14 +205,21 @@ cam350-review/
 │   ├── settings_dialog.py      # Settings & connection tests
 │   ├── jump_popup.py           # Always-on-top quick-review popup
 │   ├── gerber_viewer.py        # Gerber overlay viewer
+│   ├── bom_table_widget.py     # BOM tab table (missing/red/qty highlights)
+│   ├── bom_dialogs.py          # BOM mapping + Fill MPN dialogs
+│   ├── eco_diff_dialog.py      # ECO pick + result dialogs
 │   └── style.py                # Global light theme (QSS, teal accent)
-├── models/                     # Dataclasses (review, history, pickplace, config)
+├── models/                     # Dataclasses (review, history, pickplace, bom, config)
 │   ├── review.py
-│   └── history.py              # HistoryEntry
+│   ├── history.py              # HistoryEntry (incl. MPN changes)
+│   └── bom.py                  # BomRow
 ├── services/                   # Business logic
 │   ├── pickplace_reader.py     # Excel PickPlace reader
+│   ├── bom_reader.py           # Excel BOM reader + designator cleaning
+│   ├── bom_compare.py          # Two-way BOM ↔ PickPlace compare
+│   ├── eco_diff.py             # Old-vs-new PickPlace revision diff
 │   ├── export_service.py       # Report / fixed-file export
-│   ├── session_service.py      # Session save/load (v7 with history)
+│   ├── session_service.py      # Session save/load (v8 with history + BOM)
 │   ├── cam350_controller.py    # CAM350 window automation
 │   ├── datasheet_service.py    # Datasheet search
 │   └── gerber/                 # Gerber parsing, panel detection, alignment
@@ -194,8 +232,8 @@ cam350-review/
 ├── assets/                     # App logo (icon.ico) & rotation guide images
 │   └── icon.ico
 ├── scripts/                    # PyInstaller spec + Inno Setup script
-├── tools/                      # Seller-side license tool
-└── tests/                      # Pytest unit tests (incl. test_history.py)
+├── tools/                      # Seller-side license tool + user-guide builder
+└── tests/                      # Pytest unit tests (incl. test_history.py, test_bom_*.py)
 ```
 
 ### Running tests
@@ -212,7 +250,7 @@ python -m PyInstaller scripts/build.spec --noconfirm
 # 2. Build the setup program (Inno Setup 7)
 "C:\Program Files\Inno Setup 7\ISCC.exe" scripts/installer.iss
 ```
-Output: `dist\installer\CAM350_Review_Setup_2.2.3.exe`
+Output: `dist\installer\CAM350_Review_Setup_2.2.5.exe`
 
 ---
 

@@ -183,7 +183,7 @@ def _base_pickplace():
     )
 
 
-def test_export_panelized_keeps_names_and_adds_block(tmp_path):
+def test_export_panelized_keeps_names_and_drops_block(tmp_path):
     cfg = PanelConfig(blocks=[
         PanelBlock(index=0, origin_x=0.0, origin_y=0.0),
         PanelBlock(index=1, origin_x=200.0, origin_y=100.0, rotation=180),
@@ -196,26 +196,23 @@ def test_export_panelized_keeps_names_and_adds_block(tmp_path):
     with open(path, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.reader(f))
     assert len(rows) == 8
+    assert all(len(row) == 5 for row in rows)  # no block column
     # block 0, C1: original coords
     assert rows[0][0] == "C1"
     assert rows[0][2] == "10"
-    assert rows[0][5] == ""
-    # block 1 (flipped, origin (200,100)) C1: (190, 80), rotation 180, block=1
+    # block 1 (flipped, origin (200,100)) C1: (190, 80), rotation 180
     row_b1_c1 = rows[2]
     assert row_b1_c1[0] == "C1_2"
     assert row_b1_c1[2] == "190.0"
     assert row_b1_c1[3] == "80.0"
     assert row_b1_c1[4] == "180.0"
-    assert row_b1_c1[5] == "1"
     # block 2 C2: origin (0,90) unrotated -> (30,130), renamed C2_3
     row_b2_c2 = rows[5]
     assert row_b2_c2[0] == "C2_3"
     assert row_b2_c2[2] == "30.0"
     assert row_b2_c2[3] == "130.0"
-    assert row_b2_c2[5] == "2"
     # block 3 keeps its block index and is renamed C2_4
     assert rows[7][0] == "C2_4"
-    assert rows[7][5] == "3"
 
 
 def test_review_repo_block_round_trip(tmp_path, monkeypatch):

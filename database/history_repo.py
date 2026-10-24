@@ -13,8 +13,8 @@ class HistoryRepo:
             """
             INSERT INTO component_history
                 (designator, block, action, old_x, old_y, old_rotation,
-                 new_x, new_y, new_rotation, remark, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 new_x, new_y, new_rotation, mpn_old, mpn_new, remark, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.designator,
@@ -26,6 +26,8 @@ class HistoryRepo:
                 entry.new_x,
                 entry.new_y,
                 entry.new_rotation,
+                entry.mpn_old,
+                entry.mpn_new,
                 entry.remark,
                 entry.created_at,
             ),
@@ -55,6 +57,7 @@ class HistoryRepo:
 
     @staticmethod
     def _row_to_entry(row) -> HistoryEntry:
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
         return HistoryEntry(
             id=row["id"],
             designator=row["designator"],
@@ -66,6 +69,8 @@ class HistoryRepo:
             new_x=row["new_x"],
             new_y=row["new_y"],
             new_rotation=row["new_rotation"],
+            mpn_old=row["mpn_old"] if "mpn_old" in keys and row["mpn_old"] else "",
+            mpn_new=row["mpn_new"] if "mpn_new" in keys and row["mpn_new"] else "",
             remark=row["remark"] or "",
             created_at=row["created_at"] or "",
         )

@@ -13,6 +13,8 @@ class HistoryEntry:
     new_x: Optional[float] = None
     new_y: Optional[float] = None
     new_rotation: Optional[float] = None
+    mpn_old: str = ""
+    mpn_new: str = ""
     remark: str = ""
     created_at: str = ""
     id: int = 0
@@ -29,6 +31,8 @@ class HistoryEntry:
             "new_x": self.new_x,
             "new_y": self.new_y,
             "new_rotation": self.new_rotation,
+            "mpn_old": self.mpn_old,
+            "mpn_new": self.mpn_new,
             "remark": self.remark,
             "created_at": self.created_at,
         }
@@ -46,6 +50,8 @@ class HistoryEntry:
             new_x=data.get("new_x"),
             new_y=data.get("new_y"),
             new_rotation=data.get("new_rotation"),
+            mpn_old=data.get("mpn_old", "") or "",
+            mpn_new=data.get("mpn_new", "") or "",
             remark=data.get("remark", "") or "",
             created_at=data.get("created_at", "") or "",
         )
