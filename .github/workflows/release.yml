@@ -1,0 +1,87 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt -r requirements-windows.txt
+          pip install pyinstaller
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer (PyInstaller + Inno Setup)
+        shell: pwsh
+        env:
+          ISCC_PATH: "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"
+        run: ./scripts/build_update.ps1
+
+      - name: Verify output
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/installer | Format-Table Name, Length
+          if (-not (Test-Path "dist/CAM350_Review.exe")) {
+            Write-Error "Executable not found at dist/CAM350_Review.exe."
+          }
+          if (-not (Test-Path "dist/installer/CAM350_Review_Setup_*.exe")) {
+            Write-Error "Installer not found in dist/installer."
+          }
+
+      - name: Check tag matches APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $line = Select-String -Path "utils/version.py" -Pattern '^APP_VERSION\s*=\s*"([^"]+)"'
+          if (-not $line) { Write-Error "APP_VERSION not found in utils/version.py." }
+          $version = $line.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Error "Tag $env:GITHUB_REF_NAME does not match APP_VERSION v$version."
+          }
+
+      - name: Upload standalone exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: CAM350_Review_exe
+          path: dist/CAM350_Review.exe
+          if-no-files-found: error
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CAM350_Review_Setup
+          path: dist/installer/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = Get-ChildItem -LiteralPath "dist/installer" -Filter "*.exe" | Select-Object -First 1
+          if (-not $setup) { Write-Error "Installer not found." }
+          gh release create $env:GITHUB_REF_NAME `
+            "dist/CAM350_Review.exe" `
+            $setup.FullName `
+            --title "CAM350 Review $env:GITHUB_REF_NAME" `
+            --generate-notes

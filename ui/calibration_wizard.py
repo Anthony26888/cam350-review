@@ -7,7 +7,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeyEvent, QColor, QPalette
 import pyautogui
-import win32gui
+
+import sys
+if sys.platform == "win32":
+    import win32gui
 
 from config.config_manager import ConfigManager
 from models.config import Point
@@ -197,6 +200,9 @@ class CalibrationWizard(QWidget):
         self._show_step(self._step_index)
 
     def _detect_title(self) -> None:
+        if sys.platform != "win32":
+            QMessageBox.warning(self, tr("Warning"), tr("This step is only available on Windows."))
+            return
         hwnd = win32gui.GetForegroundWindow()
         if hwnd:
             title = win32gui.GetWindowText(hwnd)

@@ -92,6 +92,10 @@ def _viewer(app, monkeypatch=None):
 
 def test_flip_records_button_disabled_before_load(app):
     v = _NoopGerberViewer(_make_records(), make_layers())
+    assert not v._btn_flip_records_x.isEnabled()
+    assert not v._btn_flip_records_y.isEnabled()
+    assert v._btn_flip_records_x in v._btn_check_controls
+    assert v._btn_flip_records_y in v._btn_check_controls
     assert not v._btn_flip_records.isEnabled()
     assert v._btn_flip_records in v._btn_check_controls
 
@@ -107,15 +111,29 @@ def test_flip_x_updates_coords_and_rotation(app, monkeypatch):
     assert rec_top.new_y == pytest.approx(-20.0)
     assert rec_top.new_rotation == pytest.approx(0.0)
     assert rec_top.old_x == 10.0 and rec_top.old_y == 20.0
-    assert rec_bot.new_x == pytest.approx(30.0)
-    assert rec_bot.new_y == pytest.approx(40.0)
-    assert rec_bot.new_rotation == pytest.approx(270.0)
-    assert rec_top.status == "Edited" and rec_bot.status == "Edited"
-    assert rec_top.review_time and rec_bot.review_time
-    assert emitted == [v._record_index_in_records(rec_top),
-                       v._record_index_in_records(rec_bot)]
-    assert "Flip 2 components" in _FakeMsgBox.last_text \
+    # Only the shown (top) layer is flipped.
+    assert rec_bot.new_x is None and rec_bot.new_y is None
+    assert rec_bot.new_rotation is None and rec_bot.status == "Pending"
+    assert rec_top.status == "Edited" and rec_top.review_time
+    assert emitted == [v._record_index_in_records(rec_top)]
+    assert "top-side" in _FakeMsgBox.last_text \
         or "flip" in _FakeMsgBox.last_text.lower()
+
+
+def test_flip_x_on_bottom_layer_touches_bottom_only(app, monkeypatch):
+    v = _viewer(app, monkeypatch)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    v._combo_layer.setCurrentIndex(1)
+    v._on_flip_records("X")
+    rec_top, rec_bot = v._records
+    assert rec_bot.new_y == pytest.approx(40.0)     # -(-40)
+    assert rec_bot.new_x == pytest.approx(30.0)
+    assert rec_bot.new_rotation == pytest.approx(270.0)  # -90 % 360
+    assert rec_bot.status == "Edited" and rec_bot.review_time
+    # Top side untouched.
+    assert rec_top.new_x is None and rec_top.new_y is None
+    assert rec_top.status == "Pending"
+    assert "bottom-side" in _FakeMsgBox.last_text
 
 
 def test_flip_y_updates_coords_and_rotation(app, monkeypatch):
@@ -126,9 +144,7 @@ def test_flip_y_updates_coords_and_rotation(app, monkeypatch):
     assert rec_top.new_x == pytest.approx(-10.0)
     assert rec_top.new_y == pytest.approx(20.0)
     assert rec_top.new_rotation == pytest.approx(0.0)
-    assert rec_bot.new_x == pytest.approx(-30.0)
-    assert rec_bot.new_y == pytest.approx(-40.0)
-    assert rec_bot.new_rotation == pytest.approx(270.0)
+    assert rec_bot.new_x is None and rec_bot.new_y is None
 
 
 def test_flip_uses_existing_new_values(app, monkeypatch):
@@ -163,4 +179,4 @@ def test_flip_shows_progress_dialog(app, monkeypatch):
     _FakeProgress.closed = 0
     v._on_flip_records("Y")
     assert _FakeProgress.closed == 1
-    assert "components across the Y axis" in _FakeMsgBox.last_text
+    assert "top-side components across the Y axis" in _FakeMsgBox.last_text

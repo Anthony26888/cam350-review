@@ -166,7 +166,7 @@ def _holder(records, popup=None, viewer=None, current_index=0):
     h._undo_action = None
     h._redo_action = None
     for name in ["_btn_export_report", "_btn_export_fixed", "_btn_batch_edit",
-                 "_btn_ok_checked", "_btn_delete", "_btn_align", "_btn_pcb_info",
+                 "_btn_ok_checked", "_btn_delete", "_btn_pcb_info",
                  "_btn_new", "_btn_save"]:
         setattr(h, name, _Btn(True))
     for name in ["_popup_delete", "_delete_selected", "_sync_after_mutation",

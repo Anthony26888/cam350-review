@@ -116,7 +116,7 @@ def test_measure_mode_toggle_drag_mode(qapp):
     view.set_measure_mode(True)
     assert view.dragMode() == view.DragMode.NoDrag
     view.set_measure_mode(False)
-    assert view.dragMode() == view.DragMode.ScrollHandDrag
+    assert view.dragMode() == view.DragMode.NoDrag
 
 
 class _NoopGerberViewer(GerberViewer):

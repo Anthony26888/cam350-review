@@ -107,13 +107,27 @@ def test_rotate_90_updates_coords_and_rotation(app, monkeypatch):
     assert rec_top.new_y == pytest.approx(10.0)
     assert rec_top.new_rotation == pytest.approx(90.0)
     assert rec_top.old_x == 10.0 and rec_top.old_y == 20.0
-    assert rec_bot.new_x == pytest.approx(40.0)
+    # Only the shown (top) layer is rotated.
+    assert rec_bot.new_x is None and rec_bot.new_y is None
+    assert rec_bot.new_rotation is None and rec_bot.status == "Pending"
+    assert rec_top.status == "Edited" and rec_top.review_time
+    assert emitted == [v._record_index_in_records(rec_top)]
+
+
+def test_rotate_90_on_bottom_layer_touches_bottom_only(app, monkeypatch):
+    v = _viewer(app, monkeypatch)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    v._combo_layer.setCurrentIndex(1)
+    v._on_rotate_records(90)
+    rec_top, rec_bot = v._records
+    assert rec_bot.new_x == pytest.approx(40.0)     # (30, -40) -> (40, 30)
     assert rec_bot.new_y == pytest.approx(30.0)
     assert rec_bot.new_rotation == pytest.approx(180.0)
-    assert rec_top.status == "Edited" and rec_bot.status == "Edited"
-    assert rec_top.review_time and rec_bot.review_time
-    assert emitted == [v._record_index_in_records(rec_top),
-                       v._record_index_in_records(rec_bot)]
+    assert rec_bot.status == "Edited" and rec_bot.review_time
+    # Top side untouched.
+    assert rec_top.new_x is None and rec_top.new_y is None
+    assert rec_top.status == "Pending"
+    assert "bottom-side" in _FakeMsgBox.last_text
 
 
 def test_rotate_180_and_270_formulas(app, monkeypatch):
@@ -136,15 +150,24 @@ def test_rotate_180_and_270_formulas(app, monkeypatch):
 def test_rotate_zero_resets_rotation(app, monkeypatch):
     v = _viewer(app, monkeypatch)
     _FakeMsgBox.answer = QMessageBox.Yes
-    emitted = []
-    v.rotation_edited.connect(emitted.append)
     v._on_rotate_records(0)
     rec_top, rec_bot = v._records
-    # Only the rotation changes; the coordinates keep their values.
+    # Top rotation is already 0, nothing to do; bottom side untouched.
+    assert rec_top.status == "Pending"
+    assert rec_bot.new_rotation is None
+    assert rec_bot.status == "Pending"
+
+    emitted = []
+    v.rotation_edited.connect(emitted.append)
+    v._combo_layer.setCurrentIndex(1)
+    v._on_rotate_records(0)
+    # Reset on the bottom layer: only its rotation becomes 0, the
+    # unchanged coordinates are written back as new values.
     assert rec_bot.new_rotation == pytest.approx(0.0)
     assert rec_bot.status == "Edited"
     assert rec_bot.review_time
-    assert rec_top.status == "Pending"  # rotation already 0, nothing to do
+    assert rec_bot.new_x == pytest.approx(30.0)
+    assert rec_bot.new_y == pytest.approx(-40.0)
     assert emitted == [v._record_index_in_records(rec_bot)]
     assert "Reset the rotation" in _FakeMsgBox.last_text
 

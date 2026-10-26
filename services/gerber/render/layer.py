@@ -279,23 +279,31 @@ def _stroke_paths_from_rows(
             width_of_number.append(value)
         numbers[position] = known
     key = numbers[number] * stride + (tile + 1)
+    # One pass over the rows instead of a full-array scan per bucket: the
+    # rows are grouped by their bucket with one stable sort, so a part
+    # with a few hundred thousand strokes does not pay a scan per width.
+    bucket_order = np.argsort(key, kind="stable")
+    sorted_keys = key[bucket_order]
+    starts = np.flatnonzero(np.r_[True, sorted_keys[1:] != sorted_keys[:-1]])
     # The buckets in the order they are met for the first time, so that
     # the paths come out in the order the loop over the objects gives.
-    keys, first = np.unique(key, return_index=True)
-    order = np.argsort(first, kind="stable")
-    px1_values = px1.tolist()
-    py1_values = py1.tolist()
-    px2_values = px2.tolist()
-    py2_values = py2.tolist()
-    for position in order.tolist():
-        bucket = int(keys[position])
+    first_order = np.argsort(bucket_order[starts], kind="stable")
+    px1_values = px1[bucket_order].tolist()
+    py1_values = py1[bucket_order].tolist()
+    px2_values = px2[bucket_order].tolist()
+    py2_values = py2[bucket_order].tolist()
+    for first_position in first_order.tolist():
+        begin = int(starts[first_position])
+        end = int(starts[first_position + 1]) \
+            if first_position + 1 < len(starts) else len(sorted_keys)
+        bucket = int(sorted_keys[begin])
         path = buckets.get(bucket)
         if path is None:
             path = QPainterPath()
             buckets[bucket] = path
-        for index in np.flatnonzero(key == bucket).tolist():
-            path.moveTo(px1_values[index], py1_values[index])
-            path.lineTo(px2_values[index], py2_values[index])
+        for position in range(begin, end):
+            path.moveTo(px1_values[position], py1_values[position])
+            path.lineTo(px2_values[position], py2_values[position])
     return []
 
 
@@ -458,31 +466,40 @@ def build_layer_paths(
             sx, sy = transform.apply(ar.x1, ar.y1)
             ex, ey = transform.apply(ar.x2, ar.y2)
             if tile_count:
-                col = int((sx - grid_left) * inv_cell_w)
-                row = int((-sy - grid_top) * inv_cell_h)
-                if col < 0:
-                    col = 0
-                elif col >= columns:
-                    col = columns - 1
-                if row < 0:
-                    row = 0
-                elif row >= rows:
-                    row = rows - 1
-                tile = row * columns + col
-                col2 = int((ex - grid_left) * inv_cell_w)
-                row2 = int((-ey - grid_top) * inv_cell_h)
-                if col2 < 0:
-                    col2 = 0
-                elif col2 >= columns:
-                    col2 = columns - 1
-                if row2 < 0:
-                    row2 = 0
-                elif row2 >= rows:
-                    row2 = rows - 1
-                if col2 != col or row2 != row:
-                    tile = -1
+                # An arc that bulges over the border of its cell is always
+                # drawn: only the two ends of the arc are cheap to check,
+                # so a big radius plays it safe.
+                radius = math.hypot(ar.x1 - ar.cx, ar.y1 - ar.cy)
+                if radius > 0.5 / min(inv_cell_w, inv_cell_h):
+                    ar_tile = -1
+                else:
+                    ar_tile = None
+                if ar_tile is None:
+                    col = int((sx - grid_left) * inv_cell_w)
+                    row = int((-sy - grid_top) * inv_cell_h)
+                    if col < 0:
+                        col = 0
+                    elif col >= columns:
+                        col = columns - 1
+                    if row < 0:
+                        row = 0
+                    elif row >= rows:
+                        row = rows - 1
+                    ar_tile = row * columns + col
+                    col2 = int((ex - grid_left) * inv_cell_w)
+                    row2 = int((-ey - grid_top) * inv_cell_h)
+                    if col2 < 0:
+                        col2 = 0
+                    elif col2 >= columns:
+                        col2 = columns - 1
+                    if row2 < 0:
+                        row2 = 0
+                    elif row2 >= rows:
+                        row2 = rows - 1
+                    if col2 != col or row2 != row:
+                        ar_tile = -1
             else:
-                tile = 0
+                ar_tile = 0
             if width != last_width:
                 number = width_numbers.get(width)
                 if number is None:
@@ -493,7 +510,7 @@ def build_layer_paths(
                 last_number = number
             else:
                 number = last_number
-            key = number * stride + (tile + 1)
+            key = number * stride + (ar_tile + 1)
             path = buckets.get(key)
             if path is None:
                 path = QPainterPath()
@@ -516,17 +533,25 @@ def build_layer_paths(
                 continue
             gx, gy = transform.apply(fl.cx, fl.cy)
             if tile_count:
-                col = int((gx - grid_left) * inv_cell_w)
-                row = int((-gy - grid_top) * inv_cell_h)
-                if col < 0:
-                    col = 0
-                elif col >= columns:
-                    col = columns - 1
-                if row < 0:
-                    row = 0
-                elif row >= rows:
-                    row = rows - 1
-                flash_tile = row * columns + col
+                bounds = path.boundingRect()
+                if (bounds.width() > 1.0 / inv_cell_w
+                        or bounds.height() > 1.0 / inv_cell_h):
+                    # A shape that is bigger than a tile is always drawn:
+                    # it would be cut off if only its centre tile were
+                    # drawn.
+                    flash_tile = -1
+                else:
+                    col = int((gx - grid_left) * inv_cell_w)
+                    row = int((-gy - grid_top) * inv_cell_h)
+                    if col < 0:
+                        col = 0
+                    elif col >= columns:
+                        col = columns - 1
+                    if row < 0:
+                        row = 0
+                    elif row >= rows:
+                        row = rows - 1
+                    flash_tile = row * columns + col
             else:
                 flash_tile = 0
             result.ops.append(DrawOp(path, 0.0, True, clear, flash_tile))
@@ -658,9 +683,49 @@ class LayerItem(QGraphicsItem):
         self._color = QColor(color)
         self._bounds = paths.bounds()
         self._cache = _RasterCache()
+        self._ink = self._ink_average()
+
+    def _ink_average(self) -> float:
+        """The average ink width over the stroke paths of the layer."""
+        ink = 0.0
+        count = 0
+        for op in self._paths.ops:
+            if op.fill:
+                continue
+            elements = max(1, op.path.elementCount())
+            ink += op.width * elements
+            count += elements
+        if not count:
+            return 0.0
+        return ink / count
+
+    def color(self) -> QColor:
+        return QColor(self._color)
 
     def set_color(self, color: QColor) -> None:
+        """Give the layer its colour, without throwing the pictures away.
+
+        The rendered images hold the artwork with an opaque colour and
+        the transparency is applied when they are drawn, so only a change
+        of the colour itself (the red, green and blue) makes the images
+        wrong.  A change of the alpha alone (dimmed or active) keeps the
+        images: the biggest cause of a heavy redraw after a small click
+        of the user disappears with this.
+        """
+        red = color.red()
+        green = color.green()
+        blue = color.blue()
+        changed = (red != self._color.red() or green != self._color.green()
+                   or blue != self._color.blue())
         self._color = QColor(color)
+        if changed:
+            self._cache.clear()
+        self.update()
+
+    def set_paths(self, paths: LayerPaths) -> None:
+        self._paths = paths
+        self._bounds = paths.bounds()
+        self._ink = self._ink_average()
         self._cache.clear()
         self.update()
 
@@ -694,20 +759,14 @@ class LayerItem(QGraphicsItem):
         Returns the supersampling factor and whether antialiasing is used.
         The antialiased stroker of a very large path is by far the most
         expensive part of the drawing, but it only becomes expensive when
-        the strokes cover several device pixels.
+        the strokes cover several device pixels.  The average ink width
+        was measured once when the paths came in, so the walk over every
+        path no longer happens per picture.
         """
-        ink = 0.0
-        count = 0
-        for op in self._paths.ops:
-            if op.fill:
-                continue
-            elements = max(1, op.path.elementCount())
-            ink += op.width * elements
-            count += elements
-        if not count:
+        ink = self._ink
+        if ink <= 0.0:
             return (1, True)
-        average = ink / count
-        if average * scale >= self.ANTIALIASING_WIDTH_PX:
+        if ink * scale >= self.ANTIALIASING_WIDTH_PX:
             return (self.SUPERSAMPLE, False)
         return (1, True)
 

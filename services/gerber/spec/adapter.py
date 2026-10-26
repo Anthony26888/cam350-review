@@ -233,6 +233,10 @@ def to_render_data(image: FileImage) -> RenderData:
                 cx=item.x / IU_PER_MM, cy=item.y / IU_PER_MM,
                 kind="polygon",
                 pts=[(px / IU_PER_MM, py / IU_PER_MM) for px, py in item.points],
+                holes=[
+                    [(px / IU_PER_MM, py / IU_PER_MM) for px, py in contour]
+                    for contour in item.holes
+                ] or None,
                 negative=item.negative,
                 dcode=item.dcode,
             ))

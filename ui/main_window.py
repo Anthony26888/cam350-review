@@ -8,13 +8,10 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QToolButton, QMessageBox, QFileDialog, QStatusBar,
     QLabel, QSplitter, QMenuBar, QMenu, QToolBar, QTabWidget,
-    QApplication, QDialog, QProgressDialog, QStyle, QInputDialog,
+    QApplication, QDialog, QProgressDialog, QInputDialog,
 )
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QPointF
-from PySide6.QtGui import (
-    QAction, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen,
-    QPolygonF,
-)
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 
 from config.config_manager import ConfigManager
 from database.review_repo import ReviewRepo
@@ -48,197 +45,67 @@ from ui.settings_dialog import SettingsDialog
 from ui.calibration_wizard import CalibrationWizard
 from ui.origin_align_wizard import OriginAlignWizard, PrescreenCheckDialog
 from ui.gerber_viewer import GerberViewer
+from ui.icons import lucide_qicon
 from ui.i18n import tr
 from utils.path_utils import resource_path
 from utils.version import APP_VERSION
 from ui.jump_popup import JumpPopup
 
 
-def _icon_stroke() -> str:
-    try:
-        if ConfigManager.instance().config.theme == "dark":
-            return "#CBD5E1"
-    except Exception:
-        pass
-    return "#334155"
+def _toolbar_icon(name: str, accent: Optional[str] = None) -> QIcon:
+    return lucide_qicon(name, accent=accent, size=24, stroke_width=1.75)
 
 
-def _icon_stroke_disabled() -> str:
-    try:
-        if ConfigManager.instance().config.theme == "dark":
-            return "#475569"
-    except Exception:
-        pass
-    return "#94A3B8"
+def _new_icon() -> QIcon:
+    return _toolbar_icon("file-plus")
 
 
-def _paint_icon(draw, size: int = 26) -> QIcon:
-    icon = QIcon()
-    for mode, color in (
-        (QIcon.Mode.Normal, _icon_stroke()),
-        (QIcon.Mode.Disabled, _icon_stroke_disabled()),
-    ):
-        pm = QPixmap(size, size)
-        pm.fill(Qt.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setPen(QPen(QColor(color), 1.6))
-        p.setBrush(Qt.NoBrush)
-        draw(p, size)
-        p.end()
-        icon.addPixmap(pm, mode)
-    return icon
+def _open_icon() -> QIcon:
+    return _toolbar_icon("folder-open")
 
 
-def _paint_icon_colored(draw, size: int = 26) -> QIcon:
-    """Icons with accent colors: colorful when enabled, gray when disabled.
-
-    The Disabled pixmap is re-rendered with a gray accent instead of
-    desaturating pixels, so transparency is always preserved.
-    `draw` receives (painter, size, accent) where accent is None for the
-    colorful Normal state or a QColor for the monochrome Disabled state.
-    """
-    icon = QIcon()
-    for mode, accent in (
-        (QIcon.Mode.Normal, None),
-        (QIcon.Mode.Disabled, QColor(_icon_stroke_disabled())),
-    ):
-        pm = QPixmap(size, size)
-        pm.fill(Qt.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setPen(QPen(QColor(_icon_stroke() if accent is None else accent), 1.6))
-        p.setBrush(Qt.NoBrush)
-        draw(p, size, accent)
-        p.end()
-        icon.addPixmap(pm, mode)
-    return icon
+def _save_icon() -> QIcon:
+    return _toolbar_icon("save")
 
 
 def _board_icon() -> QIcon:
-    def _d(p, s, accent):
-        color = QColor("#0EA5E9") if accent is None else accent
-        p.drawRoundedRect(1.5, 1.5, s - 3, s - 3, 2.0, 2.0)
-        p.setPen(QPen(color, 1.2))
-        p.drawLine(s * 0.3, s * 0.42, s * 0.7, s * 0.42)
-        p.drawLine(s * 0.5, s * 0.42, s * 0.5, s * 0.72)
-        p.setBrush(color)
-        p.setPen(Qt.NoPen)
-        for x, y in ((s * 0.42, s * 0.36), (s * 0.58, s * 0.62)):
-            p.drawRect(x, y, s * 0.15, s * 0.12)
-    return _paint_icon_colored(_d)
+    return _toolbar_icon("circuit-board", "#0EA5E9")
 
 
 def _doc_icon() -> QIcon:
-    def _d(p, s):
-        p.drawRect(2.5, 1.5, s - 7, s - 3)
-        for y in (s * 0.3, s * 0.5, s * 0.7):
-            p.drawLine(s * 0.2, y, s * 0.62, y)
-    return _paint_icon(_d)
+    return _toolbar_icon("file-text")
 
 
 def _grid_icon() -> QIcon:
-    def _d(p, s):
-        p.drawRect(1.5, 1.5, s - 3, s - 3)
-        for i in range(1, 4):
-            y = 1.5 + i * (s - 3) / 4.0
-            x = 1.5 + i * (s - 3) / 4.0
-            p.drawLine(1.5, y, s - 1.5, y)
-            p.drawLine(x, 1.5, x, s - 1.5)
-    return _paint_icon(_d)
+    return _toolbar_icon("table-2", "#0D9488")
 
 
 def _sheet_icon() -> QIcon:
-    """Open folder with a spreadsheet peeking out — the PickPlace Excel file."""
-    def _d(p, s, accent):
-        tab = QColor("#22C55E") if accent is None else accent
-        base = p.pen().color()
-        # spreadsheet peeking out of the folder
-        p.drawRect(s * 0.30, 1.5, s * 0.44, s * 0.46)
-        p.drawLine(s * 0.30, s * 0.26, s * 0.74, s * 0.26)
-        p.drawLine(s * 0.52, s * 0.08, s * 0.52, s * 0.50)
-        # green header strip = the Excel cue
-        p.setBrush(tab)
-        p.setPen(Qt.NoPen)
-        p.drawRect(s * 0.32, s * 0.09, s * 0.40, s * 0.13)
-        # open folder body
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(base, 1.6))
-        p.drawRoundedRect(1.5, s * 0.42, s - 3, s * 0.50, 2.0, 2.0)
-    return _paint_icon_colored(_d)
+    return _toolbar_icon("file-spreadsheet", "#22C55E")
 
 
 def _chip_icon() -> QIcon:
-    def _d(p, s):
-        p.drawRect(s * 0.25, s * 0.25, s * 0.5, s * 0.5)
-        for i in range(3):
-            t = s * (0.3 + i * 0.2)
-            p.drawLine(s * 0.1, t, s * 0.25, t)
-            p.drawLine(s * 0.75, t, s * 0.9, t)
-            p.drawLine(t, s * 0.1, t, s * 0.25)
-            p.drawLine(t, s * 0.75, t, s * 0.9)
-    return _paint_icon(_d)
+    return _toolbar_icon("cpu", "#0EA5E9")
 
 
 def _wrench_icon() -> QIcon:
-    """Open-end wrench (diagonal) — Settings."""
-    def _d(p, s):
-        cx, cy, r = s * 0.64, s * 0.34, s * 0.21
-        # open head: full ring, then clear a wedge facing upper-right
-        p.drawEllipse(QPointF(cx, cy), r, r)
-        p.setCompositionMode(QPainter.CompositionMode_Clear)
-        p.setPen(Qt.NoPen)
-        p.setBrush(Qt.SolidPattern)
-        poly = QPolygonF([
-            QPointF(cx, cy),
-            QPointF(cx + r * 2.2, cy - r * 0.55),
-            QPointF(cx + r * 0.55, cy - r * 2.2),
-        ])
-        p.drawPolygon(poly)
-        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-        # handle toward lower-left with round cap
-        handle = QPen(p.pen().color(), 3.2)
-        handle.setCapStyle(Qt.RoundCap)
-        p.setPen(handle)
-        p.drawLine(QPointF(cx - r * 0.4, cy + r * 0.4),
-                   QPointF(s * 0.24, s * 0.76))
-    return _paint_icon(_d)
+    return _toolbar_icon("settings")
 
 
 def _export_icon() -> QIcon:
-    def _d(p, s):
-        p.drawRect(2.0, 1.5, s - 9, s - 7)
-        for y in (s * 0.28, s * 0.46):
-            p.drawLine(s * 0.2, y, s * 0.55, y)
-        p.drawLine(s * 0.62, s * 0.5, s - 2.0, s * 0.5)
-        p.drawLine(s - 2.5, s * 0.36, s - 0.5, s * 0.5)
-        p.drawLine(s - 2.5, s * 0.64, s - 0.5, s * 0.5)
-    return _paint_icon(_d)
+    return _toolbar_icon("download", "#0EA5E9")
 
 
-def _prescreen_icon() -> QIcon:
-    """Magnifier with a green tick — distinct from the reload (Align) icon."""
-    def _d(p, s, accent):
-        # magnifier lens
-        r = s * 0.30
-        cx, cy = s * 0.40, s * 0.40
-        lens = QColor("#0D9488") if accent is None else accent
-        pen = QPen(lens, 1.8)
-        p.setPen(pen)
-        p.drawEllipse(QPointF(cx, cy), r, r)
-        # handle
-        p.drawLine(QPointF(cx + r * 0.72, cy + r * 0.72),
-                   QPointF(s - 2.5, s - 2.5))
-        # green tick inside the lens
-        tick = QPen(QColor("#22C55E") if accent is None else accent, 1.9)
-        tick.setCapStyle(Qt.RoundCap)
-        tick.setJoinStyle(Qt.RoundJoin)
-        p.setPen(tick)
-        p.drawLine(QPointF(cx - r * 0.45, cy + r * 0.05),
-                   QPointF(cx - r * 0.10, cy + r * 0.42))
-        p.drawLine(QPointF(cx - r * 0.10, cy + r * 0.42),
-                    QPointF(cx + r * 0.50, cy - r * 0.35))
-    return _paint_icon_colored(_d)
+def _batch_icon() -> QIcon:
+    return _toolbar_icon("list-checks")
+
+
+def _ok_checked_icon() -> QIcon:
+    return _toolbar_icon("check-check", "#22C55E")
+
+
+def _delete_icon() -> QIcon:
+    return _toolbar_icon("trash", "#DC2626")
 
 
 class DatasheetWorker(QThread):
@@ -426,11 +293,6 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._redo_action)
 
         tools_menu = menubar.addMenu(tr("&Tools"))
-        align_action = QAction(tr("Align PickPlace Origin..."), self)
-        align_action.triggered.connect(self._align_origin)
-        align_action.setEnabled(False)
-        self._align_action = align_action
-        tools_menu.addAction(align_action)
 
         gerber_check_action = QAction(tr("Gerber View..."), self)
         gerber_check_action.triggered.connect(self._open_gerber_check)
@@ -507,7 +369,6 @@ class MainWindow(QMainWindow):
             """)
             return btn
 
-        spi = self.style().standardIcon
         icon_sources: List[tuple[QToolButton, Callable[[], QIcon]]] = []
 
         def _register(btn: QToolButton, factory: Callable[[], QIcon]) -> QToolButton:
@@ -515,22 +376,22 @@ class MainWindow(QMainWindow):
             return btn
 
         btn_new = _register(
-            _std_button(tr("New Session (Ctrl+N)"), tr("New"), lambda: spi(QStyle.StandardPixmap.SP_FileIcon)),
-            lambda: spi(QStyle.StandardPixmap.SP_FileIcon),
+            _std_button(tr("New Session (Ctrl+N)"), tr("New"), _new_icon),
+            _new_icon,
         )
         btn_new.clicked.connect(self._new_session)
         btn_new.setEnabled(False)
         self._btn_new = btn_new
 
         btn_open_session = _register(
-            _std_button(tr("Open Session (Ctrl+O)"), tr("Open"), lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton)),
-            lambda: spi(QStyle.StandardPixmap.SP_DialogOpenButton),
+            _std_button(tr("Open Session (Ctrl+O)"), tr("Open"), _open_icon),
+            _open_icon,
         )
         btn_open_session.clicked.connect(self._open_session)
 
         btn_save = _register(
-            _std_button(tr("Save Session (Ctrl+S)"), tr("Save"), lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton)),
-            lambda: spi(QStyle.StandardPixmap.SP_DialogSaveButton),
+            _std_button(tr("Save Session (Ctrl+S)"), tr("Save"), _save_icon),
+            _save_icon,
         )
         btn_save.clicked.connect(self._save_session)
         btn_save.setEnabled(False)
@@ -541,21 +402,6 @@ class MainWindow(QMainWindow):
 
         self._btn_bom = _register(_std_button(tr("Open BOM Excel"), tr("BOM"), _grid_icon), _grid_icon)
         self._btn_bom.clicked.connect(self._open_bom)
-
-        self._btn_align = _register(
-            _std_button(tr("Align PickPlace Origin"), tr("Align"), lambda: spi(QStyle.StandardPixmap.SP_BrowserReload)),
-            lambda: spi(QStyle.StandardPixmap.SP_BrowserReload),
-        )
-        self._btn_align.clicked.connect(self._align_origin)
-        self._btn_align.setEnabled(False)
-
-        self._btn_run_check = _register(
-            _std_button(tr("Run Check"), tr("Check"), _prescreen_icon),
-            _prescreen_icon,
-        )
-        self._btn_run_check.setToolTip(tr("Re-run the pre-screen check on the current data"))
-        self._btn_run_check.clicked.connect(self._open_prescreen_dialog)
-        self._btn_run_check.setEnabled(False)
 
         self._btn_gerber_check = _register(_std_button(tr("Gerber View"), tr("Gerber"), _board_icon), _board_icon)
         self._btn_gerber_check.clicked.connect(self._open_gerber_check)
@@ -577,8 +423,8 @@ class MainWindow(QMainWindow):
         self._btn_export_fixed.setMenu(_export_popup)
 
         self._btn_batch_edit = _register(
-            _std_button(tr("Batch Edit"), tr("Batch"), lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView)),
-            lambda: spi(QStyle.StandardPixmap.SP_FileDialogInfoView),
+            _std_button(tr("Batch Edit"), tr("Batch"), _batch_icon),
+            _batch_icon,
         )
         self._btn_batch_edit.clicked.connect(self._batch_edit)
         self._btn_batch_edit.setEnabled(False)
@@ -588,16 +434,16 @@ class MainWindow(QMainWindow):
         self._btn_pcb_info.setEnabled(False)
 
         self._btn_ok_checked = _register(
-            _std_button(tr("OK Checked"), tr("OK"), lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton)),
-            lambda: spi(QStyle.StandardPixmap.SP_DialogApplyButton),
+            _std_button(tr("OK Checked"), tr("OK"), _ok_checked_icon),
+            _ok_checked_icon,
         )
         self._btn_ok_checked.setObjectName("success")
         self._btn_ok_checked.setEnabled(False)
         self._btn_ok_checked.clicked.connect(self._mark_checked_ok)
 
         self._btn_delete = _register(
-            _std_button(tr("Delete Selected"), tr("Delete"), lambda: spi(QStyle.StandardPixmap.SP_TrashIcon)),
-            lambda: spi(QStyle.StandardPixmap.SP_TrashIcon),
+            _std_button(tr("Delete Selected"), tr("Delete"), _delete_icon),
+            _delete_icon,
         )
         self._btn_delete.setObjectName("danger")
         self._btn_delete.setEnabled(False)
@@ -614,8 +460,6 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_open)
         toolbar.addWidget(self._btn_bom)
-        toolbar.addWidget(self._btn_align)
-        toolbar.addWidget(self._btn_run_check)
         toolbar.addWidget(self._btn_gerber_check)
         toolbar.addSeparator()
         toolbar.addWidget(self._btn_export_report)
@@ -746,8 +590,6 @@ class MainWindow(QMainWindow):
         self._prescreen_bundle = None
         self._prescreen_ctx_packed = None
         self._close_prescreen_dialog()
-        if hasattr(self, "_btn_run_check"):
-            self._btn_run_check.setEnabled(False)
         self._close_gerber_viewer()
         self._close_jump_popup()
         self._current_index = -1
@@ -764,7 +606,6 @@ class MainWindow(QMainWindow):
         self._btn_batch_edit.setEnabled(False)
         self._btn_ok_checked.setEnabled(False)
         self._btn_delete.setEnabled(False)
-        self._btn_align.setEnabled(False)
         self._btn_pcb_info.setEnabled(False)
         self._btn_new.setEnabled(False)
         self._btn_save.setEnabled(False)
@@ -803,7 +644,6 @@ class MainWindow(QMainWindow):
         self._gerber_check_action.setEnabled(enabled)
 
     def _sync_action_states(self) -> None:
-        self._align_action.setEnabled(self._btn_align.isEnabled())
         self._export_report_action.setEnabled(self._btn_export_report.isEnabled())
         self._export_fixed_action.setEnabled(self._btn_export_fixed.isEnabled())
         for _attr in ("_export_top_action", "_export_bottom_action"):
@@ -1110,12 +950,9 @@ class MainWindow(QMainWindow):
         self._btn_batch_edit.setEnabled(True)
         self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
-        self._btn_align.setEnabled(True)
         self._btn_pcb_info.setEnabled(True)
         self._btn_new.setEnabled(True)
         self._btn_save.setEnabled(True)
-        if hasattr(self, "_btn_run_check"):
-            self._btn_run_check.setEnabled(True)
         self._update_gerber_view_button()
         self._sync_action_states()
 
@@ -1301,12 +1138,9 @@ class MainWindow(QMainWindow):
         self._btn_batch_edit.setEnabled(True)
         self._btn_ok_checked.setEnabled(True)
         self._btn_delete.setEnabled(True)
-        self._btn_align.setEnabled(True)
         self._btn_pcb_info.setEnabled(True)
         self._btn_new.setEnabled(True)
         self._btn_save.setEnabled(True)
-        if hasattr(self, "_btn_run_check"):
-            self._btn_run_check.setEnabled(True)
         self._update_gerber_view_button()
         self._sync_action_states()
 
@@ -2080,7 +1914,6 @@ class MainWindow(QMainWindow):
             self._btn_batch_edit.setEnabled(False)
             self._btn_ok_checked.setEnabled(False)
             self._btn_delete.setEnabled(False)
-            self._btn_align.setEnabled(False)
             self._btn_pcb_info.setEnabled(False)
             self._btn_new.setEnabled(False)
             self._btn_save.setEnabled(False)
@@ -2195,7 +2028,6 @@ class MainWindow(QMainWindow):
         self._btn_batch_edit.setEnabled(has_records)
         self._btn_ok_checked.setEnabled(has_records)
         self._btn_delete.setEnabled(has_records)
-        self._btn_align.setEnabled(has_records)
         self._btn_pcb_info.setEnabled(has_records)
         self._btn_new.setEnabled(has_records)
         self._btn_save.setEnabled(has_records)
@@ -2242,13 +2074,10 @@ class MainWindow(QMainWindow):
         def _post_wizard() -> None:
             total_t = Timer()
             t = Timer()
-            # Capture align context so the toolbar Run Check can re-run later
             gko, gtp, gbp, ctx = wizard.get_prescreen_context()
             if ctx is not None:
                 self._prescreen_bundle = (gko, gtp, gbp, ctx)
                 self._prescreen_ctx_packed = pack_prescreen_ctx(ctx)
-                if hasattr(self, "_btn_run_check"):
-                    self._btn_run_check.setEnabled(True)
             self._apply_prescreen_result(wizard.get_prescreen_result())
             prescreen_ms = t.ms()
 
@@ -2632,15 +2461,9 @@ class MainWindow(QMainWindow):
         self._sync_viewer_flags()
 
     def _restore_prescreen_bundle(self, session) -> None:
-        """Rebuild the Run Check bundle from a saved session (if it has one).
-
-        Sessions saved before this feature carry no prescreen_ctx; the button
-        then stays disabled until the user runs Align PickPlace Origin once.
-        """
+        """Rebuild the pre-screen context bundle from a saved session."""
         self._prescreen_bundle = None
         self._prescreen_ctx_packed = None
-        if hasattr(self, "_btn_run_check"):
-            self._btn_run_check.setEnabled(False)
         packed = getattr(session, "prescreen_ctx", None)
         if not packed:
             return
@@ -2657,8 +2480,6 @@ class MainWindow(QMainWindow):
             ctx,
         )
         self._prescreen_ctx_packed = packed
-        if hasattr(self, "_btn_run_check"):
-            self._btn_run_check.setEnabled(True)
 
     def _open_prescreen_dialog(self) -> None:
         """Open (or focus) the standalone Pre-screen Check panel."""

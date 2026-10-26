@@ -1,4 +1,5 @@
 import ctypes
+import sys
 from ctypes import wintypes
 
 DWMWA_BORDER_COLOR = 34
@@ -7,7 +8,7 @@ DWMWA_TEXT_COLOR = 36
 
 COLORREF_DEFAULT = 0x00000000 | 0xFFFFFFFF
 
-_dwmapi = ctypes.windll.dwmapi
+_dwmapi = ctypes.windll.dwmapi if sys.platform == "win32" else None
 
 
 def _colorref(color: str) -> int:
@@ -33,7 +34,7 @@ def set_titlebar_theme(
     attributes are ignored and this degrades to a no-op, keeping the
     native theme behaviour.
     """
-    if not hwnd:
+    if not hwnd or _dwmapi is None:
         return False
 
     attrs = (

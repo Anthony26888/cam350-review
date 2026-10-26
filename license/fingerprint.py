@@ -1,7 +1,10 @@
 import ctypes
 import hashlib
-import winreg
+import sys
 from typing import List
+
+if sys.platform == "win32":
+    import winreg
 
 
 def _machine_guid() -> str:
@@ -17,6 +20,8 @@ def _machine_guid() -> str:
 
 def _volume_serials() -> List[str]:
     serials: List[str] = []
+    if sys.platform != "win32":
+        return serials
     kernel32 = ctypes.windll.kernel32
     get_volume = kernel32.GetVolumeInformationW
     get_volume.argtypes = [

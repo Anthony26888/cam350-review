@@ -553,7 +553,11 @@ def _manifest():
     if not os.path.exists(MANIFEST):
         return None
     with open(MANIFEST, encoding="utf-8") as fh:
-        return json.load(fh)
+        manifest = json.load(fh)
+    root = manifest.get("root") if isinstance(manifest, dict) else None
+    if not root or not os.path.isdir(root):
+        return None
+    return manifest
 
 
 @pytest.mark.skipif(not os.path.exists(MANIFEST), reason="manifest not generated")

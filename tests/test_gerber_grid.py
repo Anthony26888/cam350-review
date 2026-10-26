@@ -100,7 +100,7 @@ def test_grid_cannot_toggle_before_fit(viewer):
     viewer._chk_grid.setChecked(True)
     assert viewer._grid_active is False
     assert viewer._view._grid_active is False
-    assert viewer._view.dragMode().name == "ScrollHandDrag"
+    assert viewer._view.dragMode().name == "NoDrag"
 
 
 def test_toggle_grid_off_restores_drag(viewer):
@@ -109,7 +109,7 @@ def test_toggle_grid_off_restores_drag(viewer):
     viewer._chk_grid.setChecked(False)
     assert viewer._grid_active is False
     assert viewer._view._grid_active is False
-    assert viewer._view.dragMode().name == "ScrollHandDrag"
+    assert viewer._view.dragMode().name == "NoDrag"
 
 
 def test_update_grid_draws_item(viewer):

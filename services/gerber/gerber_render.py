@@ -64,6 +64,9 @@ class FlashShape:
     #: of the flash.  The points of a region (G36) and of a polygon
     #: aperture are given in the coordinates of the file.
     pts_local: bool = False
+    #: Contours that cut themselves out of the polygon, in the frame of
+    #: the points.  Empty for every shape but a region with holes.
+    holes: Optional[List[List[Tuple[float, float]]]] = None
 
 
 @dataclass

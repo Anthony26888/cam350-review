@@ -50,9 +50,17 @@ def pos_bg() -> str:
 def err_bg() -> str:
     return "#3B1212" if is_dark_theme() else "#fff0f0"
 
+
+def icon_color() -> str:
+    return "#CBD5E1" if is_dark_theme() else "#334155"
+
+
+def icon_disabled_color() -> str:
+    return "#475569" if is_dark_theme() else "#94A3B8"
+
 QSS_DARK = """
 * {
-    font-family: "Segoe UI";
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     font-size: 10pt;
     color: #E2E8F0;
 }
@@ -407,7 +415,7 @@ QLabel#newval {
 
 QSS_LIGHT = """
 * {
-    font-family: "Segoe UI";
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     font-size: 10pt;
     color: #0F172A;
 }
@@ -829,6 +837,8 @@ def apply_theme(app, theme: str) -> None:
     dark = theme == "dark"
     app.setPalette(_DARK_PALETTE if dark else _LIGHT_PALETTE)
     app.setStyleSheet(QSS_DARK if dark else QSS_LIGHT)
+    from ui.icons import clear_icon_cache
+    clear_icon_cache()
     for widget in QApplication.allWidgets():
         refresh = getattr(widget, "refresh_icons", None)
         if callable(refresh):

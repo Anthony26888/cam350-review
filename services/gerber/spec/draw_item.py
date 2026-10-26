@@ -50,6 +50,9 @@ class DrawItem:
     height: int = 0
     rotation: float = 0.0
     points: tuple[tuple[int, int], ...] = ()
+    #: Contours that cut themselves out of the filled outer contour, in
+    #: the coordinates of the file.regions of Gerber use them.
+    holes: tuple[tuple[tuple[int, int], ...], ...] = ()
     macro_shapes: tuple[MacroShape, ...] = ()
     dcode: int = 0
     negative: bool = False

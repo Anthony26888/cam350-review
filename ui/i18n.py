@@ -681,28 +681,35 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Rotate all components with their coordinates by 0, 90, 180 or 270 degrees around the origin (0, 0)":
             "Xoay tất cả component cùng tọa độ 0, 90, 180 hoặc 270 độ quanh gốc (0, 0)",
         "Component {n}\u00b0": "Component {n}\u00b0",
-        "Rotate {n} components by {a}\u00b0 around the origin (0, 0)?":
-            "Xoay {n} component {a}\u00b0 quanh gốc (0, 0)?",
-        "Rotated {n} components by {a}\u00b0": "Đã xoay {n} component {a}\u00b0",
+        "Rotate {n} {side}-side components by {a}\u00b0 around the origin (0, 0)?":
+            "Xoay {n} component phía {side} {a}\u00b0 quanh gốc (0, 0)?",
+        "Rotated {n} {side}-side components by {a}\u00b0":
+            "Đã xoay {n} component phía {side} {a}\u00b0",
         "Components are already at the rotated position.":
             "Các component đã nằm ở vị trí sau xoay.",
         "Flip comps": "Lật component",
+        "Flip X comps": "Lật X comps",
+        "Flip Y comps": "Lật Y comps",
+        "Flip all components across the X axis":
+            "Lật tất cả component cùng tọa độ theo trục X",
+        "Flip all components across the Y axis":
+            "Lật tất cả component cùng tọa độ theo trục Y",
         "Flip all components with their coordinates across the X or Y axis":
             "Lật tất cả component cùng tọa độ theo trục X hoặc Y",
         "Component Flip {axis}": "Lật component {axis}",
-        "Flip {n} components across the {axis} axis?":
-            "Lật {n} component theo trục {axis}?",
-        "Flipped {n} components across the {axis} axis":
-            "Đã lật {n} component theo trục {axis}",
+        "Flip {n} {side}-side components across the {axis} axis?":
+            "Lật {n} component phía {side} theo trục {axis}?",
+        "Flipped {n} {side}-side components across the {axis} axis":
+            "Đã lật {n} component phía {side} theo trục {axis}",
         "Components are already at the flipped position.":
             "Các component đã nằm ở vị trí sau lật.",
         "Rotating components...": "Đang xoay component...",
         "Flipping components...": "Đang lật component...",
         "Resetting rotation...": "Đang đặt lại góc xoay...",
-        "Reset the rotation of {n} components to 0\u00b0?":
-            "Đặt lại góc xoay của {n} component về 0\u00b0?",
-        "Reset the rotation of {n} components to 0\u00b0":
-            "Đã đặt lại góc xoay của {n} component về 0\u00b0",
+        "Reset the rotation of {n} {side}-side components to 0\u00b0?":
+            "Đặt lại góc xoay của {n} component phía {side} về 0\u00b0?",
+        "Reset the rotation of {n} {side}-side components to 0\u00b0":
+            "Đã đặt lại góc xoay của {n} component phía {side} về 0\u00b0",
         "Arrow size:": "Kích thước mũi tên:",
         "Crosshair scale:": "Tỷ lệ crosshair:",
         "No valid GKO file.": "Không có file GKO hợp lệ.",
@@ -886,6 +893,88 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "\U0001F504 Đang kiểm tra lại pre-screen...",
         "Run Align PickPlace Origin once to enable Run Check.":
             "Hãy chạy Align PickPlace Origin một lần để bật nút Run Check.",
+        "Align to Pad": "Khớp Pad",
+        "Pick the true pad centre of the selected component, then "
+        "every component on the same side is shifted by the same "
+        "offset. Ctrl click bypasses snapping, Esc or right-click "
+        "cancels.":
+            "Chọn tâm pad thật của component đang chọn, sau đó toàn bộ "
+            "component cùng phía sẽ được dịch chuyển theo đúng độ lệch đó. "
+            "Giữ Ctrl khi click để bớt bám tâm pad, Esc hoặc click phải "
+            "để hủy.",
+        "Align to pad: select a component first.":
+            "Khớp pad: chọn component trước.",
+        "Align to pad: click the true pad centre of {des} "
+        "(Ctrl = raw click).":
+            "Khớp pad: click vào tâm pad thật của {des} "
+            "(Ctrl = click toạ độ thô).",
+        "Align to pad cancelled.": "Đã hủy khớp pad.",
+        "Align to pad: no component selected.":
+            "Khớp pad: chưa chọn component nào.",
+        "Align to pad: already aligned.":
+            "Khớp pad: đã trùng khớp, không có độ lệch.",
+        "Align to pad: {des} | ΔX: {dx:+.4f} mm | ΔY: {dy:+.4f} mm (snap)":
+            "Khớp pad: {des} | ΔX: {dx:+.4f} mm | ΔY: {dy:+.4f} mm (có bám)",
+        "Align to pad: {des} | ΔX: {dx:+.4f} mm | ΔY: {dy:+.4f} mm (raw)":
+            "Khớp pad: {des} | ΔX: {dx:+.4f} mm | ΔY: {dy:+.4f} mm (thô)",
+        "Align to pad: no pads on the {side} side — clicks will use raw "
+        "coordinates.":
+            "Khớp pad: phía {side} không có pad nào — click sẽ dùng toạ "
+            "độ thô.",
+        "(no designator)": "(không có designator)",
+        "top": "Trên",
+        "bottom": "Dưới",
+        "Move every {side}-side component by the offset of {des}?":
+            "Di chuyển toàn bộ component phía {side} theo độ lệch của {des}?",
+        "Offset X: {dx:+.4f} mm\nOffset Y: {dy:+.4f} mm\n"
+        "Components to move: {n}{warn}":
+            "Sai lệch X: {dx:+.4f} mm\nSai lệch Y: {dy:+.4f} mm\n"
+            "Số component di chuyển: {n}{warn}",
+        "Warning: no pad found near the clicked point; "
+        "the raw coordinates are used.":
+            "Cảnh báo: không tìm thấy pad gần điểm click; "
+            "sẽ dùng toạ độ thô.",
+        "Aligning components...": "Đang khớp component...",
+        "Redrawing view...": "Đang vẽ lại view...",
+        "Aligned {n} components by ({dx:+.4f}, {dy:+.4f}) mm.":
+            "Đã khớp {n} component, độ lệch ({dx:+.4f}, {dy:+.4f}) mm.",
+        "Aligned {n} {side} components.":
+            "Đã khớp {n} component phía {side}.",
+        "Saving aligned coordinates...": "Đang lưu toạ độ đã khớp...",
+        # ------------------------------------------------------------------
+        # Trace pad: soi đường đồng của một pad.
+        # ------------------------------------------------------------------
+        "Trace pad": "Soi pad",
+        "Trace the copper net of a pad: click a pad and the copper of its "
+        "net lights up. Click a second pad to see whether the two connect. "
+        "Esc or right-click cancels.":
+            "Soi đường đồng của một pad: click vào pad, toàn bộ đường "
+            "đồng nối liền với pad đó sẽ sáng lên. Click pad thứ hai để "
+            "biết hai pad có thông mạch với nhau không. Esc hoặc click "
+            "phải để hủy.",
+        "Trace pad: click a pad of the copper layer (Esc = exit).":
+            "Soi pad: click vào một pad trên layer đồng (Esc = thoát).",
+        "Trace pad cancelled.": "Đã hủy soi pad.",
+        "Trace pad ({layer}): {n} traces on one net: {list}.":
+            "Soi pad ({layer}): {n} nét thuộc cùng mạng đồng: {list}.",
+        "Trace pad: no pad at the clicked point — click a copper pad.":
+            "Soi pad: không có pad nào ở điểm click — hãy click vào một "
+            "pad đồng.",
+        "Trace pad: several copper layers carry a pad here — click again "
+        "on the same spot to trace {layer}.":
+            "Soi pad: có nhiều layer đồng đều có pad tại đây — click "
+            "thêm lần nữa đúng chỗ này để soi {layer}.",
+        "Trace pad: {a} and {b} are CONNECTED — one net.":
+            "Soi pad: {a} và {b} THÔNG mạch — cùng một mạng đồng.",
+        "Trace pad: {a} and {b} are NOT connected — different nets.":
+            "Soi pad: {a} và {b} KHÔNG thông mạch — khác mạng đồng.",
+        "Trace pad: click a pad first, then a second pad to compare.":
+            "Soi pad: click chọn một pad trước, rồi click pad thứ hai "
+            "để so sánh.",
+        ", and {n} more pads": ", và {n} pads nữa",
+        "(no pads)": "(không có pad nào)",
+        "Building layer {n}/{total}: {name}...":
+            "Đang dựng layer {n}/{total}: {name}...",
     },
 }
 

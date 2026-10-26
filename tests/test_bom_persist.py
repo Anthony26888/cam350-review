@@ -120,12 +120,12 @@ def _holder():
     h._undo_action = None
     h._redo_action = None
     for name in ["_btn_export_report", "_btn_export_fixed", "_btn_batch_edit",
-                 "_btn_ok_checked", "_btn_delete", "_btn_align",
+                 "_btn_ok_checked", "_btn_delete",
                  "_btn_pcb_info", "_btn_new", "_btn_save",
                  "_btn_gerber_check"]:
         setattr(h, name, _Btn())
     h._gerber_check_action = _Btn()
-    for name in ["_align_action", "_export_report_action",
+    for name in ["_export_report_action",
                  "_export_fixed_action", "_pcb_info_action", "_new_action",
                  "_save_action", "_save_as_action"]:
         setattr(h, name, _Btn())

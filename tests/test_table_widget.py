@@ -338,3 +338,34 @@ def test_block_filter_preserved_on_set_records(table):
     assert table._table.rowCount() == 1
     table.set_records(recs)
     assert table._block_filter.currentData() == 3
+
+def test_update_rows_refreshes_only_given_rows(table):
+    records = _records()
+    table.set_records(records)
+    records[1].status = "Aligned"
+    table.update_rows([1])
+    assert table._table.item(1, 10).text() == "Aligned"
+    # Other rows untouched.
+    assert table._table.item(0, 10).text() != "Aligned"
+
+    records[0].status = "OK"
+    records[2].status = "OK"
+    table.update_rows([0, 2])
+    assert table._table.item(2, 10).text() == "OK"
+    assert table._table.item(0, 10).text() == "OK"
+
+    # Out-of-range indices are tolerated.
+    table.update_rows([99, -1])
+
+
+def test_update_rows_works_with_filters_applied(table):
+    records = _records()
+    table.set_records(records)
+    idx = table._layer_filter.findData("Top")
+    table._layer_filter.setCurrentIndex(idx)      # row idx 1 is now hidden
+    records[1].status = "Aligned"
+    table.update_rows([1])                        # hidden row: no crash
+    assert table._table.rowCount() == 2
+    records[0].status = "OK"
+    table.update_rows([1, 0])
+    assert table._table.item(0, 10).text() == "OK"

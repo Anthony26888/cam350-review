@@ -778,23 +778,15 @@ class GerberParser:
     def _draw_segment(self, target_x: int, target_y: int) -> None:
         width = self._current_width
         item = DrawItem(
-            KIND_SEGMENT,
-            self._current_x,
-            self._current_y,
-            target_x,
-            target_y,
-            0,
-            0,
-            width,
-            False,
-            0,
-            0,
-            0.0,
-            (),
-            (),
-            self._current_dcode,
-            not self._polarity_dark,
-            self._take_object_attributes(),
+            kind=KIND_SEGMENT,
+            x=self._current_x,
+            y=self._current_y,
+            x2=target_x,
+            y2=target_y,
+            width=width,
+            dcode=self._current_dcode,
+            negative=not self._polarity_dark,
+            attributes=self._take_object_attributes(),
         )
         if self._has_image_transform:
             self._apply_image_transform(item)
@@ -911,21 +903,29 @@ class GerberParser:
     def _close_region(self) -> None:
         self._close_contour()
         self._region = False
-        for contour in self._region_contours:
-            if len(contour) < 3:
-                continue
+        contours = [contour for contour in self._region_contours
+                    if len(contour) >= 3]
+        self._region_contours = []
+        if not contours:
+            return
+        closed = []
+        for contour in contours:
             if contour[0] != contour[-1]:
                 contour = contour + [contour[0]]
-            item = DrawItem(
-                kind=KIND_POLYGON,
-                x=contour[0][0],
-                y=contour[0][1],
-                points=tuple(contour),
-                negative=not self._polarity_dark,
-                attributes=self._take_object_attributes(),
-            )
-            self._emit(item)
-        self._region_contours = []
+            closed.append(contour)
+        # The contours of one G36 block stay together: an inner contour
+        # cuts itself out of the outer one, so the holes of a pour keep
+        # being holes.  Each one alone would be filled as its own island.
+        item = DrawItem(
+            kind=KIND_POLYGON,
+            x=closed[0][0][0],
+            y=closed[0][0][1],
+            points=tuple(closed[0]),
+            holes=tuple(tuple(contour) for contour in closed[1:]),
+            negative=not self._polarity_dark,
+            attributes=self._take_object_attributes(),
+        )
+        self._emit(item)
 
     def _flatten_region_arc(self, target_x: int, target_y: int) -> None:
         """An arc inside a region is flattened into points."""
@@ -1078,6 +1078,10 @@ def _offset_item(item: DrawItem, dx: int, dy: int) -> DrawItem:
         width=item.width, clockwise=item.clockwise,
         diameter=item.diameter, height=item.height, rotation=item.rotation,
         points=tuple((px + dx, py + dy) for px, py in item.points),
+        holes=tuple(
+            tuple((px + dx, py + dy) for px, py in contour)
+            for contour in item.holes
+        ),
         macro_shapes=item.macro_shapes, dcode=item.dcode,
         negative=item.negative, attributes=dict(item.attributes),
     )

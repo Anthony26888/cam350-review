@@ -10,9 +10,17 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $startedAt = Get-Date
 
-$ISCC = "C:\Program Files\Inno Setup 7\ISCC.exe"
-if (-not (Test-Path -LiteralPath $ISCC)) {
-    Write-Error "ISCC.exe not found at $ISCC. Install Inno Setup 7 or edit the path in this script."
+# ISCC path: override with ISCC_PATH env, else check common install locations.
+$ISCC = $env:ISCC_PATH
+if (-not $ISCC) {
+    $ISCC = @(
+        "C:\Program Files\Inno Setup 7\ISCC.exe",
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 6\ISCC.exe"
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+if (-not $ISCC -or -not (Test-Path -LiteralPath $ISCC)) {
+    Write-Error "ISCC.exe not found. Install Inno Setup 6/7 or set ISCC_PATH."
 }
 
 $versionLine = Get-Content -LiteralPath "utils\version.py" | Where-Object { $_ -match '^APP_VERSION\s*=' }

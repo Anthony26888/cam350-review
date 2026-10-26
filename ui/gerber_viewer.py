@@ -1,16 +1,18 @@
 import math
 import os
+from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import (
-    Qt, QRectF, QPointF, QPoint, QSize, QThread, QTimer, Signal,
+    Qt, QRect, QRectF, QPointF, QPoint, QSize, QThread, QTimer, Signal,
 )
 from PySide6.QtGui import (
-    QBrush, QColor, QPen, QPainter, QPainterPath, QPolygonF,
+    QBrush, QColor, QPen, QPainter, QPainterPath, QPolygonF, QRegion,
     QWheelEvent, QFont, QFontMetricsF, QTransform, QPixmap, QMouseEvent, QIcon,
     QCursor, QAction, QActionGroup,
 )
+from config.config_manager import ConfigManager
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsPathItem,
@@ -50,6 +52,9 @@ from ui.zoom_controller import (
 )
 from services.gerber.gerber_transform import (
     AffineTransform, apply_transform, apply_inverse_transform, transform_rot,
+)
+from services.gerber.trace_net import (
+    build_index, find_shortest_path, is_copper_plane, pick_seed, trace_component,
 )
 from utils.path_utils import resource_path
 
@@ -93,12 +98,42 @@ Z_MEASURE = 1200
 Z_ORIGIN_MARK = 1300
 Z_GOTO_CROSS = 1400
 Z_PICKPLACE = 1500
+#: The net that is traced lies over every layer of the picture, but
+#: under the measure tool, the crosshair and the marks of Pick&Place.
+Z_TRACE = 900
+
+#: The place of a layer in the stack by its role.  The copper always
+#: lies at the bottom, so the paste, the mask and the silk stay on top
+#: of it no matter which layer is active.  The steps of a role are a
+#: tenth wide, so even ten inner planes of copper stay well under the
+#: mask tier.
+_LAYER_ROLE_BASE = {
+    ROLE_PROFILE: 0.0,
+    ROLE_COPPER: 5.0,
+    ROLE_MASK: 10.0,
+    ROLE_PASTE: 15.0,
+    ROLE_SILK: 20.0,
+    ROLE_DRILL: 25.0,
+    ROLE_OTHER: 30.0,
+}
+
+#: How much a layer that is active gains, so that the active paste, mask
+#: or silk stands out over the layers of the same kind below it.  The
+#: copper never gains: it has to stay under everything.
+_LAYER_ACTIVE_BUMP = 7.0
 CROSS_COLOR = QColor("#EF4444")
 HIGHLIGHT_COLOR = QColor("#39FF14")
 CHECKED_COLOR = QColor("#22C55E")
 GRID_COLOR = QColor(100, 116, 139, 160)
 BACKGROUND = QColor("#0B1220")
 MEASURE_COLOR = QColor("#38BDF8")
+#: The colour of the net that is traced: a bright yellow, far from the
+#: blue of the measure tool and the green of the checked marks.
+TRACE_COLOR = QColor(255, 214, 10)
+#: The width of the lines of a traced net, in millimetres.  The wires
+#: that lead below this width are drawn at this width, so the chain of
+#: the net is seen at any zoom.
+_TRACE_LINE_WIDTH = 0.6
 
 _CROSS_BOARD_RATIO = 0.01
 _MIN_ARROW_PX = 10.0
@@ -118,32 +153,11 @@ LAYER_STATE_HIDDEN = "hidden"
 #: How much of the colour a layer that is dimmed keeps.
 LAYER_DIMMED_ALPHA = 76
 
-_ICON_CHECKED: Optional[QIcon] = None
-_ICON_UNCHECKED: Optional[QIcon] = None
+from ui.icons import lucide_qicon, status_icon
 
 
 def _build_status_icon(checked: bool) -> QIcon:
-    pm = QPixmap(16, 16)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    if checked:
-        pen = QPen(QColor("#22C55E"), 2.2)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        path = QPainterPath()
-        path.moveTo(3.0, 8.5)
-        path.lineTo(6.5, 12.0)
-        path.lineTo(13.0, 4.0)
-        p.drawPath(path)
-    else:
-        p.setBrush(QColor("#F97316"))
-        p.setPen(Qt.NoPen)
-        p.drawEllipse(4.0, 4.0, 8.0, 8.0)
-    p.end()
-    return QIcon(pm)
+    return status_icon(checked)
 
 
 def _layer_key(layer: str) -> str:
@@ -160,6 +174,13 @@ def _record_coord(record: ReviewRecord) -> Tuple[float, float, float]:
     y = record.new_y if record.new_y is not None else record.old_y
     rotation = record.new_rotation if record.new_rotation is not None else record.old_rotation
     return x, y, rotation
+
+
+#: Pad snap falls back across these roles, best first.
+_PAD_SNAP_ROLES = (ROLE_PASTE, ROLE_MASK, ROLE_COPPER)
+
+#: Vertices of a punched-out circle hole in an aperture macro.
+_HOLE_SEGS = 24
 
 
 def _flash_size(fl: FlashShape) -> float:
@@ -186,6 +207,49 @@ def _flash_size(fl: FlashShape) -> float:
         ys = [p[1] for p in fl.pts]
         return max(max(xs) - min(xs), max(ys) - min(ys))
     return fl.w or 0.3
+
+
+def _flash_center(fl: FlashShape) -> Tuple[float, float]:
+    """Effective pad centre for snap and pick operations."""
+    if fl.kind == "polygon" and fl.pts and not fl.pts_local:
+        xs = [p[0] for p in fl.pts]
+        ys = [p[1] for p in fl.pts]
+        return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    return fl.cx, fl.cy
+
+
+def _paste_stroke_pads(data: RenderData) -> List[Tuple[float, float, float]]:
+    """Derive pad centres from isolated strokes on solder paste layers.
+
+    Many CAD systems output surface mount pads as short D01 strokes with
+    rectangular or circular apertures rather than flashed apertures.
+    Strokes that form connected outlines (like board edges or pour contours)
+    are excluded by checking that both endpoints are isolated.
+    """
+    lines = [ln for ln in data.lines if not ln.negative]
+    if not lines:
+        return []
+    cnt: Dict[Tuple[float, float], int] = defaultdict(int)
+    endpoints: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    for ln in lines:
+        p1 = (round(ln.x1, 3), round(ln.y1, 3))
+        p2 = (round(ln.x2, 3), round(ln.y2, 3))
+        endpoints.append((p1, p2))
+        cnt[p1] += 1
+        cnt[p2] += 1
+
+    pads: List[Tuple[float, float, float]] = []
+    for ln, (p1, p2) in zip(lines, endpoints):
+        if cnt[p1] == 1 and cnt[p2] == 1:
+            mx = (ln.x1 + ln.x2) / 2.0
+            my = (ln.y1 + ln.y2) / 2.0
+            length = math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1)
+            ap = data.apertures.get(ln.dcode)
+            dims = [abs(p) for p in (ap.params if ap else ())]
+            ap_size = max(dims) if dims else ln.width
+            size = max(ap_size, length)
+            pads.append((mx, my, size))
+    return pads
 
 
 def _nearest_pad_size(pads_raw, x: float, y: float) -> Optional[float]:
@@ -242,330 +306,105 @@ class PadGrid:
         hit = self.nearest_point(x, y)
         return hit[2] if hit is not None else None
 
+    def is_empty(self) -> bool:
+        return not self._cells
+
 
 def _target_icon(size: int = 24) -> QIcon:
-    """A bullseye with a pink centre: the mark of the origin.
-
-    The program has no picture files of its own, so the mark of the
-    origin is drawn: a ring, a cross and a pink middle.
-    """
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    middle = size / 2.0
-    pen = QPen(QColor("#60A5FA"))
-    pen.setWidthF(1.4)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    painter.drawEllipse(QPointF(middle, middle), size * 0.36, size * 0.36)
-    painter.drawLine(QPointF(middle, 1.5), QPointF(middle, size - 1.5))
-    painter.drawLine(QPointF(1.5, middle), QPointF(size - 1.5, middle))
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor("#F0ACFC"))
-    painter.drawEllipse(QPointF(middle, middle), size * 0.13, size * 0.13)
-    painter.end()
-    return QIcon(pixmap)
-
-
-def _paint_stroke_icon(size: int, draw, accent: Optional[QColor] = None) -> QIcon:
-    """Draw a small icon with one grey stroke, like the icons of the card."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    pen = QPen(accent if accent is not None else QColor("#94A3B8"))
-    pen.setWidthF(1.4)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    draw(painter, size, accent if accent is not None else pen.color())
-    painter.end()
-    return QIcon(pixmap)
+    return lucide_qicon("crosshair", accent="#60A5FA", size=size)
 
 
 def _rotate_icon(size: int = 24) -> QIcon:
-    """A circular arrow turning right: the mark of turning the board."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        cx, cy, r = s / 2.0, s / 2.0, s * 0.30
-        # The ring stays empty in the top right; the arc runs clockwise
-        # from just above 3 o'clock and ends near the top.
-        gap = 70.0
-        end = 80.0
-        start = end + (360.0 - gap)
-        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-        p.drawArc(rect, int(start * 16), -int((360.0 - gap) * 16))
-        # The head sits at the end of the arc and follows its direction.
-        rad = math.radians(end)
-        tangent = (math.sin(rad), math.cos(rad))
-        normal = (math.cos(rad), -math.sin(rad))
-        px = cx + r * normal[0]
-        py = cy + r * normal[1]
-        tip = QPointF(px + tangent[0] * s * 0.18, py + tangent[1] * s * 0.18)
-        b1 = QPointF(px + normal[0] * s * 0.10, py + normal[1] * s * 0.10)
-        b2 = QPointF(px - normal[0] * s * 0.10, py - normal[1] * s * 0.10)
-        p.setBrush(base)
-        p.setPen(Qt.NoPen)
-        p.drawPolygon(QPolygonF([tip, b1, b2]))
-        p.setBrush(Qt.NoBrush)
-    return _paint_stroke_icon(size, _draw, QColor("#F59E0B"))
+    return lucide_qicon("rotate-cw", accent="#F59E0B", size=size)
 
 
 def _mirror_icon(size: int = 24, horizontal: bool = False,
                  accent: Optional[QColor] = None) -> QIcon:
-    """A pair of mirrored triangles about a dash line: the mark of a flip.
-
-    `horizontal` mirrors about the direction X — the line stands
-    vertically and the halves swap left and right.  Otherwise the line
-    lies on its side and the halves swap up and down.
-    """
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        dash = QPen(base, 1.2)
-        dash.setStyle(Qt.DashLine)
-        p.setPen(dash)
-        if horizontal:
-            axis = s / 2.0
-            p.drawLine(QPointF(axis, 2.0), QPointF(axis, s - 2.0))
-            p.setPen(QPen(base, 1.2))
-            left = QPolygonF([
-                QPointF(2.0, s * 0.30), QPointF(2.0, s * 0.70),
-                QPointF(axis - 3.0, s * 0.50),
-            ])
-            p.drawPolygon(left)
-            right = QPolygonF([
-                QPointF(s - 2.0, s * 0.30), QPointF(s - 2.0, s * 0.70),
-                QPointF(axis + 3.0, s * 0.50),
-            ])
-            p.drawPolygon(right)
-        else:
-            axis = s / 2.0
-            p.drawLine(QPointF(2.0, axis), QPointF(s - 2.0, axis))
-            p.setPen(QPen(base, 1.2))
-            top = QPolygonF([
-                QPointF(s * 0.30, 2.0), QPointF(s * 0.70, 2.0),
-                QPointF(s * 0.50, axis - 3.0),
-            ])
-            p.drawPolygon(top)
-            bottom = QPolygonF([
-                QPointF(s * 0.30, s - 2.0), QPointF(s * 0.70, s - 2.0),
-                QPointF(s * 0.50, axis + 3.0),
-            ])
-            p.drawPolygon(bottom)
-    return _paint_stroke_icon(
-        size, _draw, accent if accent is not None else QColor("#94A3B8"))
+    accent_str = accent.name(QColor.HexRgb) if accent is not None else None
+    name = (
+        "triangles-centerline-dashed-horizontal"
+        if not horizontal
+        else "triangles-centerline-dashed-vertical"
+    )
+    return lucide_qicon(name, accent=accent_str, size=size)
 
 
 def _flip_x_icon(size: int = 24) -> QIcon:
-    """Mirror about the vertical axis: left and right swap."""
-    return _mirror_icon(size, horizontal=True, accent=QColor("#22D3EE"))
+    return lucide_qicon(
+        "triangles-centerline-dashed-horizontal", accent="#22D3EE", size=size
+    )
 
 
 def _flip_y_icon(size: int = 24) -> QIcon:
-    """Mirror about the horizontal axis: top and bottom swap."""
-    return _mirror_icon(size, horizontal=False, accent=QColor("#2DD4BF"))
+    return lucide_qicon(
+        "triangles-centerline-dashed-vertical", accent="#2DD4BF", size=size
+    )
+
+
+def _trace_icon(size: int = 24) -> QIcon:
+    return lucide_qicon("route", accent="#FFD60A", size=size)
 
 
 def _grid_icon(size: int = 24) -> QIcon:
-    """A mesh of lines: the mark of the grid."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        edge = 3.0
-        p.drawRect(QRectF(edge, edge, s - 2 * edge, s - 2 * edge))
-        for i in (1, 2):
-            t = edge + i * (s - 2 * edge) / 3.0
-            p.drawLine(QPointF(edge, t), QPointF(s - edge, t))
-            p.drawLine(QPointF(t, edge), QPointF(t, s - edge))
-    return _paint_stroke_icon(size, _draw, QColor("#A78BFA"))
+    return lucide_qicon("grid-3x3", accent="#A78BFA", size=size)
 
 
 def _pickplace_icon(size: int = 24) -> QIcon:
-    """A cross with an arrow, like the marker of a component."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        cx, cy, h = s / 2.0, s / 2.0, s * 0.28
-        p.drawLine(QPointF(cx - h, cy), QPointF(cx + h, cy))
-        p.drawLine(QPointF(cx, cy - h), QPointF(cx, cy + h))
-        # The arrow points to the upper left, like the marker does.
-        u = QPointF(-0.707, 0.707)
-        v = QPointF(0.707, 0.707)
-        tip = QPointF(cx + 1.3 * h * u.x(), cy - 1.3 * h * u.y())
-        at = QPointF(cx + h * u.x() + 0.3 * h * v.x(),
-                     cy - h * u.y() + 0.3 * h * v.y())
-        ab = QPointF(cx + h * u.x() - 0.3 * h * v.x(),
-                     cy - h * u.y() - 0.3 * h * v.y())
-        p.setBrush(base)
-        p.setPen(Qt.NoPen)
-        p.drawPolygon(QPolygonF([tip, at, ab]))
-        p.setBrush(Qt.NoBrush)
-    return _paint_stroke_icon(size, _draw, QColor("#EF4444"))
-
-
-def _arrow_head(p: QPainter, tip: QPointF, direction: float,
-                size: float) -> None:
-    """A filled triangle at `tip`, pointing along `direction` (degrees)."""
-    rad = math.radians(direction)
-    u = QPointF(math.cos(rad), -math.sin(rad))
-    v = QPointF(-math.sin(rad), -math.cos(rad))
-    b1 = QPointF(tip.x() - u.x() * size + v.x() * size * 0.6,
-                 tip.y() - u.y() * size + v.y() * size * 0.6)
-    b2 = QPointF(tip.x() - u.x() * size - v.x() * size * 0.6,
-                 tip.y() - u.y() * size - v.y() * size * 0.6)
-    p.setBrush(p.pen().color())
-    p.setPen(Qt.NoPen)
-    p.drawPolygon(QPolygonF([tip, b1, b2]))
-    p.setBrush(Qt.NoBrush)
+    return lucide_qicon("component", accent="#EF4444", size=size)
 
 
 def _fit_icon(size: int = 24) -> QIcon:
-    """Four corner brackets with outward arrows: the mark of fitting the view."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        a, b = 4.0, s * 0.42
-        for (cx, cy, dx, dy) in (
-            (a, a, 1.0, 1.0),
-            (s - a, a, -1.0, 1.0),
-            (a, s - a, 1.0, -1.0),
-            (s - a, s - a, -1.0, -1.0),
-        ):
-            p.drawLine(QPointF(cx + dx * (b - a), cy),
-                       QPointF(cx, cy))
-            p.drawLine(QPointF(cx, cy),
-                       QPointF(cx, cy + dy * (b - a)))
-            inner = QPointF(cx + dx * (b - a) * 0.35,
-                            cy + dy * (b - a) * 0.35)
-            _arrow_head(p, inner, math.degrees(math.atan2(-dy, dx)), 3.2)
-    return _paint_stroke_icon(size, _draw, QColor("#10B981"))
+    return lucide_qicon("scan", accent="#10B981", size=size)
 
 
 def _export_icon(size: int = 24) -> QIcon:
-    """A framed picture with a sun and hills: the mark of an exported image."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        edge = 3.0
-        p.drawRect(QRectF(edge, edge, s - 2 * edge, s - 2 * edge))
-        sun = 4.0
-        p.drawEllipse(QPointF(s * 0.34, s * 0.34), sun / 2.0, sun / 2.0)
-        base_y = s - 4.5
-        p.drawPolyline(QPolygonF([
-            QPointF(edge + 1.5, base_y),
-            QPointF(s * 0.45, s * 0.45),
-            QPointF(s * 0.62, base_y - s * 0.18),
-            QPointF(s * 0.75, base_y - s * 0.09),
-            QPointF(s - 1.5, base_y),
-        ]))
-    return _paint_stroke_icon(size, _draw, QColor("#3B82F6"))
+    return lucide_qicon("image-down", accent="#3B82F6", size=size)
 
 
 def _reload_icon(size: int = 24) -> QIcon:
-    """A ring with two arrow heads: the mark of reloading the data."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        cx, cy, r = s / 2.0, s / 2.0, s * 0.30
-        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-        gap = 60.0
-        p.drawArc(rect, int(gap * 16), int((360.0 - 2 * gap) * 16))
-        p.drawArc(rect, int((180.0 + gap) * 16), int((360.0 - 2 * gap) * 16))
-        rad = math.radians(90.0 - gap)
-        tip = QPointF(cx - r * math.sin(rad), cy - r * math.cos(rad))
-        _arrow_head(p, tip, 90.0 - gap - 90.0, 3.2)
-        tip2 = QPointF(cx + r * math.sin(rad), cy + r * math.cos(rad))
-        _arrow_head(p, tip2, 270.0 - gap - 90.0 + 180.0, 3.2)
-    return _paint_stroke_icon(size, _draw, QColor("#FB923C"))
+    return lucide_qicon("refresh-cw", accent="#FB923C", size=size)
 
 
 def _ruler_icon(size: int = 24) -> QIcon:
-    """A tilted ruler with tick marks: the mark of measuring a distance."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        p.save()
-        p.translate(s / 2.0, s / 2.0)
-        p.rotate(-35.0)
-        length, half = s * 0.62, s * 0.13
-        p.drawRect(QRectF(-length / 2.0, -half, length, 2 * half))
-        for i in range(1, 6):
-            t = -length / 2.0 + i * length / 6.0
-            h = half * (1.0 if i % 3 == 0 else 0.55)
-            p.drawLine(QPointF(t, -half), QPointF(t, -half + h))
-        p.restore()
-    return _paint_stroke_icon(size, _draw, QColor("#F472B6"))
-
-
-def _tick_stroke(p: QPainter, s: float) -> None:
-    """A wide tick mark, like the check of the component status."""
-    path = QPainterPath()
-    path.moveTo(s * 0.14, s * 0.56)
-    path.lineTo(s * 0.36, s * 0.76)
-    path.lineTo(s * 0.82, s * 0.26)
-    p.drawPath(path)
+    return lucide_qicon("ruler", accent="#F472B6", size=size)
 
 
 def _check_icon(size: int = 24) -> QIcon:
-    """A green tick: the mark of checking a component."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        _tick_stroke(p, s)
-    return _paint_stroke_icon(size, _draw, QColor("#22C55E"))
+    return lucide_qicon("check", accent="#22C55E", size=size)
 
 
 def _undo_check_icon(size: int = 24) -> QIcon:
-    """A tick cancelled by a thin line: removing a check again."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        _tick_stroke(p, s)
-        p.setPen(QPen(base, 1.4))
-        p.drawLine(QPointF(s * 0.14, s * 0.2), QPointF(s * 0.86, s * 0.8))
-    return _paint_stroke_icon(size, _draw, QColor("#94A3B8"))
+    return lucide_qicon("undo-2", accent="#94A3B8", size=size)
 
 
 def _uncheck_all_icon(size: int = 24) -> QIcon:
-    """Two ticks crossed by a slash: clearing every check."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        p.save()
-        p.translate(s * 0.74, s / 2.0)
-        p.scale(0.55, 0.55)
-        _tick_stroke(p, s)
-        p.restore()
-        p.save()
-        p.translate(-s * 0.10, s * 0.08)
-        p.scale(0.55, 0.55)
-        _tick_stroke(p, s)
-        p.restore()
-        p.drawLine(QPointF(s * 0.1, s * 0.88), QPointF(s * 0.9, s * 0.12))
-    return _paint_stroke_icon(size, _draw, QColor("#DC2626"))
+    return lucide_qicon("list-x", accent="#DC2626", size=size)
 
 
 def _rotate_records_icon(size: int = 24) -> QIcon:
-    """A component marker inside a turning ring: rotating the data."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        cx, cy, r = s / 2.0, s / 2.0, s * 0.33
-        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-        gap = 80.0
-        end = 135.0 + gap * 0.5
-        start = end + (360.0 - gap)
-        p.drawArc(rect, int(start * 16), -int((360.0 - gap) * 16))
-        rad = math.radians(end)
-        tip = QPointF(cx + r * math.cos(-rad), cy - r * math.sin(-rad))
-        _arrow_head(p, tip, end + 90.0, 3.4)
-        # The filled marker of the component sits in the middle.
-        p.setBrush(base)
-        p.setPen(Qt.NoPen)
-        dot = s * 0.08
-        p.drawEllipse(QPointF(cx, cy), dot, dot)
-        p.setPen(QPen(base, 1.3))
-        p.setBrush(Qt.NoBrush)
-        h = s * 0.10
-        p.drawLine(QPointF(cx - h, cy), QPointF(cx - dot - 1.0, cy))
-        p.drawLine(QPointF(cx + dot + 1.0, cy), QPointF(cx + h, cy))
-    return _paint_stroke_icon(size, _draw, QColor("#60A5FA"))
+    return lucide_qicon("rotate-cw-square", accent="#60A5FA", size=size)
+
+
+def _flip_records_x_icon(size: int = 24) -> QIcon:
+    return lucide_qicon(
+        "triangles-centerline-dashed-horizontal", accent="#38BDF8", size=size
+    )
+
+
+def _flip_records_y_icon(size: int = 24) -> QIcon:
+    return lucide_qicon(
+        "triangles-centerline-dashed-vertical", accent="#A3E635", size=size
+    )
 
 
 def _flip_records_icon(size: int = 24) -> QIcon:
-    """Three markers and their mirror image: flipping the data."""
-    def _draw(p: QPainter, s: int, base: QColor) -> None:
-        axis_p = QPen(base, 1.3)
-        axis_p.setStyle(Qt.DashLine)
-        p.setPen(axis_p)
-        p.drawLine(QPointF(s / 2.0, s * 0.08), QPointF(s / 2.0, s * 0.92))
-        p.setBrush(base)
-        p.setPen(Qt.NoPen)
-        dot = s * 0.05
-        for fy in (0.30, 0.50, 0.70):
-            y = s * fy
-            p.drawEllipse(QPointF(s * 0.28 - dot, y), dot, dot)
-            p.drawEllipse(QPointF(s * 0.72 + dot, y), dot, dot)
-        p.setBrush(Qt.NoBrush)
-    return _paint_stroke_icon(size, _draw, QColor("#A3E635"))
+    return _flip_records_y_icon(size)
+
+
+def _collapse_card_icon(collapsed: bool) -> QIcon:
+    return lucide_qicon(
+        "panel-left-open" if collapsed else "panel-left-close", size=18
+    )
 
 
 def _crosshair_half(size: Optional[float], fallback: float) -> float:
@@ -674,12 +513,26 @@ def _add_flash(
             # The points are given in the coordinates of the file, like the
             # points of a region (G36) and of a polygon aperture.
             pts = [(x, -y) for x, y in (apply(px, py) for px, py in fl.pts)]
+        hole_contours = fl.holes or ()
+        if hole_contours:
+            # The holes of a region cut out of the outer contour: every
+            # area covered an even number of times stays empty.  Holes
+            # only exist for file-frame regions.
+            for contour in hole_contours:
+                hole_pts = [(x, -y) for x, y in (apply(px, py)
+                                                 for px, py in contour)]
+                _add_polygon(path, hole_pts)
+            path.setFillRule(Qt.FillRule.OddEvenFill)
         _add_polygon(path, pts)
         return
 
     if fl.kind == "macro" and fl.macro:
         gx, gy = apply(fl.cx, fl.cy)
         m = fl.macro
+        # The primitives of a macro overlap on purpose: the regions where
+        # they cross belong to the pad.  The winding rule fills the union,
+        # the odd-even rule would carve every crossing into a hole.
+        path.setFillRule(Qt.FillRule.WindingFill)
         for mx, my, r in m.circles:
             lx, ly = apply_local(mx, my)
             path.addEllipse(gx + lx - r, -gy - ly - r, 2 * r, 2 * r)
@@ -702,6 +555,26 @@ def _add_flash(
                 (gx + lx2 + dx, -gy - ly2 - dy),
             ]
             _add_polygon(path, quad)
+        # The primitives with the exposure turned off are holes in the
+        # pad: they are given a reversed winding so the winding rule
+        # cuts them out where they lie inside the artwork.
+        for mx, my, r in m.hole_circles:
+            if r <= 0:
+                continue
+            lx, ly = apply_local(mx, my)
+            hole_pts = [
+                (gx + lx + r * math.cos(2.0 * math.pi * i / _HOLE_SEGS),
+                 -gy - ly + r * math.sin(2.0 * math.pi * i / _HOLE_SEGS))
+                for i in range(_HOLE_SEGS)
+            ]
+            _add_polygon(path, hole_pts, hole=True)
+        for poly_pts in m.hole_polygons:
+            pts = [
+                (gx + lx, -gy - ly)
+                for lx, ly in (apply_local(px, py) for px, py in poly_pts)
+            ]
+            _add_polygon(path, pts, hole=True)
+        return
 
 
 def _append_arc_path(
@@ -760,12 +633,20 @@ def _normalize_winding(pts: List[QPointF]) -> List[QPointF]:
     return pts
 
 
-def _add_polygon(path: QPainterPath, pts: List[Tuple[float, float]]) -> None:
+def _add_polygon(path: QPainterPath, pts: List[Tuple[float, float]],
+                 hole: bool = False) -> None:
     """Add a closed polygon with the winding of the subpath made positive.
 
     The winding is decided on the plain coordinates, so no call into Qt is
     needed to read the points back.
+
+    A hole gets the winding reversed: the flash path is filled with the
+    winding rule, so a hole carves itself out of the artwork that surrounds
+    it instead of changing the sense of the fill where it overlaps.
     """
+    if hole:
+        # Same sign convention as the Gerber spec: reversed winding.
+        pts = pts[::-1]
     n = len(pts)
     if n >= 3:
         area = 0.0
@@ -773,7 +654,7 @@ def _add_polygon(path: QPainterPath, pts: List[Tuple[float, float]]) -> None:
             x1, y1 = pts[i]
             x2, y2 = pts[(i + 1) % n]
             area += x1 * y2 - x2 * y1
-        if area < 0.0:
+        if (area < 0.0) != hole:
             pts = pts[::-1]
     path.addPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
 
@@ -1193,13 +1074,17 @@ class GerberView(QGraphicsView):
     measure_cancel = Signal()
     crosshair_right_clicked = Signal(float, float)
     origin_picked = Signal(float, float)
+    align_pad_picked = Signal(float, float)
+    align_pad_cancel = Signal()
+    trace_pad_picked = Signal(float, float, QPoint)
+    trace_pad_cancel = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setBackgroundBrush(BACKGROUND)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setMouseTracking(True)
         # Large-gerber smoothness: cheaper rasterization paths
         self.setOptimizationFlags(
@@ -1216,11 +1101,14 @@ class GerberView(QGraphicsView):
         self._grid_active = False
         self._measure_mode = False
         self._origin_mode = False
+        self._align_pad_mode = False
+        self._trace_mode = False
 
         # The crosshair that covers the whole view is always on: it is
         # how the pointer tells where it stands.
         self._full_cross_enabled = True
         self._full_cross_pos: Optional[QPointF] = None
+        self.viewport().setCursor(Qt.CrossCursor)
 
         self._fast_render = False
         self._fast_timer: Optional[QTimer] = None
@@ -1360,18 +1248,28 @@ class GerberView(QGraphicsView):
     def set_measure_mode(self, active: bool) -> None:
         """Enter/exit measure mode: clicks place measurement points."""
         self._measure_mode = bool(active)
-        self.setDragMode(
-            QGraphicsView.NoDrag if active else QGraphicsView.ScrollHandDrag
-        )
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
         self.viewport().update()
 
     def set_origin_mode(self, active: bool) -> None:
         """Enter/exit origin mode: a click places the new origin."""
         self._origin_mode = bool(active)
-        self.setDragMode(
-            QGraphicsView.NoDrag if active else QGraphicsView.ScrollHandDrag
-        )
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
+        self.viewport().update()
+
+    def set_align_pad_mode(self, active: bool) -> None:
+        """Enter/exit align-to-pad mode: a click picks a pad centre."""
+        self._align_pad_mode = bool(active)
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
+        self.viewport().update()
+
+    def set_trace_mode(self, active: bool) -> None:
+        """Enter/exit trace mode: a click traces the net of the pad."""
+        self._trace_mode = bool(active)
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
         self.viewport().update()
 
@@ -1393,12 +1291,30 @@ class GerberView(QGraphicsView):
                 self.measure_cancel.emit()
                 event.accept()
             return
+        if self._align_pad_mode:
+            if event.button() == Qt.LeftButton:
+                sp = self.mapToScene(event.position().toPoint())
+                self.align_pad_picked.emit(sp.x(), sp.y())
+                event.accept()
+            elif event.button() == Qt.RightButton:
+                self.align_pad_cancel.emit()
+                event.accept()
+            return
+        if self._trace_mode:
+            if event.button() == Qt.LeftButton:
+                sp = self.mapToScene(event.position().toPoint())
+                gp = event.globalPosition().toPoint()
+                self.trace_pad_picked.emit(sp.x(), sp.y(), gp)
+                event.accept()
+            elif event.button() == Qt.RightButton:
+                self.trace_pad_cancel.emit()
+                event.accept()
+            return
         if event.button() == Qt.MiddleButton:
             # The middle button pans the view, the content follows the
             # pointer while the button is held down.
             self._middle_panning = True
             self._middle_last = event.position().toPoint()
-            self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
         if event.button() == Qt.RightButton:
@@ -1434,11 +1350,12 @@ class GerberView(QGraphicsView):
             self._update_auto_pan(event.position().toPoint())
             event.accept()
             return
-        sp = self.mapToScene(event.position().toPoint())
-        self.cursor_moved.emit(sp.x(), sp.y())
+        old_cross_pos = self._full_cross_pos
         self._full_cross_pos = event.position()
         if self._full_cross_enabled:
-            self.viewport().update()
+            self._update_crosshair_regions(old_cross_pos, self._full_cross_pos)
+        sp = self.mapToScene(event.position().toPoint())
+        self.cursor_moved.emit(sp.x(), sp.y())
         if self._panning and self._pan_pixmap is not None:
             self._pan_offset = event.position().toPoint() - self._pan_press
             self.viewport().update()
@@ -1485,9 +1402,10 @@ class GerberView(QGraphicsView):
 
     def leaveEvent(self, event) -> None:
         self.cursor_left.emit()
+        old_cross_pos = self._full_cross_pos
         self._full_cross_pos = None
         if self._full_cross_enabled:
-            self.viewport().update()
+            self._update_crosshair_regions(old_cross_pos, None)
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -1499,7 +1417,6 @@ class GerberView(QGraphicsView):
             return
         if event.button() == Qt.MiddleButton:
             self._middle_panning = False
-            self.unsetCursor()
             if self._auto_pan_timer is not None:
                 self._auto_pan_timer.stop()
             if self._pan_pixmap is not None:
@@ -1515,6 +1432,9 @@ class GerberView(QGraphicsView):
             event.accept()
             return
         if self._measure_mode:
+            event.accept()
+            return
+        if self._align_pad_mode:
             event.accept()
             return
         if event.button() == Qt.LeftButton and self._pan_pixmap is not None:
@@ -1538,6 +1458,14 @@ class GerberView(QGraphicsView):
         key = event.key()
         if self._measure_mode and key == Qt.Key_Escape:
             self.measure_cancel.emit()
+            event.accept()
+            return
+        if self._align_pad_mode and key == Qt.Key_Escape:
+            self.align_pad_cancel.emit()
+            event.accept()
+            return
+        if self._trace_mode and key == Qt.Key_Escape:
+            self.trace_pad_cancel.emit()
             event.accept()
             return
         modifiers = event.modifiers()
@@ -1617,6 +1545,30 @@ class GerberView(QGraphicsView):
         if not self.viewport().rect().contains(position):
             return
         self.centerOn(self.mapToScene(position))
+
+    def _update_crosshair_regions(self, old_pos: Optional[QPointF], new_pos: Optional[QPointF]) -> None:
+        """Update only the dirty crosshair lines instead of the entire viewport."""
+        if not self._full_cross_enabled:
+            return
+        # In OpenGL mode, partial viewport update is not supported (FullViewportUpdate is active)
+        if self._use_opengl:
+            self.viewport().update()
+            return
+        rect = self.viewport().rect()
+        margin = 3
+        regions = QRegion()
+        if old_pos is not None:
+            ox = int(old_pos.x())
+            oy = int(old_pos.y())
+            regions = regions.united(QRect(rect.left(), oy - margin, rect.width(), margin * 2 + 1))
+            regions = regions.united(QRect(ox - margin, rect.top(), margin * 2 + 1, rect.height()))
+        if new_pos is not None:
+            nx = int(new_pos.x())
+            ny = int(new_pos.y())
+            regions = regions.united(QRect(rect.left(), ny - margin, rect.width(), margin * 2 + 1))
+            regions = regions.united(QRect(nx - margin, rect.top(), margin * 2 + 1, rect.height()))
+        if not regions.isEmpty():
+            self.viewport().update(regions)
 
     def set_full_crosshair_enabled(self, enabled: bool) -> None:
         self._full_cross_enabled = bool(enabled)
@@ -1723,6 +1675,42 @@ class MagnifierView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
 
+class _LayerPathCache:
+    """The built artwork of a layer, kept for the transforms it was drawn.
+
+    Turning, mirroring and the switch between the two sides each ask for
+    a full walk over the artwork of a layer, and a user turns the page
+    back and forth while reading.  The built paths of up to two transforms
+    are kept per layer, so going back to a transform the user has already
+    seen costs nothing.  Two copies of a big layer are a few ten mega
+    bytes of paths, so the limit of two keeps the memory small.
+    """
+
+    #: How many transforms are kept per layer.
+    MAX_KEYS = 2
+
+    def __init__(self) -> None:
+        self._entries: Dict[int, Dict[tuple, tuple]] = {}
+
+    def get(self, layer_index: int, key: tuple) -> Optional[tuple]:
+        return self._entries.get(layer_index, {}).get(key)
+
+    def put(self, layer_index: int, key: tuple, value: tuple) -> None:
+        entries = self._entries.get(layer_index)
+        if entries is None:
+            entries = {}
+            self._entries[layer_index] = entries
+        if key not in entries:
+            # The oldest turn gives way first: a freeze of the RAM stops
+            # the cache from growing while the reader of the page works.
+            while len(entries) >= self.MAX_KEYS:
+                entries.pop(next(iter(entries)))
+        entries[key] = value
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
 class GerberViewer(QWidget):
 
     settings_saved = Signal(dict)
@@ -1730,6 +1718,8 @@ class GerberViewer(QWidget):
     checked_changed = Signal(int)
 
     rotation_edited = Signal(int)
+
+    align_edited = Signal(list)
 
     status_message = Signal(str)
 
@@ -1774,6 +1764,7 @@ class GerberViewer(QWidget):
         self._loaded = False
         self._pads: List[Tuple[float, float, float]] = []
         self._pad_grid_cache: Dict[bool, PadGrid] = {}
+        self._layer_path_cache = _LayerPathCache()
         self._scene_key: Optional[tuple] = None
         # The index that finds the shape under the pointer, per layer.
         self._aperture_indices: Dict[int, ApertureIndex] = {}
@@ -1796,6 +1787,21 @@ class GerberViewer(QWidget):
         self._grid_rect: Optional[QRectF] = None
         self._measure_mode = False
         self._measure_start: Optional[Tuple[float, float]] = None
+        self._align_pad_mode = False
+        self._align_snap_item: Optional[QGraphicsEllipseItem] = None
+        # The traced net: one overlay that lights the connected copper.
+        self._trace_mode = False
+        self._trace_indices: Dict[int, Any] = {}
+        self._active_trace: Optional[Tuple] = None
+        self._trace_first: Optional[Tuple[RenderData, Any, str, Tuple]] = None
+        self._trace_candidates: Optional[List[Tuple[int, RenderData, int]]] = None
+        self._trace_order = 0
+        self._trace_last_pick: Optional[Tuple[float, float]] = None
+        self._trace_line_item: Optional[QGraphicsPathItem] = None
+        self._trace_fill_item: Optional[QGraphicsPathItem] = None
+        self._trace_plane_outline_item: Optional[QGraphicsPathItem] = None
+        self._trace_popup: Optional[QLabel] = None
+        self._trace_popup_timer: Optional[QTimer] = None
         self._measure_preview: Optional[QGraphicsPathItem] = None
         self._measure_snap_item: Optional[QGraphicsEllipseItem] = None
         self._snap_enabled = True
@@ -1821,6 +1827,11 @@ class GerberViewer(QWidget):
         self._mag_factor: float = _MAG_FACTOR
         self._rot_mag_saved: Optional[float] = None
         self._rotation_lock_xy: Optional[Tuple[float, float]] = None
+        self._hover_throttle_timer = QTimer(self)
+        self._hover_throttle_timer.setSingleShot(True)
+        self._hover_throttle_timer.setInterval(20)
+        self._hover_throttle_timer.timeout.connect(self._process_throttled_hover)
+        self._pending_hover_pos: Optional[Tuple[float, float]] = None
         self._show_frame = True
         self._colors: Dict[str, QColor] = {
             "cross": CROSS_COLOR,
@@ -2043,13 +2054,14 @@ class GerberViewer(QWidget):
         self._toolbar = QToolBar()
         self._toolbar.setMovable(False)
         self._toolbar.setFloatable(False)
-        self._toolbar.setIconSize(QSize(22, 22))
+        self._toolbar.setIconSize(QSize(24, 24))
         self._toolbar.setStyleSheet("""
             QToolButton {
                 padding: 2px;
                 text-align: center;
                 border: 1px solid transparent;
                 border-radius: 6px;
+                font-size: 8pt;
             }
             QToolButton:hover {
                 background: rgba(148, 163, 184, 0.15);
@@ -2066,17 +2078,7 @@ class GerberViewer(QWidget):
                 color: gray;
             }
         """)
-        self._btn_set_origin = QToolButton()
-        self._btn_set_origin.setText(tr("Set origin"))
-        self._btn_set_origin.setIcon(_target_icon())
-        # Stacked: the icon in the middle, the name under it.
-        self._btn_set_origin.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        self._btn_set_origin.setCheckable(True)
-        self._btn_set_origin.setToolTip(
-            tr("Click the board to choose a new origin"))
-        self._btn_set_origin.clicked.connect(self._on_set_origin_clicked)
-        self._btn_set_origin.toggled.connect(self._on_set_origin_clicked)
-        self._toolbar.addWidget(self._btn_set_origin)
+        self._toolbar_icon_sources: List[Tuple[QToolButton, Any]] = []
 
         def _stacked_button(label: str, tooltip: str,
                             icon_factory, checkable: bool = False) -> QToolButton:
@@ -2086,7 +2088,19 @@ class GerberViewer(QWidget):
             button.setIcon(icon_factory())
             button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             button.setCheckable(checkable)
+            button.setFixedSize(56, 52)
+            self._toolbar_icon_sources.append((button, icon_factory))
             return button
+
+        self._btn_set_origin = _stacked_button(
+            tr("Set origin"),
+            tr("Click the board to choose a new origin"),
+            _target_icon,
+            checkable=True
+        )
+        self._btn_set_origin.clicked.connect(self._on_set_origin_clicked)
+        self._btn_set_origin.toggled.connect(self._on_set_origin_clicked)
+        self._toolbar.addWidget(self._btn_set_origin)
 
         self._btn_measure = _stacked_button(
             tr("Measure"),
@@ -2097,6 +2111,27 @@ class GerberViewer(QWidget):
         self._btn_measure.setEnabled(False)
         self._btn_measure.toggled.connect(self._on_measure_toggled)
         self._toolbar.addWidget(self._btn_measure)
+
+        self._btn_align_pad = _stacked_button(
+            tr("Align to Pad"),
+            tr("Pick the true pad centre of the selected component, then "
+               "every component on the same side is shifted by the same "
+               "offset. Ctrl click bypasses snapping, Esc or right-click "
+               "cancels."),
+            _target_icon, True)
+        self._btn_align_pad.setEnabled(False)
+        self._btn_align_pad.toggled.connect(self._on_align_pad_toggled)
+        self._toolbar.addWidget(self._btn_align_pad)
+
+        self._btn_trace = _stacked_button(
+            tr("Trace pad"),
+            tr("Trace the copper net of a pad: click a pad and the copper "
+               "of its net lights up. Click a second pad to see whether "
+               "the two connect. Esc or right-click cancels."),
+            _trace_icon, True)
+        self._btn_trace.setEnabled(False)
+        self._btn_trace.toggled.connect(self._on_trace_toggled)
+        self._toolbar.addWidget(self._btn_trace)
 
         # The angle the picture turns with, chosen in a small menu.
         self._btn_rotate = _stacked_button(
@@ -2193,26 +2228,28 @@ class GerberViewer(QWidget):
         self._btn_rotate_records.setMenu(rotate_records_menu)
         self._toolbar.addWidget(self._btn_rotate_records)
 
-        self._btn_flip_records = _stacked_button(
-            tr("Flip comps"),
-            tr("Flip all components with their coordinates "
-               "across the X or Y axis"),
-            _flip_records_icon)
-        self._btn_flip_records.setPopupMode(
-            QToolButton.ToolButtonPopupMode.InstantPopup)
-        flip_records_menu = QMenu(self._btn_flip_records)
-        for axis in ("X", "Y"):
-            action = flip_records_menu.addAction(tr("Component Flip {axis}", axis=axis))
-            action.setData(axis)
-            action.triggered.connect(
-                lambda _checked=False, a=axis: self._on_flip_records(a))
-        self._btn_flip_records.setMenu(flip_records_menu)
-        self._toolbar.addWidget(self._btn_flip_records)
+        self._btn_flip_records_x = _stacked_button(
+            tr("Flip X comps"),
+            tr("Flip all components across the X axis"),
+            _flip_records_x_icon)
+        self._btn_flip_records_x.clicked.connect(lambda: self._on_flip_records("X"))
+        self._toolbar.addWidget(self._btn_flip_records_x)
+
+        self._btn_flip_records_y = _stacked_button(
+            tr("Flip Y comps"),
+            tr("Flip all components across the Y axis"),
+            _flip_records_y_icon)
+        self._btn_flip_records_y.clicked.connect(lambda: self._on_flip_records("Y"))
+        self._toolbar.addWidget(self._btn_flip_records_y)
+
+        # Backward compatibility alias
+        self._btn_flip_records = self._btn_flip_records_x
 
         self._btn_check_controls = (self._btn_check, self._btn_undo_check,
                                     self._btn_uncheck_all,
                                     self._btn_rotate_records,
-                                    self._btn_flip_records)
+                                    self._btn_flip_records_x,
+                                    self._btn_flip_records_y)
         for btn in self._btn_check_controls:
             btn.setEnabled(False)
 
@@ -2260,7 +2297,7 @@ class GerberViewer(QWidget):
         self._btn_collapse_card = QToolButton()
         self._btn_collapse_card.setAutoRaise(True)
         self._btn_collapse_card.setIcon(
-            self.style().standardIcon(QStyle.SP_ArrowLeft))
+            _collapse_card_icon(False))
         self._btn_collapse_card.setToolTip(tr("Collapse the card"))
         self._btn_collapse_card.clicked.connect(self._on_collapse_card_clicked)
         card_header.addWidget(self._btn_collapse_card)
@@ -2401,14 +2438,18 @@ class GerberViewer(QWidget):
         splitter.setSizes([560, 240])
         panel.addWidget(splitter, 1)
 
-        self._view.cursor_moved.connect(self._update_magnifier)
-        self._view.cursor_moved.connect(self._update_coord_label)
+        self._view.cursor_moved.connect(self._on_cursor_moved)
         self._view.cursor_left.connect(self._clear_coord_label)
         self._view.cursor_left.connect(self._refresh_magnifier)
         self._view.zoom_end.connect(self._refresh_magnifier)
         self._view.grid_cell_clicked.connect(self._on_grid_cell_clicked)
         self._view.measure_clicked.connect(self._on_measure_clicked)
         self._view.origin_picked.connect(self._on_origin_picked)
+        self._view.align_pad_picked.connect(self._on_align_pad_clicked)
+        self._view.align_pad_cancel.connect(self._on_align_pad_cancel)
+        self._view.trace_pad_picked.connect(self._on_trace_picked)
+        self._view.trace_pad_cancel.connect(self._on_trace_cancel)
+        self._view.cursor_moved.connect(self._on_align_move)
         self._view.measure_cancel.connect(self._on_measure_cancel)
         self._view.cursor_moved.connect(self._on_measure_move)
         self._view.crosshair_right_clicked.connect(self._on_crosshair_right_clicked)
@@ -2461,6 +2502,14 @@ class GerberViewer(QWidget):
         self._btn_origin_from_fields.clicked.connect(self._on_origin_from_fields)
         coord_bar.addWidget(self._btn_origin_from_fields)
         layout.addLayout(coord_bar)
+
+    def refresh_icons(self) -> None:
+        """Repaint toolbar icons when the theme changes."""
+        for button, icon_factory in getattr(self, "_toolbar_icon_sources", []):
+            try:
+                button.setIcon(icon_factory())
+            except Exception:
+                pass
 
     def _build_card_content(self) -> None:
         """Fill the card with the layers, the colours and the overlay."""
@@ -3082,8 +3131,7 @@ class GerberViewer(QWidget):
         self._lbl_card_title.setVisible(not collapsed)
         self._card.setFixedWidth(
             CARD_WIDTH_COLLAPSED if collapsed else CARD_WIDTH)
-        self._btn_collapse_card.setIcon(self.style().standardIcon(
-            QStyle.SP_ArrowRight if collapsed else QStyle.SP_ArrowLeft))
+        self._btn_collapse_card.setIcon(_collapse_card_icon(collapsed))
         self._btn_collapse_card.setToolTip(
             tr("Expand the card") if collapsed else tr("Collapse the card"))
 
@@ -3231,6 +3279,10 @@ class GerberViewer(QWidget):
         self._lbl_status.setText(message)
 
     def _on_load_finished(self, data: list) -> None:
+        self._pad_grid_cache.clear()
+        self._trace_indices.clear()
+        self._layer_path_cache.clear()
+        self._clear_trace_result()
         self._layer_data = list(data) if data else [
             RenderData() for _ in self._layers]
         self._rebuild_layer_list()
@@ -3240,11 +3292,15 @@ class GerberViewer(QWidget):
         self._board_center = self._compute_board_center()
         self._cross_half = self._board_size() * _CROSS_BOARD_RATIO
         self._apply_layer()
-        self._redraw()
+        # The first appearance of a big board names the layer at work
+        # between two builds, so the wait is seen and the window answers.
+        self._redraw(progress=True)
         self._fit_scene()
         self._lbl_status.setText("")
         self._show_load_warnings()
         self._btn_measure.setEnabled(True)
+        self._btn_align_pad.setEnabled(True)
+        self._btn_trace.setEnabled(True)
         self._btn_snap.setEnabled(True)
         for button in getattr(self, "_btn_check_controls", ()):
             button.setEnabled(True)
@@ -3367,6 +3423,9 @@ class GerberViewer(QWidget):
         QMessageBox.critical(self, tr("Error"), tr("Cannot read Gerber:\n{message}", message=message))
 
     def _on_layer_changed(self) -> None:
+        # The trace of the other side would show a net of layers that do
+        # not belong to the side any more.
+        self._clear_trace_result()
         self._apply_layer()
         self._redraw()
 
@@ -3542,12 +3601,7 @@ class GerberViewer(QWidget):
 
     @staticmethod
     def _status_icon(checked: bool) -> QIcon:
-        global _ICON_CHECKED, _ICON_UNCHECKED
-        if _ICON_CHECKED is None:
-            _ICON_CHECKED = _build_status_icon(True)
-        if _ICON_UNCHECKED is None:
-            _ICON_UNCHECKED = _build_status_icon(False)
-        return _ICON_CHECKED if checked else _ICON_UNCHECKED
+        return status_icon(checked)
 
     def _refresh_component_status(self) -> None:
         layer = self._current_layer_records()
@@ -3628,6 +3682,18 @@ class GerberViewer(QWidget):
             return
         self.status_message.emit(tr("Image exported to {path}").format(path=path))
 
+    def _on_cursor_moved(self, x: float, y: float) -> None:
+        self._pending_hover_pos = (x, y)
+        if not self._hover_throttle_timer.isActive():
+            self._hover_throttle_timer.start()
+
+    def _process_throttled_hover(self) -> None:
+        if self._pending_hover_pos is None:
+            return
+        x, y = self._pending_hover_pos
+        self._update_magnifier(x, y)
+        self._update_coord_label(x, y)
+
     def _update_coord_label(self, x: float, y: float) -> None:
         if not self._loaded:
             return
@@ -3689,6 +3755,9 @@ class GerberViewer(QWidget):
         return text
 
     def _clear_coord_label(self) -> None:
+        if self._hover_throttle_timer.isActive():
+            self._hover_throttle_timer.stop()
+        self._pending_hover_pos = None
         self._lbl_coord.setText(tr("X: --  Y: --"))
 
     def _goto_coord(self) -> None:
@@ -3846,9 +3915,7 @@ class GerberViewer(QWidget):
             return
         self._grid_active = checked
         self._view._grid_active = checked
-        self._view.setDragMode(
-            QGraphicsView.NoDrag if checked else QGraphicsView.ScrollHandDrag
-        )
+        self._view.setDragMode(QGraphicsView.NoDrag)
         if not checked:
             self._mag_cell_rect = None
         self._update_grid()
@@ -4049,6 +4116,695 @@ class GerberViewer(QWidget):
         tx, ty = apply_transform(gx, gy, mirror, angle, off_x, off_y, cx, cy, mirror_x)
         return tx, -ty
 
+    # ------------------------------------------------------------------
+    # Align to pad: shift every component of one side by the offset
+    # between the selected component and a clicked pad centre.
+    # ------------------------------------------------------------------
+
+    def _selected_ref_record(self) -> Optional[ReviewRecord]:
+        records = self._current_layer_records()
+        idx = self._selected_marker_index
+        if 0 <= idx < len(records):
+            return records[idx]
+        return None
+
+    def _on_align_pad_toggled(self, checked: bool) -> None:
+        if not self._loaded and checked:
+            self._btn_align_pad.blockSignals(True)
+            self._btn_align_pad.setChecked(False)
+            self._btn_align_pad.blockSignals(False)
+            return
+        if not checked:
+            self._align_pad_mode = False
+            self._view.set_align_pad_mode(False)
+            self._remove_align_snap()
+            self._lbl_status.setText(tr("Align to pad cancelled."))
+            return
+        ref = self._selected_ref_record()
+        if ref is None:
+            self._btn_align_pad.blockSignals(True)
+            self._btn_align_pad.setChecked(False)
+            self._btn_align_pad.blockSignals(False)
+            self._lbl_status.setText(
+                tr("Align to pad: select a component first."))
+            return
+        # Mutually exclusive with the other click modes.
+        if self._measure_mode:
+            self._btn_measure.setChecked(False)
+        if self._origin_mode:
+            self._btn_set_origin.setChecked(False)
+        if self._grid_active:
+            self._chk_grid.setChecked(False)
+        self._align_pad_mode = True
+        self._view.set_align_pad_mode(True)
+        self._view.setFocus(Qt.MouseFocusReason)
+        designator = ref.designator or tr("(no designator)")
+        side = tr("top") if self._combo_layer.currentIndex() == 0 \
+            else tr("bottom")
+        if self._pad_grid(self._combo_layer.currentIndex() == 0).is_empty():
+            self._lbl_status.setText(tr(
+                "Align to pad: no pads on the {side} side — clicks will "
+                "use raw coordinates.", side=side))
+        else:
+            self._lbl_status.setText(tr(
+                "Align to pad: click the true pad centre of {des} "
+                "(Ctrl = raw click).", des=designator))
+
+    def _on_align_pad_cancel(self) -> None:
+        if not self._align_pad_mode:
+            return
+        self._align_pad_mode = False
+        self._btn_align_pad.blockSignals(True)
+        self._btn_align_pad.setChecked(False)
+        self._btn_align_pad.blockSignals(False)
+        self._view.set_align_pad_mode(False)
+        self._remove_align_snap()
+        self._lbl_status.setText(tr("Align to pad cancelled."))
+        self.status_message.emit(tr("Align to pad cancelled."))
+
+    def _exit_align_pad_mode_silently(self) -> None:
+        if not self._align_pad_mode:
+            return
+        self._align_pad_mode = False
+        self._btn_align_pad.blockSignals(True)
+        self._btn_align_pad.setChecked(False)
+        self._btn_align_pad.blockSignals(False)
+        self._view.set_align_pad_mode(False)
+        self._remove_align_snap()
+
+    def _on_align_move(self, sx: float, sy: float) -> None:
+        """Live snap preview and offset read-out while hovering."""
+        if not self._align_pad_mode:
+            return
+        ref = self._selected_ref_record()
+        if ref is None:
+            return
+        bypass = self._measure_ctrl_bypass()
+        gx, gy = self._scene_to_gerber(sx, sy)
+        snap_active = not bypass
+        pad_size: Optional[float] = None
+        if snap_active:
+            info = self._snap_info(gx, gy, force=True)
+            if info is not None:
+                px, py, pad_size = info
+                tol = max(getattr(self, "_snap_tol", 1.0), pad_size)
+                if math.hypot(px - gx, py - gy) <= tol:
+                    gx, gy = px, py
+                else:
+                    pad_size = None
+        ssx, ssy = self._gerber_to_scene(gx, gy)
+        if pad_size is not None:
+            self._update_align_snap(ssx, ssy, pad_size)
+        else:
+            self._remove_align_snap()
+        bx = ssx - self._origin_x
+        by = -ssy - self._origin_y
+        rx, ry, _rot = _record_coord(ref)
+        designator = ref.designator or tr("(no designator)")
+        if pad_size is not None:
+            self._lbl_status.setText(tr(
+                "Align to pad: {des} | ΔX: {dx:+.4f} mm | "
+                "ΔY: {dy:+.4f} mm (snap)",
+                des=designator, dx=bx - rx, dy=by - ry))
+        else:
+            self._lbl_status.setText(tr(
+                "Align to pad: {des} | ΔX: {dx:+.4f} mm | "
+                "ΔY: {dy:+.4f} mm (raw)",
+                des=designator, dx=bx - rx, dy=by - ry))
+
+    def _update_align_snap(self, sx: float, sy: float,
+                           pad_size: float) -> None:
+        if self._align_snap_item is None:
+            pen = QPen(MEASURE_COLOR, 1.2)
+            pen.setCosmetic(True)
+            brush = QBrush(QColor(MEASURE_COLOR.red(), MEASURE_COLOR.green(),
+                                  MEASURE_COLOR.blue(), 50))
+            self._align_snap_item = self._scene.addEllipse(
+                0.0, 0.0, 1.0, 1.0, pen, brush)
+            self._align_snap_item.setZValue(Z_MEASURE)
+        r = max(getattr(self, "_snap_tol", 1.0), pad_size)
+        self._align_snap_item.setRect(sx - r, sy - r, 2.0 * r, 2.0 * r)
+
+    def _remove_align_snap(self) -> None:
+        if self._align_snap_item is not None:
+            try:
+                self._scene.removeItem(self._align_snap_item)
+            except RuntimeError:
+                pass
+            self._align_snap_item = None
+
+    def _on_align_pad_clicked(self, sx: float, sy: float) -> None:
+        if not self._loaded or not self._align_pad_mode:
+            return
+        ref = self._selected_ref_record()
+        if ref is None:
+            self.status_message.emit(tr("Align to pad: no component selected."))
+            self._exit_align_pad_mode_silently()
+            return
+        bypass = self._measure_ctrl_bypass()
+        gx, gy = self._scene_to_gerber(sx, sy)
+        snap_active = not bypass
+        snapped = not snap_active
+        if snap_active:
+            hit = self._snap_info(gx, gy, force=True)
+            if hit is not None:
+                px, py, pad_size = hit
+                tol = max(getattr(self, "_snap_tol", 1.0), pad_size)
+                if math.hypot(px - gx, py - gy) <= tol:
+                    gx, gy = px, py
+                    snapped = True
+        # The pad centre snaps in the frame of the file; bring it back
+        # the same way the markers were put on the scene, so the offset
+        # lands in the frame the coordinates of the components count in.
+        bsx, bsy = self._gerber_to_scene(gx, gy)
+        bx = bsx - self._origin_x
+        by = -bsy - self._origin_y
+        self._exit_align_pad_mode_silently()
+        # Leave the mouse-press context first: modal dialogs and the busy
+        # progress freeze the native event loop on macOS when opened while
+        # a mouse press is still being dispatched.
+        QTimer.singleShot(
+            0, lambda ref=ref, bx=bx, by=by, snapped=snapped:
+            self._apply_align_delta(ref, bx, by, snapped))
+
+    def _apply_align_delta(
+            self, ref: ReviewRecord, bx: float, by: float, snapped: bool,
+    ) -> None:
+        """Shift every component of the reference side by one offset."""
+        dx, dy = _record_coord(ref)[0], _record_coord(ref)[1]
+        dx = round(bx - dx, 4)
+        dy = round(by - dy, 4)
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            self._lbl_status.setText(tr("Align to pad: already aligned."))
+            self.status_message.emit(tr("Align to pad: already aligned."))
+            return
+
+        targets = self._current_layer_records()
+        side = "top" if self._combo_layer.currentIndex() == 0 else "bottom"
+        warning = ""
+        if not snapped:
+            warning = "\n\n" + tr(
+                "Warning: no pad found near the clicked point; "
+                "the raw coordinates are used.")
+        ret = QMessageBox.question(
+            self, tr("Confirm"),
+            tr("Move every {side}-side component by the offset of {des}?\n\n"
+               "Offset X: {dx:+.4f} mm\nOffset Y: {dy:+.4f} mm\n"
+               "Components to move: {n}{warn}",
+               side=tr("top") if side == "top" else tr("bottom"),
+               des=ref.designator or tr("(no designator)"),
+               dx=dx, dy=dy, n=len(targets), warn=warning),
+        )
+        if ret != QMessageBox.Yes:
+            self._lbl_status.setText(tr("Align to pad cancelled."))
+            return
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        changed: List[ReviewRecord] = []
+        progress = QProgressDialog(
+            tr("Aligning components..."), "", 0, len(targets), self)
+        progress.setWindowTitle(tr("Please wait"))
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        for count, record in enumerate(targets, start=1):
+            base_x = (record.new_x
+                      if record.new_x is not None else record.old_x)
+            base_y = (record.new_y
+                      if record.new_y is not None else record.old_y)
+            base_rot = (record.new_rotation
+                        if record.new_rotation is not None
+                        else record.old_rotation)
+            record._align_old = (base_x, base_y, base_rot, record.remark)
+            record.new_x = round(base_x + dx, 4)
+            record.new_y = round(base_y + dy, 4)
+            record.status = "Aligned"
+            record.review_time = timestamp
+            changed.append(record)
+            progress.setValue(count)
+            QApplication.processEvents()
+
+        # The redraw of a big board is the heavy part of the job; the
+        # busy dialog stays open so the wait is seen as a progress, not
+        # as a frozen app.  The bar is full by now, so switch the dialog
+        # to an endless busy marker for the redraw.
+        progress.setRange(0, 0)
+        progress.setLabelText(tr("Redrawing view..."))
+        QApplication.processEvents()
+        self._apply_layer()
+        self._redraw()
+        self._fit_scene()
+        self._rebuild_marker_overlay()
+        progress.close()
+        if changed:
+            indices = [self._record_index_in_records(record)
+                       for record in changed]
+            self.align_edited.emit(indices)
+            self._lbl_status.setText(tr(
+                "Aligned {n} components by ({dx:+.4f}, {dy:+.4f}) mm.",
+                n=len(changed), dx=dx, dy=dy))
+            self.status_message.emit(tr(
+                "Aligned {n} {side} components.",
+                n=len(changed),
+                side=tr("top") if side == "top" else tr("bottom")))
+
+    # ------------------------------------------------------------------
+    # Trace pad: light the copper that hangs on one clicked pad.
+    # ------------------------------------------------------------------
+
+    def _copper_candidates(self) -> List[Tuple[int, RenderData]]:
+        """The copper layers of the current side, in the order of the list."""
+        side = SIDE_TOP if self._combo_layer.currentIndex() == 0 \
+            else SIDE_BOTTOM
+        out: List[Tuple[int, RenderData]] = []
+        for index, (layer, data) in enumerate(
+                zip(self._layers, self._layer_data)):
+            if layer.role != ROLE_COPPER:
+                continue
+            if layer.side and layer.side != side:
+                continue
+            if data.flashes or data.arcs or len(data.lines):
+                out.append((index, data))
+        return out
+
+    def _trace_index_for(self, layer_index: int,
+                         data: RenderData) -> Any:
+        """The trace index of one layer, built once and kept."""
+        index = self._trace_indices.get(layer_index)
+        if index is None:
+            index = build_index(data)
+            self._trace_indices[layer_index] = index
+        return index
+
+    def _pad_designator(self, gx: float, gy: float) -> str:
+        """The designator of the pad that sits at a place of the file."""
+        best = None
+        best_d = float("inf")
+        for record in self._current_layer_records():
+            rx, ry, _rotation = _record_coord(record)
+            d = math.hypot(rx - gx, ry - gy)
+            if d < best_d:
+                best_d = d
+                best = record
+        tol = max(getattr(self, "_snap_tol", 1.0), 1.0)
+        if best is not None and best_d <= tol:
+            return best.designator or tr("(no designator)")
+        return f"X{gx:.2f} Y{gy:.2f}"
+
+    def _pad_name_list(self, data: RenderData, flashes: List[int],
+                       origin: Tuple[float, float] = (0.0, 0.0)) -> str:
+        """The designators of the pads of a net, near the seed pad first."""
+        ordered = []
+        for i in flashes:
+            fl = data.flashes[i]
+            d = math.hypot(fl.cx - origin[0], fl.cy - origin[1])
+            ordered.append((d, fl, i))
+        ordered.sort(key=lambda entry: entry[0])
+        names: List[str] = []
+        seen_flash = set()
+        chosen_flash = []
+        for _d, _fl, i in ordered:
+            if i in seen_flash:
+                continue
+            seen_flash.add(i)
+            name = self._pad_designator(_fl.cx, _fl.cy)
+            if name in names:
+                continue
+            names.append(name)
+            chosen_flash.append(i)
+        shown = names[:8]
+        rest = len(names) - len(shown)
+        text = ", ".join(shown)
+        if rest > 0:
+            text += tr(", and {n} more pads", n=rest)
+        del chosen_flash
+        return text or tr("(no pads)")
+
+    def _on_trace_toggled(self, checked: bool) -> None:
+        if not self._loaded and checked:
+            self._btn_trace.blockSignals(True)
+            self._btn_trace.setChecked(False)
+            self._btn_trace.blockSignals(False)
+            return
+        if not checked:
+            self._trace_mode = False
+            self._view.set_trace_mode(False)
+            self._clear_trace_result()
+            self._lbl_status.setText(tr("Trace pad cancelled."))
+            return
+        # Mutually exclusive with the other click modes.
+        if self._measure_mode:
+            self._btn_measure.setChecked(False)
+        if self._origin_mode:
+            self._btn_set_origin.setChecked(False)
+        if self._align_pad_mode:
+            self._btn_align_pad.setChecked(False)
+        if self._grid_active:
+            self._chk_grid.setChecked(False)
+        self._trace_mode = True
+        self._view.set_trace_mode(True)
+        self._view.setFocus(Qt.MouseFocusReason)
+        self._lbl_status.setText(tr(
+            "Trace pad: click a pad of the copper layer (Esc = exit)."))
+
+    def _on_trace_cancel(self) -> None:
+        if not self._trace_mode:
+            return
+        self._trace_mode = False
+        self._btn_trace.blockSignals(True)
+        self._btn_trace.setChecked(False)
+        self._btn_trace.blockSignals(False)
+        self._view.set_trace_mode(False)
+        self._clear_trace_result()
+        self._lbl_status.setText(tr("Trace pad cancelled."))
+        self.status_message.emit(tr("Trace pad cancelled."))
+
+    def _restore_trace_overlay(self) -> None:
+        """Rebuild the traced net after the scene was rebuilt."""
+        active = self._active_trace
+        if active is None:
+            return
+        layer_index, data, component, origin = active
+        previous = self._lbl_status.text()
+        self._show_trace_result(
+            layer_index, data, component,
+            self._layers[layer_index].name, origin)
+        self._lbl_status.setText(previous)
+
+    def _hide_trace_popup(self) -> None:
+        if self._trace_popup_timer is not None:
+            self._trace_popup_timer.stop()
+        if self._trace_popup is not None:
+            self._trace_popup.hide()
+
+    def _show_trace_popup(
+        self, title: str, subtitle: str, screen_pos: Optional[QPoint] = None,
+    ) -> None:
+        """Show a small tooltip popup at/near the mouse cursor."""
+        viewport = self._view.viewport()
+        if self._trace_popup is None:
+            self._trace_popup = QLabel(viewport)
+            self._trace_popup.setAttribute(Qt.WA_TransparentForMouseEvents)
+            self._trace_popup.setStyleSheet(
+                "QLabel {"
+                "  background-color: #0F172A;"
+                "  border: 1.5px solid #FFD60A;"
+                "  border-radius: 6px;"
+                "  color: #F8FAFC;"
+                "  padding: 4px 8px;"
+                "  font-size: 11px;"
+                "}"
+            )
+            self._trace_popup_timer = QTimer(self)
+            self._trace_popup_timer.setSingleShot(True)
+            self._trace_popup_timer.timeout.connect(self._hide_trace_popup)
+
+        text = (
+            f"<div style='font-weight: bold; color: #FFD60A;'>{title}</div>"
+            f"<div style='font-size: 10px; color: #E2E8F0;'>{subtitle}</div>"
+        )
+        self._trace_popup.setText(text)
+        self._trace_popup.adjustSize()
+
+        if screen_pos is not None:
+            local_pt = viewport.mapFromGlobal(screen_pos)
+        else:
+            local_pt = viewport.mapFromGlobal(QCursor.pos())
+
+        # Offset 12px right/down to avoid obscuring the pad
+        target_x = local_pt.x() + 12
+        target_y = local_pt.y() + 12
+
+        pw = self._trace_popup.width()
+        ph = self._trace_popup.height()
+        vw = viewport.width()
+        vh = viewport.height()
+
+        # Clamp/flip so popup stays entirely within viewport
+        if target_x + pw > vw - 6:
+            target_x = max(6, local_pt.x() - pw - 12)
+        if target_y + ph > vh - 6:
+            target_y = max(6, local_pt.y() - ph - 12)
+
+        self._trace_popup.move(max(6, target_x), max(6, target_y))
+        self._trace_popup.show()
+        self._trace_popup.raise_()
+        self._trace_popup_timer.start(3000)
+
+    def _clear_trace_result(self) -> None:
+        self._hide_trace_popup()
+        self._active_trace = None
+        self._trace_first = None
+        self._trace_candidates = None
+        self._trace_last_pick = None
+        for name in ("_trace_line_item", "_trace_fill_item", "_trace_plane_outline_item"):
+            item = getattr(self, name, None)
+            if item is None:
+                continue
+            try:
+                self._scene.removeItem(item)
+            except RuntimeError:
+                pass
+            setattr(self, name, None)
+
+    def _trace_line_itemize(
+        self, data: RenderData, component: Any,
+        angle: float, mirror: bool, mirror_x: bool,
+    ) -> QGraphicsPathItem:
+        """The wires of the net, drawn as one bright chain of lines.
+
+        Every wire keeps the line the way it lies, seen in the scene; the
+        width of the pen is one working value, big enough to be seen at a
+        distance, small enough to keep the nearest wires apart.
+        """
+        path = QPainterPath()
+        from services.gerber.trace_net import _arc_chords
+        for i in component.strokes:
+            ln = data.lines[i]
+            x1, y1 = self._gerber_to_scene(ln.x1, ln.y1)
+            x2, y2 = self._gerber_to_scene(ln.x2, ln.y2)
+            path.moveTo(x1, y1)
+            path.lineTo(x2, y2)
+        for i in component.arcs:
+            ar = data.arcs[i]
+            chords = _arc_chords(ar)
+            if not chords:
+                continue
+            first = True
+            for x1, y1, x2, y2, _width in chords:
+                sx1, sy1 = self._gerber_to_scene(x1, y1)
+                sx2, sy2 = self._gerber_to_scene(x2, y2)
+                if first:
+                    path.moveTo(sx1, sy1)
+                    first = False
+                path.lineTo(sx2, sy2)
+        pen = QPen(TRACE_COLOR, _TRACE_LINE_WIDTH)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        pen.setCosmetic(False)  # The width counts in millimetres.
+        item = self._scene.addPath(path, pen)
+        item.setZValue(Z_TRACE)
+        return item
+
+    def _trace_fill_itemize(
+        self, data: RenderData, component: Any,
+        angle: float, mirror: bool, mirror_x: bool,
+        off_x: float, off_y: float,
+    ) -> QGraphicsPathItem:
+        """The pads of the net, filled in the true shape of the aperture.
+
+        The pads take the colour of the wires, so one net looks like one
+        piece of copper.  Only true copper planes/pours are left unfilled
+        so they do not paint half the board; small polygon pads are filled.
+        For planes, their boundary outline is drawn with a dashed pen so
+        the user can see where the connection reaches.
+        """
+        path = QPainterPath()
+        path.setFillRule(Qt.WindingFill)
+        outline_path = QPainterPath()
+        center_x, center_y = self._board_center
+        for i in component.flashes:
+            fl = data.flashes[i]
+            if is_copper_plane(data, i):
+                _add_flash(outline_path, fl, mirror, angle, off_x, off_y,
+                           center_x, center_y, mirror_x)
+                continue
+            _add_flash(path, fl, mirror, angle, off_x, off_y,
+                       center_x, center_y, mirror_x)
+        item = self._scene.addPath(path, QPen(Qt.NoPen),
+                                   QBrush(TRACE_COLOR))
+        item.setZValue(Z_TRACE)
+        if not outline_path.isEmpty():
+            dash_pen = QPen(TRACE_COLOR, 0.4, Qt.DashLine)
+            dash_pen.setCosmetic(True)
+            self._trace_plane_outline_item = self._scene.addPath(
+                outline_path, dash_pen, QBrush(Qt.NoBrush)
+            )
+            self._trace_plane_outline_item.setZValue(Z_TRACE)
+        return item
+
+    def _show_trace_result(self, layer_index: int, data: RenderData,
+                           component: Any, layer_name: str,
+                           origin: Tuple[float, float]) -> None:
+        """Draw the traced net: its wires in one bright chain and its
+        pads in the true shape of the apertures, all in one colour."""
+        angle, mirror, mirror_x, off_x, off_y = self._display_transform()
+        self._active_trace = (layer_index, data, component, origin)
+        self._trace_line_item = self._trace_line_itemize(
+            data, component, angle, mirror, mirror_x)
+        self._trace_fill_item = self._trace_fill_itemize(
+            data, component, angle, mirror, mirror_x, off_x, off_y)
+        traces = component.count()
+        pad_list = self._pad_name_list(data, component.flashes, origin)
+        if getattr(component, "is_path", False):
+            self._lbl_status.setText(tr(
+                "Trace path ({layer}): {length:.2f} mm | {list}.",
+                layer=layer_name, length=getattr(component, "path_length", 0.0), list=pad_list))
+        elif getattr(component, "is_plane", False):
+            self._lbl_status.setText(tr(
+                "Trace pad ({layer}): Pad connects to Copper Plane (GND/Power) — limited view.",
+                layer=layer_name))
+        else:
+            self._lbl_status.setText(tr(
+                "Trace pad ({layer}): {n} traces on one net: {list}.",
+                layer=layer_name, n=traces, list=pad_list))
+
+    def _on_trace_picked(self, sx: float, sy: float,
+                         screen_pos: Optional[QPoint] = None) -> None:
+        if not self._loaded or not self._trace_mode:
+            return
+        # A big ground pour walks thousands of shapes: the wait is told
+        # with an hourglass, since the click stays in one handler.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._trace_picked_inner(sx, sy, screen_pos)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _trace_picked_inner(self, sx: float, sy: float,
+                            screen_pos: Optional[QPoint] = None) -> None:
+        gx, gy = self._scene_to_gerber(sx, sy)
+        repeat = (
+            self._trace_last_pick is not None
+            and abs(gx - self._trace_last_pick[0]) <= 0.25
+            and abs(gy - self._trace_last_pick[1]) <= 0.25
+        )
+        tol = max(getattr(self, "_snap_tol", 1.0), 1.0)
+        chosen: Optional[Tuple] = None
+        if repeat and self._trace_candidates and \
+                len(self._trace_candidates) > 1:
+            # The pads of the copper layers stand on top of each other;
+            # a second click on the same spot traces the next layer.
+            self._trace_order = \
+                (self._trace_order + 1) % len(self._trace_candidates)
+            chosen = self._trace_candidates[self._trace_order]
+        else:
+            picks = []
+            for layer_index, data in self._copper_candidates():
+                trace_index = self._trace_index_for(layer_index, data)
+                seed = pick_seed(trace_index, gx, gy, tol)
+                if seed is None:
+                    continue
+                kind, seed_index, cx, cy = seed
+                picks.append(
+                    (math.hypot(cx - gx, cy - gy),
+                     (layer_index, data, kind, seed_index, cx, cy)))
+            if not picks:
+                self._trace_candidates = None
+                self._trace_last_pick = None
+                self._hide_trace_popup()
+                self._lbl_status.setText(tr(
+                    "Trace pad: no pad at the clicked point — click a "
+                    "copper pad."))
+                return
+            picks.sort(key=lambda entry: entry[0])
+            self._trace_candidates = [choice for _d, choice in picks]
+            self._trace_order = 0
+            chosen = self._trace_candidates[0]
+        self._trace_last_pick = (gx, gy)
+        layer_index, data, kind, seed_index, seed_x, seed_y = chosen
+        trace_index = self._trace_index_for(layer_index, data)
+        component = trace_component(
+            data, gx, gy, tol, index=trace_index,
+            seed=(kind, seed_index, seed_x, seed_y))
+        if component is None:
+            self._trace_candidates = None
+            self._trace_last_pick = None
+            self._hide_trace_popup()
+            self._lbl_status.setText(tr(
+                "Trace pad: no pad at the clicked point — click a "
+                "copper pad."))
+            return
+        layer_name = self._layers[layer_index].name
+        # The pad that names the trace: a pad click names its own pad, a
+        # wire click names the nearest pad of the net.
+        pad_label: Optional[str] = None
+        if kind == "flash":
+            pad_label = self._pad_designator(seed_x, seed_y)
+        else:
+            best_fl = None
+            best_d = float("inf")
+            for i in component.flashes:
+                fl = data.flashes[i]
+                d = math.hypot(fl.cx - gx, fl.cy - gy)
+                if d < best_d:
+                    best_d = d
+                    best_fl = fl
+            if best_fl is not None:
+                pad_label = self._pad_designator(best_fl.cx, best_fl.cy)
+        verdict = None
+        first = self._trace_first
+        current_seed = (kind, seed_index, seed_x, seed_y)
+
+        if first is not None and first[0] is data and kind == "flash":
+            if seed_index in first[1].flashes:
+                # Find direct shortest path between the first clicked point and this pad
+                path_component = find_shortest_path(data, first[3], current_seed, index=trace_index)
+                if path_component is not None:
+                    component = path_component
+                verdict = (True, first[2], pad_label, getattr(component, "path_length", 0.0))
+            else:
+                verdict = (False, first[2], pad_label, 0.0)
+
+        if verdict is not None and verdict[0]:
+            self._show_trace_result(layer_index, data, component, layer_name, (gx, gy))
+            length_str = f" ({verdict[3]:.2f} mm)" if verdict[3] > 0 else ""
+            self._lbl_status.setText(tr(
+                "Trace pad: {a} and {b} are CONNECTED — one net{len}.",
+                a=verdict[1], b=verdict[2], len=length_str))
+            self._hide_trace_popup()
+            return
+
+        def restore_trace_hint() -> None:
+            if self._trace_candidates is None or \
+                    len(self._trace_candidates) <= 1:
+                return
+            next_choice = self._trace_candidates[
+                (self._trace_order + 1) % len(self._trace_candidates)][0]
+            next_name = self._layers[next_choice].name
+            self._lbl_status.setText(self._lbl_status.text() + " " + tr(
+                "Trace pad: several copper layers carry a pad here — "
+                "click again on the same spot to trace {layer}.",
+                layer=next_name))
+
+        self._trace_first = (data, component, pad_label or tr("(no pads)"), current_seed)
+        self._show_trace_result(layer_index, data, component, layer_name,
+                                (gx, gy))
+        if getattr(component, "is_plane", False):
+            # Show small popup right at the cursor position
+            des = pad_label or tr("(no pads)")
+            sub = f"{des} · {layer_name}" if des != tr("(no pads)") else f"{layer_name} · limited view"
+            self._show_trace_popup("GND/PWR PLANE", sub, screen_pos)
+        else:
+            self._hide_trace_popup()
+
+        if verdict is not None:
+            self._lbl_status.setText(tr(
+                "Trace pad: {a} and {b} are NOT connected — different "
+                "nets.", a=verdict[1], b=verdict[2]))
+        restore_trace_hint()
+
     def _on_measure_toggled(self, checked: bool) -> None:
         if not self._loaded and checked:
             self._btn_measure.blockSignals(True)
@@ -4089,8 +4845,8 @@ class GerberViewer(QWidget):
     def _on_snap_tol_changed(self, value: float) -> None:
         self._snap_tol = float(value)
 
-    def _snap_info(self, gx: float, gy: float) -> Optional[Tuple[float, float, float]]:
-        if not getattr(self, "_snap_enabled", True):
+    def _snap_info(self, gx: float, gy: float, force: bool = False) -> Optional[Tuple[float, float, float]]:
+        if not force and not getattr(self, "_snap_enabled", True):
             return None
         grid = self._pad_grid(self._combo_layer.currentIndex() == 0)
         return grid.nearest_point(gx, gy, getattr(self, "_snap_tol", 1.0))
@@ -4430,26 +5186,29 @@ class GerberViewer(QWidget):
             self.checked_changed.emit(self._record_index_in_records(record))
 
     def _on_rotate_records(self, angle: int) -> None:
-        """Rotate every component and its coordinates around the origin.
+        """Rotate the components of the shown layer around the origin.
 
         Angle 0 keeps the coordinates and resets every rotation to 0°.
         """
         if not self._loaded:
             return
-        if not self._records:
+        targets = self._current_layer_records()
+        if not targets and not self._records:
             return
+        side = tr("top") if self._combo_layer.currentIndex() == 0 else tr("bottom")
         if angle == 0:
             ret = QMessageBox.question(
                 self, tr("Confirm"),
-                tr("Reset the rotation of {n} components to 0\u00b0?",
-                   n=len(self._records)),
+                tr("Reset the rotation of {n} {side}-side components to 0\u00b0?",
+                   n=len(targets), side=side),
             )
             busy_text = tr("Resetting rotation...")
         else:
             ret = QMessageBox.question(
                 self, tr("Confirm"),
-                tr("Rotate {n} components by {a}\u00b0 around the origin (0, 0)?",
-                   n=len(self._records), a=angle),
+                tr("Rotate {n} {side}-side components by {a}\u00b0 "
+                   "around the origin (0, 0)?",
+                   n=len(targets), side=side, a=angle),
             )
             busy_text = tr("Rotating components...")
         if ret != QMessageBox.Yes:
@@ -4459,13 +5218,13 @@ class GerberViewer(QWidget):
         rad = math.radians(angle)
         c, s = math.cos(rad), math.sin(rad)
         progress = QProgressDialog(
-            busy_text, "", 0, len(self._records), self)
+            busy_text, "", 0, len(targets), self)
         progress.setWindowTitle(tr("Please wait"))
         progress.setCancelButton(None)
         progress.setWindowModality(Qt.ApplicationModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
-        for count, record in enumerate(self._records, start=1):
+        for count, record in enumerate(targets, start=1):
             base_x = record.new_x if record.new_x is not None else record.old_x
             base_y = record.new_y if record.new_y is not None else record.old_y
             new_x = round(base_x * c - base_y * s, 4)
@@ -4504,39 +5263,41 @@ class GerberViewer(QWidget):
         if changed:
             if angle == 0:
                 self.status_message.emit(
-                    tr("Reset the rotation of {n} components to 0\u00b0",
-                       n=len(changed)))
+                    tr("Reset the rotation of {n} {side}-side components "
+                       "to 0\u00b0", n=len(changed), side=side))
             else:
                 self.status_message.emit(
-                    tr("Rotated {n} components by {a}\u00b0",
-                       n=len(changed), a=angle))
+                    tr("Rotated {n} {side}-side components by {a}\u00b0",
+                       n=len(changed), side=side, a=angle))
         else:
             self._lbl_status.setText(
                 tr("Components are already at the rotated position."))
 
     def _on_flip_records(self, axis: str) -> None:
-        """Flip every component and its coordinates across an axis."""
+        """Flip the components of the shown layer across an axis."""
         if not self._loaded:
             return
-        if not self._records:
+        targets = self._current_layer_records()
+        if not targets and not self._records:
             return
+        side = tr("top") if self._combo_layer.currentIndex() == 0 else tr("bottom")
         ret = QMessageBox.question(
             self, tr("Confirm"),
-            tr("Flip {n} components across the {axis} axis?",
-               n=len(self._records), axis=axis),
+            tr("Flip {n} {side}-side components across the {axis} axis?",
+               n=len(targets), side=side, axis=axis),
         )
         if ret != QMessageBox.Yes:
             return
         changed = []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         progress = QProgressDialog(
-            tr("Flipping components..."), "", 0, len(self._records), self)
+            tr("Flipping components..."), "", 0, len(targets), self)
         progress.setWindowTitle(tr("Please wait"))
         progress.setCancelButton(None)
         progress.setWindowModality(Qt.ApplicationModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
-        for count, record in enumerate(self._records, start=1):
+        for count, record in enumerate(targets, start=1):
             base_x = record.new_x if record.new_x is not None else record.old_x
             base_y = record.new_y if record.new_y is not None else record.old_y
             new_x = round(-base_x, 4) if axis == "Y" else base_x
@@ -4573,8 +5334,8 @@ class GerberViewer(QWidget):
             self.rotation_edited.emit(self._record_index_in_records(record))
         if changed:
             self.status_message.emit(
-                tr("Flipped {n} components across the {axis} axis",
-                   n=len(changed), axis=axis))
+                tr("Flipped {n} {side}-side components across the {axis} axis",
+                   n=len(changed), side=side, axis=axis))
         else:
             self._lbl_status.setText(
                 tr("Components are already at the flipped position."))
@@ -4736,25 +5497,40 @@ class GerberViewer(QWidget):
         items, which is the fast path.  A layer that removes artwork is
         drawn into an offscreen buffer so the clear objects really erase
         what is underneath them.
+
+        The built artwork of the layer is taken from the path cache when
+        this transform of the page was drawn before, so turning back to
+        a familiar angle or coming back to one side of the board does
+        not walk the artwork again.
         """
-        paths = build_layer_paths(
-            render_data, angle, mirror, off_x, off_y, mirror_x, self._board_center,
-        )
+        key = (self._combo_layer.currentIndex() == 0, angle, mirror,
+               mirror_x)
+        cached = self._layer_path_cache.get(index, key)
+        if cached is None:
+            paths = build_layer_paths(
+                render_data, angle, mirror, off_x, off_y, mirror_x,
+                self._board_center,
+            )
+            aperture = ApertureIndex(
+                render_data, mirror, angle, off_x, off_y,
+                (self._board_center[0], self._board_center[1]), mirror_x)
+            self._layer_path_cache.put(index, key, (paths, aperture))
+        else:
+            paths, aperture = cached
         # Every layer is drawn through the same item, so that the negative
         # content is composited the way the format means it and so that the
         # result can be kept as an image between two repaints.
         item = LayerItem(paths, self._layer_draw_color(index))
         self._scene.addItem(item)
+        item.setZValue(self._layer_z(index))
         while len(self._layer_items) <= index:
             self._layer_items.append(None)
         self._layer_items[index] = item
         # The index finds the shape under the pointer; its grid is only
         # built when the pointer is used.
-        self._aperture_indices[index] = ApertureIndex(
-            render_data, mirror, angle, off_x, off_y,
-            (self._board_center[0], self._board_center[1]), mirror_x)
+        self._aperture_indices[index] = aperture
 
-    def _redraw(self) -> None:
+    def _redraw(self, progress: bool = False) -> None:
         if not self._loaded:
             return
 
@@ -4769,9 +5545,11 @@ class GerberViewer(QWidget):
 
         if self._scene_key != key:
             self._scene_key = key
-            self._rebuild_scene(angle, mirror, mirror_x, 0.0, 0.0, is_top)
+            self._rebuild_scene(angle, mirror, mirror_x, 0.0, 0.0, is_top,
+                                progress=progress)
         else:
-            self._apply_style(angle, mirror, mirror_x, 0.0, 0.0, is_top)
+            self._apply_style(angle, mirror, mirror_x, 0.0, 0.0, is_top,
+                              progress=progress)
 
         self._restore_highlight()
         self._refresh_magnifier()
@@ -4779,6 +5557,7 @@ class GerberViewer(QWidget):
     def _rebuild_scene(
         self, angle: float, mirror: bool, mirror_x: bool,
         off_x: float, off_y: float, is_top: bool,
+        progress: bool = False,
     ) -> None:
         self._scene.clear()
         self._overlay = None
@@ -4788,10 +5567,14 @@ class GerberViewer(QWidget):
         self._measure_snap_item = None
         self._aperture_indices = {}
         self._layer_items = []
-        self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top)
+        self._apply_style(angle, mirror, mirror_x, off_x, off_y, is_top,
+                          progress=progress)
         self._update_goto_crosshair()
         self._update_grid()
         self._rebuild_measurements()
+        # The trace of a net is not part of the style; it comes back
+        # after the scene was rebuilt, at the same place it stood.
+        self._restore_trace_overlay()
         # The page may be scrolled anywhere, not only over the board.
         self._update_scene_rect()
 
@@ -4893,12 +5676,23 @@ class GerberViewer(QWidget):
     def _apply_style(
         self, angle: float, mirror: bool, mirror_x: bool,
         off_x: float, off_y: float, is_top: bool,
+        progress: bool = False,
     ) -> None:
         """Draw every layer that is not hidden.
 
         The layers are drawn in the order of the list, and the layer that
         is active is drawn last, so that it lies on top of the others.
+
+        With ``progress`` the status line names the layer at work and the
+        event loop is let run between two layers, so a first appearance
+        of a big board shows what happens instead of freezing.
         """
+        work = [index for index in range(len(self._layers))
+                if index < len(self._layer_data)
+                and self._layer_data[index] is not None
+                and self._layer_states[index] != LAYER_STATE_HIDDEN]
+        total = len(work)
+        step = 0
         for index in range(len(self._layers)):
             data = self._layer_data[index] if index < len(self._layer_data) else None
             if data is None:
@@ -4906,6 +5700,13 @@ class GerberViewer(QWidget):
             if self._layer_states[index] == LAYER_STATE_HIDDEN:
                 self._hide_layer_item(index)
                 continue
+            step += 1
+            if progress:
+                self._lbl_status.setText(tr(
+                    "Building layer {n}/{total}: {name}...",
+                    n=step, total=total,
+                    name=self._layers[index].name))
+                QApplication.processEvents()
             if index >= len(self._layer_items) or self._layer_items[index] is None:
                 self._render_layer(index, data, angle, mirror,
                                    off_x, off_y, mirror_x)
@@ -4933,18 +5734,48 @@ class GerberViewer(QWidget):
         except RuntimeError:
             pass
 
+    def _layer_z(self, index: int) -> float:
+        """The place of one layer in the stack, from its role.
+
+        The copper sits at the bottom of the pile for good, so that the
+        paste, the mask and the silk stay on top of it even when the
+        copper is the active layer.
+        """
+        if index < 0 or index >= len(self._layers):
+            return float(index)
+        role = self._layers[index].role
+        base = _LAYER_ROLE_BASE.get(role, _LAYER_ROLE_BASE[ROLE_OTHER])
+        rank = sum(1 for other in self._layers[:index]
+                   if other.role == role)
+        return base + 0.1 * rank
+
     def _update_layer_item(self, index: int) -> None:
-        """Give one layer its colour and its place in the picture."""
+        """Give one layer its colour and its place in the picture.
+
+        Work is skipped when nothing changed: setting the same colour and
+        the same place onto the item again is harmless, but the repaint
+        it asks for re-rasterizes a big layer for nothing.
+        """
         if index >= len(self._layer_items):
             return
         item = self._layer_items[index]
         if item is None:
             return
         color = self._layer_draw_color(index)
+        z = self._layer_z(index)
+        if index == self._active_layer:
+            role = self._layers[index].role if index < len(self._layers) \
+                else ""
+            if role != ROLE_COPPER:
+                z += _LAYER_ACTIVE_BUMP
         try:
-            item.setVisible(True)
-            item.set_color(color)
-            item.setZValue(1000.0 if index == self._active_layer else index)
+            if not item.isVisible():
+                item.setVisible(True)
+            if item.color().rgb() != color.rgb() or \
+                    item.color().alpha() != color.alpha():
+                item.set_color(color)
+            if item.zValue() != z:
+                item.setZValue(z)
         except RuntimeError:
             pass
 
@@ -4960,9 +5791,17 @@ class GerberViewer(QWidget):
         grid = self._pad_grid_cache.get(is_top)
         if grid is None:
             side = SIDE_TOP if is_top else SIDE_BOTTOM
-            pads = []
-            for data in self._role_datas(ROLE_PASTE, side):
-                pads += [(f.cx, f.cy, _flash_size(f)) for f in data.flashes]
+            pads: List[Tuple[float, float, float]] = []
+            # Paste first; the pad-shaped mask openings and copper flashes
+            # serve as stand-ins when no paste layer is loaded.
+            for role in _PAD_SNAP_ROLES:
+                for data in self._role_datas(role, side):
+                    pads += [(_flash_center(f)[0], _flash_center(f)[1], _flash_size(f))
+                             for f in data.flashes]
+                    if role == ROLE_PASTE:
+                        pads += _paste_stroke_pads(data)
+                if pads:
+                    break
             grid = PadGrid(pads)
             self._pad_grid_cache[is_top] = grid
         return grid

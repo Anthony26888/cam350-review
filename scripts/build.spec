@@ -3,6 +3,7 @@
 import sys
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -17,8 +18,9 @@ a = Analysis(
         (str(project_dir / "config" / "config.json"), "config"),
         (str(project_dir / "assets" / "icon.ico"), "assets"),
         (str(project_dir / "assets" / "rotation-guide.png"), "assets"),
-    ],
+    ] + collect_data_files("lucide"),
     hiddenimports=[
+        "lucide",
         "openpyxl",
         "openpyxl.cell._writer",
         "openpyxl.reader.excel",

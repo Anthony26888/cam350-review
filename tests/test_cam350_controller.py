@@ -1,5 +1,9 @@
-import pywintypes
 import pytest
+
+pytest.importorskip("pywintypes")
+pytest.importorskip("win32con")
+
+import pywintypes
 import win32con
 
 from services import cam350_controller

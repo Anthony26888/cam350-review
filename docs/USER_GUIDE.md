@@ -108,7 +108,7 @@ python -m pytest tests/ -q
 
 | Area | Contents |
 |---|---|
-| Toolbar | New/Open/Save session, Open PickPlace (Excel), Open BOM, Align, Run Check, Gerber, Report, Export, Batch, PCB, OK Checked, Delete, Settings |
+| Toolbar | New/Open/Save session, Open PickPlace (Excel), Open BOM, Gerber, Report, Export, Batch, PCB, OK Checked, Delete, Settings |
 | Left: tabs | PickPlace tab (default: records, filters, Missing MPN hint column) + BOM tab (BOM rows, Missing Pickplace, red Bottom designators) |
 | Right top: stats | Total, Pending, OK, Edited, Aligned counters |
 | Right middle: Component Information | Designator, MPN, Layer, Original X/Y/Rotation, New X/Y/Rotation, Status, Datasheet, Remark, Progress |
@@ -263,11 +263,14 @@ The right-bottom panel is a 3-column table:
 
 *Fig 2 — History table (`docs/screenshots/history.png`, placeholder).*
 
-## 13. Gerber Origin Align (7-Step Wizard)
+## 13. Gerber Origin Align (Internal / Legacy Wizard)
 
-**Tools → Align PickPlace Origin...** Requires a **GKO** outline file; **GTP**
-(top paste) / **GBP** (bottom paste) improve accuracy; **GTO/GBO** silkscreen is
-display-only.
+> **Note:** Origin Align and standalone Run Check have been removed from the
+> main toolbar and Tools menu. The wizard backend is retained for compatibility
+> with existing session files and programmatic workflows.
+
+Requires a **GKO** outline file; **GTP** (top paste) / **GBP** (bottom paste)
+improve accuracy; **GTO/GBO** silkscreen is display-only.
 
 1. **Select Gerber files** — GKO required, others optional. Invalid GKO stops
    the wizard with the parse error.

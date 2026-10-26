@@ -119,9 +119,41 @@ class TestTheOrderOfTheDrawing:
 
         v = self._viewer(app)
         layers_z = [item.zValue() for item in v._layer_items if item is not None]
-        # The active layer is the one that is brought on top.
-        assert max(layers_z) == 1000.0
-        assert Z_GRID < 1000.0
+        # Every layer keeps below the grid, the silk on top of the
+        # copper (the active layer is index 0 and the copper never
+        # rises over it anyway).
+        assert max(layers_z) == 20.0
+        assert max(layers_z) < Z_GRID
+
+    def test_the_copper_never_leaves_the_bottom(self, app):
+        from ui.gerber_viewer import Z_GRID
+
+        v = self._viewer(app)
+        v._set_active_layer(0)   # the top copper
+        v._redraw()
+        z = lambda item: item.zValue()
+        copper_z = [z(it) for it in v._layer_items[:2] if it is not None]
+        silk_z = z(v._layer_items[2])
+        assert max(copper_z) < 10.0
+        assert z(v._layer_items[0]) == 5.0
+        assert silk_z > max(copper_z)
+        # And the whole stack stays under the marks and the grid.
+        layers_z = [z(it) for it in v._layer_items if it is not None]
+        assert max(layers_z) < Z_GRID
+
+    def test_an_active_non_copper_layer_rises_over_the_rest(self, app):
+        from ui.gerber_viewer import Z_GRID
+
+        v = self._viewer(app)
+        v._set_active_layer(2)   # the silk
+        v._redraw()
+        layers_z = [item.zValue() for item in v._layer_items
+                    if item is not None]
+        copper_z = max(item.zValue() for item in v._layer_items[:2])
+        silk_z = v._layer_items[2].zValue()
+        assert silk_z > copper_z
+        # ... but still below the grid and every mark.
+        assert silk_z < Z_GRID
 
 
 class TestTheTableOfTheLayers:

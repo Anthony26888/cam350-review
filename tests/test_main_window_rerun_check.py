@@ -255,7 +255,6 @@ def _mw_holder(records, bundle=None):
     h._prescreen_ctx_packed = None
     h._prescreen_dialog = None
     h._status_label = _Label()
-    h._btn_run_check = _Btn(enabled=True)
     h._table_widget = _Table()
     h._gerber_viewer = None
     for name in ["_open_prescreen_dialog", "_apply_prescreen_issues",
@@ -298,7 +297,7 @@ def test_close_prescreen_dialog_tolerates_missing_attr(app):
     assert getattr(h, "_prescreen_dialog", None) is None
 
 
-def test_restore_bundle_enables_session_rerun(app, tmp_path):
+def test_restore_bundle_restores_session_context(app, tmp_path):
     gko = tmp_path / "board.gko"
     gko.write_text("%MOMM*%\n", encoding="ascii")
 
@@ -312,4 +311,4 @@ def test_restore_bundle_enables_session_rerun(app, tmp_path):
     h._config_mgr = types.SimpleNamespace(config=_Cfg())
     h._restore_prescreen_bundle(session)
     assert h._prescreen_bundle is not None
-    assert h._btn_run_check.isEnabled() is True
+    assert h._prescreen_ctx_packed is not None

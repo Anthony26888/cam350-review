@@ -1,11 +1,13 @@
 from datetime import date
+import sys
 from typing import Optional
 
-import winreg
+if sys.platform == "win32":
+    import winreg
 
 from config.config_manager import ConfigManager
 
-_REG_ROOT = winreg.HKEY_CURRENT_USER
+_REG_ROOT = winreg.HKEY_CURRENT_USER if sys.platform == "win32" else None
 _REG_PATH = r"Software\CAM350Review"
 _VAL_MAX_SEEN = "MaxSeenDate"
 _VAL_HWID = "Hwid"
@@ -20,6 +22,8 @@ def load_license_key() -> str:
 
 
 def _reg_open():
+    if _REG_ROOT is None:
+        return None
     try:
         return winreg.CreateKey(_REG_ROOT, _REG_PATH)
     except OSError:

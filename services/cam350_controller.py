@@ -1,13 +1,25 @@
 import ctypes
-from ctypes import wintypes
 import re
+import sys
 import time
 from typing import Optional
 
-import pyautogui
-import win32gui
-import win32con
-import win32clipboard
+try:
+    import pyautogui
+except Exception:
+    pyautogui = None
+
+win32gui = win32con = win32clipboard = None
+_user32 = None
+_OS_SUPPORTED = sys.platform == "win32"
+if _OS_SUPPORTED:
+    from ctypes import wintypes
+
+    import win32clipboard
+    import win32con
+    import win32gui
+
+    _user32 = ctypes.windll.user32
 
 
 from config.config_manager import ConfigManager
@@ -17,22 +29,26 @@ _NUMBER_RE = r"[-+]?\d+(?:\.\d+)?"
 _WM_GETTEXTLENGTH = 0x000E
 _WM_GETTEXT = 0x000D
 
-_user32 = ctypes.windll.user32
-
 
 class _POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
-_user32.WindowFromPoint.restype = wintypes.HWND
-_user32.WindowFromPoint.argtypes = [_POINT]
-_user32.SendMessageW.restype = ctypes.c_ssize_t
-_user32.SendMessageW.argtypes = [
-    wintypes.HWND,
-    wintypes.UINT,
-    wintypes.WPARAM,
-    ctypes.c_void_p,
-]
+if _user32 is not None:
+    _user32.WindowFromPoint.restype = wintypes.HWND
+    _user32.WindowFromPoint.argtypes = [_POINT]
+    _user32.SendMessageW.restype = ctypes.c_ssize_t
+    _user32.SendMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        ctypes.c_void_p,
+    ]
+
+
+def _require_windows() -> None:
+    if not _OS_SUPPORTED:
+        raise RuntimeError(tr("CAM350 automation is only supported on Windows."))
 
 
 class Cam350Controller:
@@ -41,6 +57,7 @@ class Cam350Controller:
         self._hwnd: Optional[int] = None
 
     def _find_window(self) -> Optional[int]:
+        _require_windows()
         title = self._config_mgr.config.windowTitle
 
         search_titles = []
@@ -71,6 +88,7 @@ class Cam350Controller:
 
     @staticmethod
     def detect_window_title() -> str:
+        _require_windows()
         hwnd = win32gui.GetForegroundWindow()
         if hwnd:
             return win32gui.GetWindowText(hwnd)
@@ -262,6 +280,8 @@ class Cam350Controller:
     def _release_modifiers(self) -> None:
         """Safety net: release Ctrl/Alt/Shift so no key is left held down
         if a macro is interrupted by an exception."""
+        if _user32 is None or win32con is None:
+            return
         for vk in (win32con.VK_CONTROL, win32con.VK_MENU, win32con.VK_SHIFT):
             try:
                 _user32.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)

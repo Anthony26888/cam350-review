@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, 
 
 from models.review import ReviewRecord
 from ui.i18n import tr
+from ui.icons import lucide_qicon, status_icon
 from ui.style import status_bg_colors, status_text_colors
 
 _BLOCK_COLUMN = 3
@@ -60,41 +61,13 @@ def _block_color(block: int) -> Optional[QColor]:
 _RANGE_MIN = -999999.0
 _RANGE_MAX = 999999.0
 
-_ICON_CHECKED: Optional[QIcon] = None
-_ICON_UNCHECKED: Optional[QIcon] = None
-
 
 def _build_check_icon(checked: bool) -> QIcon:
-    pm = QPixmap(16, 16)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    if checked:
-        pen = QPen(QColor("#22C55E"), 2.2)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        path = QPainterPath()
-        path.moveTo(3.0, 8.5)
-        path.lineTo(6.5, 12.0)
-        path.lineTo(13.0, 4.0)
-        p.drawPath(path)
-    else:
-        p.setBrush(QColor("#F97316"))
-        p.setPen(Qt.NoPen)
-        p.drawEllipse(4.0, 4.0, 8.0, 8.0)
-    p.end()
-    return QIcon(pm)
+    return status_icon(checked)
 
 
 def _check_icon(checked: bool) -> QIcon:
-    global _ICON_CHECKED, _ICON_UNCHECKED
-    if _ICON_CHECKED is None:
-        _ICON_CHECKED = _build_check_icon(True)
-    if _ICON_UNCHECKED is None:
-        _ICON_UNCHECKED = _build_check_icon(False)
-    return _ICON_CHECKED if checked else _ICON_UNCHECKED
+    return status_icon(checked)
 
 
 class TableWidget(QWidget):
@@ -213,9 +186,7 @@ class TableWidget(QWidget):
         self._layout.addWidget(self._table)
 
     def refresh_icons(self) -> None:
-        self._btn_clear.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_LineEditClearButton)
-        )
+        self._btn_clear.setIcon(lucide_qicon("funnel-x", size=14))
 
     def set_records(self, records: List[ReviewRecord]) -> None:
         self._records = records
@@ -486,6 +457,22 @@ class TableWidget(QWidget):
             if idx == record_index:
                 self._set_row_values(row, idx)
                 break
+
+    def update_rows(self, record_indices) -> None:
+        """Refresh several rows with one redraw pass (bulk fill)."""
+        wanted = {int(i) for i in record_indices}
+        if not wanted:
+            return
+        state = self._bulk_fill_begin()
+        try:
+            for row, idx in enumerate(self._filtered):
+                if idx in wanted:
+                    self._set_row_values(row, idx)
+                    wanted.discard(idx)
+                    if not wanted:
+                        break
+        finally:
+            self._bulk_fill_end(state)
 
     def update_all_rows(self) -> None:
         text_colors = self._status_text_colors()
