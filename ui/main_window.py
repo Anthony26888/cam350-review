@@ -3003,11 +3003,19 @@ class MainWindow(QMainWindow):
                      remark: str = "", created_at: str = "",
                      mpn_old: str = "", mpn_new: str = "") -> None:
         try:
-            entry = self._history_entry(
-                record, action, old_x=old_x, old_y=old_y, old_rot=old_rot,
-                remark=remark, created_at=created_at,
-                mpn_old=mpn_old, mpn_new=mpn_new,
-            )
+            helper = getattr(self, "_history_entry", None)
+            if helper is not None:
+                entry = helper(
+                    record, action, old_x=old_x, old_y=old_y, old_rot=old_rot,
+                    remark=remark, created_at=created_at,
+                    mpn_old=mpn_old, mpn_new=mpn_new,
+                )
+            else:
+                entry = MainWindow._history_entry(
+                    self, record, action, old_x=old_x, old_y=old_y, old_rot=old_rot,
+                    remark=remark, created_at=created_at,
+                    mpn_old=mpn_old, mpn_new=mpn_new,
+                )
             self._history_repo.add(entry)
         except Exception:
             pass
