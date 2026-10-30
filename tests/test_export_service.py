@@ -10,6 +10,12 @@ from models.review import ReviewRecord
 from services.export_service import ExportService
 
 
+def _xl_text(value: str) -> str:
+    if not value:
+        return ""
+    return '="' + value.replace('"', '""') + '"'
+
+
 def _records():
     return [
         ReviewRecord(
@@ -32,7 +38,9 @@ def test_export_report(tmp_path):
     wb = openpyxl.load_workbook(str(path))
     ws = wb.active
     assert ws.cell(row=1, column=1).value == "Designator"
+    assert ws.cell(row=1, column=2).value == "MPN"
     assert ws.cell(row=2, column=1).value == "C1"
+    assert ws.cell(row=2, column=2).value == "MPN1"
     assert ws.cell(row=2, column=7).value == 3.0  # New X (edited)
     assert ws.cell(row=3, column=7).value in (None, "")  # New X (pending -> empty)
     assert ws.cell(row=3, column=13).value == "Pending"
@@ -55,8 +63,8 @@ def test_export_pickplace_fixed(tmp_path):
     ExportService.export_pickplace_fixed(_records(), data, str(path))
     rows = _read_csv(path)
     assert len(rows) == 2
-    assert rows[0] == ["C1", "MPN1", "3.0", "4.0", "90"]  # Layer removed, X/Y overridden
-    assert rows[1] == ["C2", "MPN2", "5", "6", "0"]
+    assert rows[0] == ["C1", _xl_text("MPN1"), "3.0", "4.0", "90"]  # Layer removed, X/Y overridden
+    assert rows[1] == ["C2", _xl_text("MPN2"), "5", "6", "0"]
     assert not any("Layer" in row for row in rows)
 
 
@@ -77,7 +85,7 @@ def test_export_pickplace_fixed_ic_flag_keeps_raw_value(tmp_path):
     path = tmp_path / "fixed_ic.csv"
     ExportService.export_pickplace_fixed(records, data, str(path))
     rows = _read_csv(path)
-    assert rows[0] == ["C1", "MPN1", "3.0", "4.0", "90"]  # raw 90, not +45
+    assert rows[0] == ["C1", _xl_text("MPN1"), "3.0", "4.0", "90"]  # raw 90, not +45
 
 
 def test_export_pickplace_fixed_skips_inactive(tmp_path):
@@ -100,7 +108,7 @@ def test_export_pickplace_fixed_skips_inactive(tmp_path):
     ExportService.export_pickplace_fixed(records, data, str(path))
     rows = _read_csv(path)
     assert len(rows) == 1  # only C1 row
-    assert rows[0][0] == "C1"
+    assert rows[0] == ["C1", "", "1", "2"]  # MPN added after Designator
 
 
 def _fixed_data():
@@ -126,13 +134,117 @@ def test_export_pickplace_fixed_with_pcb_info(tmp_path):
     rows = _read_csv(path)
     assert rows[0] == ["100.5", "80.25", "50", "12.5", "10", "20", "30", "40", "50", "60", "1.6"]
     assert rows[1][0] == "C1"  # no header, data follows pcb_info row
+    assert rows[1][1] == _xl_text("MPN1")
 
 
 def test_export_pickplace_fixed_without_pcb_info_keeps_layout(tmp_path):
     path = tmp_path / "fixed_nopcb.csv"
     ExportService.export_pickplace_fixed(_records(), _fixed_data(), str(path))
     rows = _read_csv(path)
-    assert rows[0] == ["C1", "MPN1", "3.0", "4.0", "90"]  # no header, data on first row
+    assert rows[0] == ["C1", _xl_text("MPN1"), "3.0", "4.0", "90"]  # no header, data on first row
+
+
+def test_export_pickplace_fixed_adds_mpn_when_source_lacks_it(tmp_path):
+    data = PickPlaceData(
+        headers=["Designator", "X", "Y", "Rotation"],
+        components=[
+            PickPlaceComponent(designator="C1", x=1, y=2, rotation=0),
+        ],
+        raw_data=[
+            {"Designator": "C1", "X": 1, "Y": 2, "Rotation": 0},
+        ],
+        column_mapping={
+            "designator": "Designator", "x": "X", "y": "Y",
+            "rotation": "Rotation",
+        },
+    )
+    records = [
+        ReviewRecord(designator="C1", mpn="MPN-FROM-BOM", layer="Top",
+                     old_x=1, old_y=2, old_rotation=0, status="OK"),
+    ]
+    path = tmp_path / "fixed_add_mpn.csv"
+    ExportService.export_pickplace_fixed(records, data, str(path))
+    rows = _read_csv(path)
+    assert rows == [["C1", _xl_text("MPN-FROM-BOM"), "1", "2", "0"]]
+
+
+def test_export_pickplace_fixed_uses_current_record_mpn(tmp_path):
+    data = _fixed_data()
+    data.raw_data[0]["MPN"] = "STALE-MPN"
+    records = _records()[:1]
+    records[0].mpn = "CURRENT-MPN"
+    path = tmp_path / "fixed_current_mpn.csv"
+    ExportService.export_pickplace_fixed(records, data, str(path))
+    rows = _read_csv(path)
+    assert rows[0] == ["C1", _xl_text("CURRENT-MPN"), "3.0", "4.0", "90"]
+
+
+def test_export_pickplace_fixed_mpn_keeps_leading_zeros_for_excel(tmp_path):
+    records = _records()[:1]
+    records[0].mpn = "001234"
+    path = tmp_path / "fixed_leading_zero.csv"
+    ExportService.export_pickplace_fixed(records, _fixed_data(), str(path))
+    rows = _read_csv(path)
+    assert rows[0][1] == '="001234"'
+
+
+def test_export_pickplace_fixed_mpn_escapes_quotes_for_excel(tmp_path):
+    records = _records()[:1]
+    records[0].mpn = 'A"B'
+    path = tmp_path / "fixed_quoted_mpn.csv"
+    ExportService.export_pickplace_fixed(records, _fixed_data(), str(path))
+    rows = _read_csv(path)
+    assert rows[0][1] == '="A""B"'
+
+
+def test_export_pickplace_fixed_keeps_mapped_mpn_column_name(tmp_path):
+    data = PickPlaceData(
+        headers=["Designator", "Part Number", "X", "Y", "Rotation"],
+        components=[
+            PickPlaceComponent(designator="C1", mpn="OLD", x=1, y=2, rotation=0),
+        ],
+        raw_data=[
+            {"Designator": "C1", "Part Number": "OLD", "X": 1, "Y": 2,
+             "Rotation": 0},
+        ],
+        column_mapping={
+            "designator": "Designator", "mpn": "Part Number",
+            "x": "X", "y": "Y", "rotation": "Rotation",
+        },
+    )
+    records = [
+        ReviewRecord(designator="C1", mpn="NEW", layer="Top",
+                     old_x=1, old_y=2, old_rotation=0, status="OK"),
+    ]
+    path = tmp_path / "fixed_mapped_mpn.csv"
+    ExportService.export_pickplace_fixed(records, data, str(path))
+    rows = _read_csv(path)
+    assert rows == [["C1", _xl_text("NEW"), "1", "2", "0"]]
+
+
+def test_export_pickplace_fixed_mapped_designator_and_missing_mpn(tmp_path):
+    data = PickPlaceData(
+        headers=["Ref", "Xpos", "Ypos", "Angle"],
+        components=[
+            PickPlaceComponent(designator="C1", x=1, y=2, rotation=0),
+        ],
+        raw_data=[
+            {"Ref": "C1", "Xpos": 1, "Ypos": 2, "Angle": 0},
+        ],
+        column_mapping={
+            "designator": "Ref", "x": "Xpos", "y": "Ypos",
+            "rotation": "Angle",
+        },
+    )
+    records = [
+        ReviewRecord(designator="C1", mpn="MPN-FROM-BOM", layer="Top",
+                     old_x=1, old_y=2, old_rotation=0, status="Edited",
+                     new_x=7, new_y=8, new_rotation=90),
+    ]
+    path = tmp_path / "fixed_mapped_designator.csv"
+    ExportService.export_pickplace_fixed(records, data, str(path))
+    rows = _read_csv(path)
+    assert rows == [["C1", _xl_text("MPN-FROM-BOM"), "7", "8", "90"]]
 
 
 def _layered_data():
@@ -183,7 +295,7 @@ def test_export_fixed_by_layer_splits_top_bottom(tmp_path):
     assert [r[0] for r in top_rows] == ["C1", "C3"]
     assert [r[0] for r in bottom_rows] == ["C2"]
     # same fixed format: layer column dropped, edited values used
-    assert top_rows[0] == ["C1", "M1", "1", "2", "0"]
+    assert top_rows[0] == ["C1", _xl_text("M1"), "1", "2", "0"]
     assert n_bottom == 1
 
 
@@ -239,13 +351,14 @@ def test_export_pickplace_fixed_source_block_column_dropped(tmp_path):
         ],
     )
     records = [
-        ReviewRecord(designator="C1", old_x=1, old_y=2, old_rotation=0,
-                     status="OK", new_x=1, new_y=2, new_rotation=0),
+        ReviewRecord(designator="C1", mpn="MPN1", old_x=1, old_y=2,
+                     old_rotation=0, status="OK",
+                     new_x=1, new_y=2, new_rotation=0),
     ]
     path = tmp_path / "fixed_srcblock.csv"
     ExportService.export_pickplace_fixed(records, data, str(path))
     rows = _read_csv(path)
-    assert rows[0] == ["C1", "MPN1", "1", "2", "0"]
+    assert rows[0] == ["C1", _xl_text("MPN1"), "1", "2", "0"]
     assert not any("Panel_Instance" in (cell or "") for row in rows for cell in row)
 
 
@@ -279,6 +392,7 @@ def test_export_bom_fixed_styled_xlsx(tmp_path):
     # gray header, Times 13
     header = ws.cell(row=2, column=1)
     assert header.value == "STT"
+    assert ws.cell(row=2, column=3).value == "MPN"
     assert header.fill.start_color.rgb == "00D9D9D9"
     assert header.font.size == 13
     assert header.font.name == "Times New Roman"

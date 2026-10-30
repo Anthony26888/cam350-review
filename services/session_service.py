@@ -81,6 +81,8 @@ class SessionData:
         obj.gerberGbp = data.get("gerberGbp", "")
         obj.gerberGto = data.get("gerberGto", "")
         obj.gerberGbo = data.get("gerberGbo", "")
+        obj.gerberFolder = data.get("gerberFolder", "") or ""
+        obj.gerberLayers = list(data.get("gerberLayers") or [])
         obj.gerber_view = data.get("gerber_view") or None
         obj.column_mapping = data.get("column_mapping") or None
         obj.gerber_files = data.get("gerber_files") or None

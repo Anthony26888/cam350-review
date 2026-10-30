@@ -83,6 +83,10 @@ def test_default_settings_when_none(viewer):
     assert d["rotation"] == 0
     assert d["flip"] is False
     assert d["mirror_x"] is False
+    assert d["layer_transforms"] == {
+        "top": {"rotation": 0, "flip": False, "mirror_x": False},
+        "bottom": {"rotation": 0, "flip": False, "mirror_x": False},
+    }
     assert len(d["layers"]) == len(LAYERS)
     assert all(entry["state"] == "normal" for entry in d["layers"])
     assert d["pickplace"] is True
@@ -91,6 +95,121 @@ def test_default_settings_when_none(viewer):
     assert d["grid"] is False
     assert d["grid_cols"] == 3
     assert d["grid_rows"] == 3
+
+
+def test_layer_transforms_are_independent(viewer):
+    viewer._set_rotation(90, emit=False)
+    viewer._chk_flip.setChecked(True)
+
+    viewer._combo_layer.setCurrentIndex(1)
+    assert viewer._rotation == 0
+    assert viewer._chk_flip.isChecked() is False
+    viewer._set_rotation(180, emit=False)
+    viewer._chk_mirror_x.setChecked(True)
+
+    viewer._combo_layer.setCurrentIndex(0)
+    assert viewer._rotation == 90
+    assert viewer._chk_flip.isChecked() is True
+    assert viewer._chk_mirror_x.isChecked() is False
+
+    viewer._combo_layer.setCurrentIndex(1)
+    assert viewer._rotation == 180
+    assert viewer._chk_flip.isChecked() is False
+    assert viewer._chk_mirror_x.isChecked() is True
+
+
+def test_layer_transforms_round_trip(viewer):
+    settings = {
+        "layer": 1,
+        "rotation": 0,
+        "flip": False,
+        "mirror_x": False,
+        "layer_transforms": {
+            "top": {"rotation": 90, "flip": True, "mirror_x": False},
+            "bottom": {"rotation": 270, "flip": False, "mirror_x": True},
+        },
+    }
+    viewer.apply_display_settings(settings)
+    assert viewer._rotation == 270
+    assert viewer._chk_flip.isChecked() is False
+    assert viewer._chk_mirror_x.isChecked() is True
+
+    d = viewer.display_settings()
+    assert d["layer_transforms"]["top"] == {
+        "rotation": 90, "flip": True, "mirror_x": False}
+    assert d["layer_transforms"]["bottom"] == {
+        "rotation": 270, "flip": False, "mirror_x": True}
+
+    viewer._combo_layer.setCurrentIndex(0)
+    assert viewer._rotation == 90
+    assert viewer._chk_flip.isChecked() is True
+    assert viewer._chk_mirror_x.isChecked() is False
+
+
+def test_legacy_global_transform_fills_both_sides(viewer):
+    viewer.apply_display_settings({
+        "layer": 1, "rotation": 180, "flip": True, "mirror_x": True,
+    })
+    assert viewer._rotation == 180
+    assert viewer._chk_flip.isChecked() is True
+    assert viewer._chk_mirror_x.isChecked() is True
+    d = viewer.display_settings()
+    expected = {"rotation": 180, "flip": True, "mirror_x": True}
+    assert d["layer_transforms"]["top"] == expected
+    assert d["layer_transforms"]["bottom"] == expected
+
+
+def test_partial_layer_transforms_fall_back_to_global(viewer):
+    viewer.apply_display_settings({
+        "layer": 0,
+        "rotation": 90,
+        "flip": True,
+        "mirror_x": False,
+        "layer_transforms": {"top": {"rotation": 270}},
+    })
+    d = viewer.display_settings()
+    assert d["layer_transforms"]["top"] == {
+        "rotation": 270, "flip": True, "mirror_x": False}
+    assert d["layer_transforms"]["bottom"] == {
+        "rotation": 90, "flip": True, "mirror_x": False}
+
+
+def test_invalid_layer_transforms_do_not_crash(viewer):
+    viewer.apply_display_settings({
+        "layer_transforms": {
+            "top": "not-a-transform",
+            "bottom": {"rotation": "not-a-number"},
+        },
+    })
+    d = viewer.display_settings()
+    assert d["layer_transforms"]["top"] == {
+        "rotation": 0, "flip": False, "mirror_x": False}
+    assert d["layer_transforms"]["bottom"] == {
+        "rotation": 0, "flip": False, "mirror_x": False}
+
+
+def test_transform_change_emits_full_layer_map(viewer):
+    saved = []
+    viewer.settings_saved.connect(saved.append)
+    viewer._set_rotation(90)
+    assert saved
+    assert saved[-1]["layer_transforms"]["top"]["rotation"] == 90
+    assert saved[-1]["layer_transforms"]["bottom"]["rotation"] == 0
+
+
+def test_layer_switch_does_not_emit_settings(viewer):
+    saved = []
+    viewer.settings_saved.connect(saved.append)
+    viewer._combo_layer.setCurrentIndex(1)
+    assert saved == []
+
+
+def test_partial_settings_keep_the_current_transform(viewer):
+    viewer._set_rotation(90, emit=False)
+    viewer._chk_flip.setChecked(True)
+    viewer.apply_display_settings({"snap": False})
+    assert viewer._rotation == 90
+    assert viewer._chk_flip.isChecked() is True
 
 
 def test_apply_invalid_does_not_crash(viewer):

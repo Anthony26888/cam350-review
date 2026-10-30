@@ -436,6 +436,13 @@ the status bar and a message box.
   values, status, remark, and review time.
 - **Export PickPlace Fixed** (`.csv` by default): corrected coordinates,
   original columns preserved, `Deleted` rows skipped, PCB info applied.
+  The MPN column is always present and uses the current reviewed MPN
+  (including BOM auto-fill/ECO changes); if the source has no MPN column,
+  `MPN` is inserted after Designator. Non-empty MPN cells are written as
+  Excel text formulas (`="..."`) so Excel keeps leading zeros and
+  left-aligns them; raw CSV readers will see the formula wrapper.
+  The file stays data-only: no header row, and PCB info remains the first
+  row when present.
   On the toolbar, the **Export** button always drops a menu with
   `PickPlace Fixed` and `BOM Fixed` (same items live under File → Export).
 - **Export PickPlace Fixed Top / Bottom** (`.csv`): byte-identical format to

@@ -2,10 +2,11 @@ import math
 import os
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import (
     Qt, QRect, QRectF, QPointF, QPoint, QSize, QThread, QTimer, Signal,
+    QEventLoop,
 )
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QPolygonF, QRegion,
@@ -1719,6 +1720,8 @@ class GerberViewer(QWidget):
 
     rotation_edited = Signal(int)
 
+    records_edited = Signal(list)
+
     align_edited = Signal(list)
 
     status_message = Signal(str)
@@ -1846,6 +1849,13 @@ class GerberViewer(QWidget):
         self._color_target: Tuple[str, int] = ("layer", -1)
         #: The angle the layers of the picture turn with, in degrees.
         self._rotation: int = 0
+        #: The side whose turn and mirrors the toolbar holds.
+        self._transform_side: str = "top"
+        #: The turn and the mirrors that every side keeps.
+        self._layer_transforms: Dict[str, Dict[str, Any]] = {
+            "top": {"rotation": 0, "flip": False, "mirror_x": False},
+            "bottom": {"rotation": 0, "flip": False, "mirror_x": False},
+        }
 
         # --- Hidden state widgets --------------------------------------
         # The values the dialogs and the saved session edit.  They are
@@ -1951,11 +1961,17 @@ class GerberViewer(QWidget):
         return out
 
     def display_settings(self) -> Dict[str, Any]:
+        self._store_current_transform()
         settings = {
             "layer": self._combo_layer.currentIndex(),
             "rotation": self._rotation,
             "flip": self._chk_flip.isChecked(),
             "mirror_x": self._chk_mirror_x.isChecked(),
+            "layer_transforms": {
+                side: dict(self._layer_transforms.get(
+                    side, {"rotation": 0, "flip": False, "mirror_x": False}))
+                for side in ("top", "bottom")
+            },
             "layers": self._layer_settings(),
             "active_layer": self._active_layer_key(),
             "pickplace": self._chk_pickplace.isChecked(),
@@ -1982,15 +1998,41 @@ class GerberViewer(QWidget):
     def apply_display_settings(self, settings: Dict[str, Any]) -> None:
         if not isinstance(settings, dict) or not settings:
             return
+        has_transform_settings = (
+            isinstance(settings.get("layer_transforms"), dict)
+            or "rotation" in settings
+            or "flip" in settings
+            or "mirror_x" in settings
+        )
+        fallback = self._normalise_transform(
+            settings, {"rotation": 0, "flip": False, "mirror_x": False})
+        if has_transform_settings:
+            raw_transforms = settings.get("layer_transforms")
+            if isinstance(raw_transforms, dict):
+                self._layer_transforms = {
+                    side: self._normalise_transform(
+                        raw_transforms.get(side), fallback)
+                    for side in ("top", "bottom")
+                }
+            else:
+                self._layer_transforms = {
+                    side: dict(fallback) for side in ("top", "bottom")
+                }
+
+        layer_changed = False
         if "layer" in settings:
-            idx = int(settings.get("layer", 0))
+            try:
+                idx = int(settings.get("layer", 0))
+            except (TypeError, ValueError):
+                idx = -1
             if 0 <= idx < self._combo_layer.count():
+                layer_changed = idx != self._combo_layer.currentIndex()
+                self._combo_layer.blockSignals(True)
                 self._combo_layer.setCurrentIndex(idx)
-        if "rotation" in settings:
-            self._set_rotation(int(settings.get("rotation", 0) or 0),
-                               emit=False)
-        self._chk_flip.setChecked(bool(settings.get("flip", False)))
-        self._chk_mirror_x.setChecked(bool(settings.get("mirror_x", False)))
+                self._combo_layer.blockSignals(False)
+        if has_transform_settings or layer_changed:
+            self._transform_side = self._current_transform_side()
+            self._load_transform_for_side(self._transform_side)
         self._apply_layer_settings(settings.get("layers"))
         active = settings.get("active_layer")
         if active:
@@ -2045,6 +2087,10 @@ class GerberViewer(QWidget):
         self._pp_color_draft.clear()
         self._sync_color_buttons()
         self._sync_transform_controls()
+        if layer_changed:
+            self._clear_trace_result()
+            self._apply_layer()
+        self._redraw()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -3202,9 +3248,58 @@ class GerberViewer(QWidget):
     # ------------------------------------------------------------------
     # The turn and the mirrors of the picture
     # ------------------------------------------------------------------
+    @staticmethod
+    def _transform_side_for_index(index: int) -> str:
+        return "top" if int(index) == 0 else "bottom"
+
+    def _current_transform_side(self) -> str:
+        return self._transform_side_for_index(self._combo_layer.currentIndex())
+
+    @staticmethod
+    def _normalise_transform(
+        entry: Any, fallback: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if not isinstance(entry, dict):
+            entry = {}
+        try:
+            rotation = int(entry.get("rotation", fallback.get("rotation", 0)) or 0)
+        except (TypeError, ValueError):
+            rotation = int(fallback.get("rotation", 0) or 0)
+        return {
+            "rotation": rotation % 360,
+            "flip": bool(entry.get("flip", fallback.get("flip", False))),
+            "mirror_x": bool(
+                entry.get("mirror_x", fallback.get("mirror_x", False))),
+        }
+
+    def _store_current_transform(self) -> None:
+        """Keep the turn and the mirrors that the current side holds."""
+        self._layer_transforms[self._transform_side] = {
+            "rotation": int(self._rotation) % 360,
+            "flip": self._chk_flip.isChecked(),
+            "mirror_x": self._chk_mirror_x.isChecked(),
+        }
+
+    def _apply_transform_to_widgets(self, transform: Dict[str, Any]) -> None:
+        self._rotation = int(transform["rotation"]) % 360
+        for widget, key in ((self._chk_flip, "flip"),
+                            (self._chk_mirror_x, "mirror_x")):
+            widget.blockSignals(True)
+            widget.setChecked(bool(transform[key]))
+            widget.blockSignals(False)
+
+    def _load_transform_for_side(self, side: str) -> None:
+        transform = self._normalise_transform(
+            self._layer_transforms.get(side),
+            {"rotation": 0, "flip": False, "mirror_x": False},
+        )
+        self._layer_transforms[side] = transform
+        self._apply_transform_to_widgets(transform)
+
     def _set_rotation(self, angle: int, emit: bool = True) -> None:
         """Turn the picture by a right angle."""
         self._rotation = int(angle) % 360
+        self._store_current_transform()
         self._sync_transform_controls()
         self._redraw()
         if emit:
@@ -3215,6 +3310,7 @@ class GerberViewer(QWidget):
         self._chk_mirror_x.blockSignals(True)
         self._chk_mirror_x.setChecked(bool(checked))
         self._chk_mirror_x.blockSignals(False)
+        self._store_current_transform()
         self._redraw()
         self._emit_layer_settings()
 
@@ -3223,6 +3319,7 @@ class GerberViewer(QWidget):
         self._chk_flip.blockSignals(True)
         self._chk_flip.setChecked(bool(checked))
         self._chk_flip.blockSignals(False)
+        self._store_current_transform()
         self._redraw()
         self._emit_layer_settings()
 
@@ -3233,6 +3330,7 @@ class GerberViewer(QWidget):
             btn.blockSignals(True)
             btn.setChecked(bool(checked))
             btn.blockSignals(False)
+        self._store_current_transform()
         self._redraw()
         self._emit_layer_settings()
 
@@ -3243,6 +3341,7 @@ class GerberViewer(QWidget):
             btn.blockSignals(True)
             btn.setChecked(bool(checked))
             btn.blockSignals(False)
+        self._store_current_transform()
         self._redraw()
         self._emit_layer_settings()
 
@@ -3423,6 +3522,10 @@ class GerberViewer(QWidget):
         QMessageBox.critical(self, tr("Error"), tr("Cannot read Gerber:\n{message}", message=message))
 
     def _on_layer_changed(self) -> None:
+        self._store_current_transform()
+        self._transform_side = self._current_transform_side()
+        self._load_transform_for_side(self._transform_side)
+        self._sync_transform_controls()
         # The trace of the other side would show a net of layers that do
         # not belong to the side any more.
         self._clear_trace_result()
@@ -3441,32 +3544,36 @@ class GerberViewer(QWidget):
             or search_text in (record.mpn or "").lower()
         )
 
-    def _apply_layer(self) -> None:
+    def _apply_layer(
+        self, progress_cb: Optional[Callable[[int, int], None]] = None
+    ) -> None:
         records = self._current_layer_records()
         search_text = self._search_input.text().strip().lower()
+        header = self._table_components.horizontalHeader()
+        row_header = self._table_components.verticalHeader()
         self._table_components.setUpdatesEnabled(False)
+        row_header.setSectionResizeMode(QHeaderView.Interactive)
         try:
             self._table_components.setRowCount(0)
             self._component_index = []
             self._group_rows = []
             if self._group_by_mpn:
-                self._fill_grouped_table(records, search_text)
                 self._table_components.setColumnCount(5)
                 self._table_components.setHorizontalHeaderLabels([
                     tr("#"), tr("MPN"), tr("Designator"), tr("Qty"), tr("Status"),
                 ])
-                self._table_components.horizontalHeader().setSectionResizeMode(
-                    2, QHeaderView.Interactive
-                )
-                self._table_components.setColumnWidth(2, 200)
+                header.setSectionResizeMode(QHeaderView.Interactive)
+                self._fill_grouped_table(records, search_text)
+                if progress_cb is not None:
+                    progress_cb(1, 1)
             else:
                 self._table_components.setColumnCount(6)
                 self._table_components.setHorizontalHeaderLabels([
                     tr("#"), tr("Designator"), tr("X"), tr("Y"), tr("Rot"), tr("Status"),
                 ])
-                self._table_components.horizontalHeader().setSectionResizeMode(
-                    QHeaderView.ResizeToContents
-                )
+                header.setSectionResizeMode(QHeaderView.Interactive)
+                total = max(len(records), 1)
+                filled = 0
                 for i, record in enumerate(records):
                     if not self._record_matches_search(record, search_text):
                         continue
@@ -3491,7 +3598,20 @@ class GerberViewer(QWidget):
                     status_item.setIcon(self._status_icon(record.checked))
                     self._table_components.setItem(row, len(values), status_item)
                     self._component_index.append(i)
+                    filled += 1
+                    if progress_cb is not None and filled % 100 == 0:
+                        progress_cb(filled, total)
+                if progress_cb is not None:
+                    progress_cb(max(filled, 1), total)
         finally:
+            self._table_components.resizeColumnsToContents()
+            if self._group_by_mpn:
+                header.setSectionResizeMode(QHeaderView.ResizeToContents)
+                header.setSectionResizeMode(2, QHeaderView.Interactive)
+                self._table_components.setColumnWidth(2, 200)
+            else:
+                header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            row_header.setSectionResizeMode(QHeaderView.ResizeToContents)
             self._table_components.setUpdatesEnabled(True)
         self._restore_highlight()
 
@@ -5213,53 +5333,13 @@ class GerberViewer(QWidget):
             busy_text = tr("Rotating components...")
         if ret != QMessageBox.Yes:
             return
-        changed = []
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rad = math.radians(angle)
         c, s = math.cos(rad), math.sin(rad)
-        progress = QProgressDialog(
-            busy_text, "", 0, len(targets), self)
-        progress.setWindowTitle(tr("Please wait"))
-        progress.setCancelButton(None)
-        progress.setWindowModality(Qt.ApplicationModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        for count, record in enumerate(targets, start=1):
-            base_x = record.new_x if record.new_x is not None else record.old_x
-            base_y = record.new_y if record.new_y is not None else record.old_y
-            new_x = round(base_x * c - base_y * s, 4)
-            new_y = round(base_x * s + base_y * c, 4)
-            if new_x == 0.0:
-                new_x = 0.0
-            if new_y == 0.0:
-                new_y = 0.0
-            base_rot = (record.new_rotation
-                        if record.new_rotation is not None
-                        else record.old_rotation)
-            new_rot = (0.0 if angle == 0
-                       else round((base_rot + angle) % 360.0, 4))
-            # The base values are the values that are on the screen now,
-            # so the record only changes when the target differs.
-            if (abs(base_x - new_x) < 1e-9 and abs(base_y - new_y) < 1e-9
-                    and abs(base_rot - new_rot) < 1e-9):
-                progress.setValue(count)
-                QApplication.processEvents()
-                continue
-            record.new_x = new_x
-            record.new_y = new_y
-            record.new_rotation = new_rot
-            record.status = "Edited"
-            record.review_time = timestamp
-            changed.append(record)
-            progress.setValue(count)
-            QApplication.processEvents()
-        progress.close()
-        self._apply_layer()
-        self._redraw()
-        self._fit_scene()
-        self._rebuild_marker_overlay()
-        for record in changed:
-            self.rotation_edited.emit(self._record_index_in_records(record))
+        changed = self._apply_bulk_record_changes(
+            targets, busy_text,
+            lambda record, timestamp: self._rotate_record(
+                record, angle, c, s, timestamp),
+        )
         if changed:
             if angle == 0:
                 self.status_message.emit(
@@ -5272,6 +5352,36 @@ class GerberViewer(QWidget):
         else:
             self._lbl_status.setText(
                 tr("Components are already at the rotated position."))
+
+    @staticmethod
+    def _rotate_record(
+        record: ReviewRecord, angle: int, c: float, s: float,
+        timestamp: str,
+    ) -> bool:
+        base_x = record.new_x if record.new_x is not None else record.old_x
+        base_y = record.new_y if record.new_y is not None else record.old_y
+        new_x = round(base_x * c - base_y * s, 4)
+        new_y = round(base_x * s + base_y * c, 4)
+        if new_x == 0.0:
+            new_x = 0.0
+        if new_y == 0.0:
+            new_y = 0.0
+        base_rot = (record.new_rotation
+                    if record.new_rotation is not None
+                    else record.old_rotation)
+        new_rot = (0.0 if angle == 0
+                   else round((base_rot + angle) % 360.0, 4))
+        # The base values are the values that are on the screen now,
+        # so the record only changes when the target differs.
+        if (abs(base_x - new_x) < 1e-9 and abs(base_y - new_y) < 1e-9
+                and abs(base_rot - new_rot) < 1e-9):
+            return False
+        record.new_x = new_x
+        record.new_y = new_y
+        record.new_rotation = new_rot
+        record.status = "Edited"
+        record.review_time = timestamp
+        return True
 
     def _on_flip_records(self, axis: str) -> None:
         """Flip the components of the shown layer across an axis."""
@@ -5288,50 +5398,11 @@ class GerberViewer(QWidget):
         )
         if ret != QMessageBox.Yes:
             return
-        changed = []
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        progress = QProgressDialog(
-            tr("Flipping components..."), "", 0, len(targets), self)
-        progress.setWindowTitle(tr("Please wait"))
-        progress.setCancelButton(None)
-        progress.setWindowModality(Qt.ApplicationModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        for count, record in enumerate(targets, start=1):
-            base_x = record.new_x if record.new_x is not None else record.old_x
-            base_y = record.new_y if record.new_y is not None else record.old_y
-            new_x = round(-base_x, 4) if axis == "Y" else base_x
-            new_y = round(-base_y, 4) if axis == "X" else base_y
-            if new_x == 0.0:
-                new_x = 0.0
-            if new_y == 0.0:
-                new_y = 0.0
-            base_rot = (record.new_rotation
-                        if record.new_rotation is not None
-                        else record.old_rotation)
-            new_rot = round((-base_rot) % 360.0, 4)
-            # The base values are the values that are on the screen now,
-            # so the record only changes when the target differs.
-            if (abs(base_x - new_x) < 1e-9 and abs(base_y - new_y) < 1e-9
-                    and abs(base_rot - new_rot) < 1e-9):
-                progress.setValue(count)
-                QApplication.processEvents()
-                continue
-            record.new_x = new_x
-            record.new_y = new_y
-            record.new_rotation = new_rot
-            record.status = "Edited"
-            record.review_time = timestamp
-            changed.append(record)
-            progress.setValue(count)
-            QApplication.processEvents()
-        progress.close()
-        self._apply_layer()
-        self._redraw()
-        self._fit_scene()
-        self._rebuild_marker_overlay()
-        for record in changed:
-            self.rotation_edited.emit(self._record_index_in_records(record))
+        changed = self._apply_bulk_record_changes(
+            targets, tr("Flipping components..."),
+            lambda record, timestamp: self._flip_record(
+                record, axis, timestamp),
+        )
         if changed:
             self.status_message.emit(
                 tr("Flipped {n} {side}-side components across the {axis} axis",
@@ -5339,6 +5410,105 @@ class GerberViewer(QWidget):
         else:
             self._lbl_status.setText(
                 tr("Components are already at the flipped position."))
+
+    @staticmethod
+    def _flip_record(record: ReviewRecord, axis: str, timestamp: str) -> bool:
+        base_x = record.new_x if record.new_x is not None else record.old_x
+        base_y = record.new_y if record.new_y is not None else record.old_y
+        new_x = round(-base_x, 4) if axis == "Y" else base_x
+        new_y = round(-base_y, 4) if axis == "X" else base_y
+        if new_x == 0.0:
+            new_x = 0.0
+        if new_y == 0.0:
+            new_y = 0.0
+        base_rot = (record.new_rotation
+                    if record.new_rotation is not None
+                    else record.old_rotation)
+        new_rot = round((-base_rot) % 360.0, 4)
+        # The base values are the values that are on the screen now,
+        # so the record only changes when the target differs.
+        if (abs(base_x - new_x) < 1e-9 and abs(base_y - new_y) < 1e-9
+                and abs(base_rot - new_rot) < 1e-9):
+            return False
+        record.new_x = new_x
+        record.new_y = new_y
+        record.new_rotation = new_rot
+        record.status = "Edited"
+        record.review_time = timestamp
+        return True
+
+    @staticmethod
+    def _process_events() -> None:
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+    def _start_bulk_progress(self, text: str) -> QProgressDialog:
+        progress = QProgressDialog(text, "", 0, 100, self)
+        progress.setWindowTitle(tr("Please wait"))
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+        progress.raise_()
+        self._process_events()
+        return progress
+
+    def _bulk_record_indices(self, records: List[ReviewRecord]) -> List[int]:
+        index_by_id = {id(record): i for i, record in enumerate(self._records)}
+        return [index_by_id[id(record)] for record in records
+                if id(record) in index_by_id]
+
+    def _apply_bulk_record_changes(
+        self,
+        targets: List[ReviewRecord],
+        busy_text: str,
+        mutate: Callable[[ReviewRecord, str], bool],
+    ) -> List[ReviewRecord]:
+        """Apply one edit to many records with progress over the whole job."""
+        changed: List[ReviewRecord] = []
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        total = len(targets)
+        progress = self._start_bulk_progress(busy_text)
+        try:
+            for count, record in enumerate(targets, start=1):
+                if mutate(record, timestamp):
+                    changed.append(record)
+                if total and (count == total or count % 50 == 0):
+                    progress.setValue(int(count * 40 / total))
+                    self._process_events()
+            if not changed:
+                progress.setValue(100)
+                self._process_events()
+                return changed
+
+            progress.setLabelText(tr("Updating component table..."))
+            progress.setValue(40)
+            self._process_events()
+
+            def table_progress(done: int, rows: int) -> None:
+                progress.setValue(40 + int(25 * done / max(rows, 1)))
+                if done >= rows or done % 100 == 0:
+                    self._process_events()
+
+            self._apply_layer(progress_cb=table_progress)
+
+            progress.setLabelText(tr("Redrawing view..."))
+            progress.setValue(70)
+            self._process_events()
+            self._redraw()
+            self._fit_scene()
+
+            progress.setLabelText(tr("Saving changes..."))
+            progress.setValue(85)
+            self._process_events()
+            indices = self._bulk_record_indices(changed)
+            if indices:
+                self.records_edited.emit(indices)
+            progress.setValue(100)
+            self._process_events()
+        finally:
+            progress.close()
+        return changed
 
     def _on_group_checked_action(self, row: int) -> None:
         if not self._group_by_mpn or not (0 <= row < len(self._group_rows)):

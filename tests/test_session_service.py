@@ -176,12 +176,33 @@ def test_save_and_load_gerber_view(tmp_path):
         "pickplace": False,
         "crosshair": True,
         "invert_rot": True,
+        "layer_transforms": {
+            "top": {"rotation": 90, "flip": True, "mirror_x": False},
+            "bottom": {"rotation": 270, "flip": False, "mirror_x": True},
+        },
     }
     SessionService.save(str(path), [record], source_file="src.xlsx", gerber_view=gerber_view)
     loaded = SessionService.load(str(path))
     assert loaded.gerber_view == gerber_view
     assert loaded.gerber_view["rotation"] == 180
     assert loaded.gerber_view["offset_y"] == -0.5
+    assert loaded.gerber_view["layer_transforms"]["bottom"] == {
+        "rotation": 270, "flip": False, "mirror_x": True}
+
+
+def test_save_and_load_gerber_layers(tmp_path):
+    path = tmp_path / "session_layers.cam350review"
+    record = _make_record()
+    layers = [{"path": "board.gko", "name": "Board Outline"}]
+    SessionService.save(
+        str(path), [record],
+        source_file="src.xlsx",
+        gerberFolder=str(tmp_path),
+        gerberLayers=layers,
+    )
+    loaded = SessionService.load(str(path))
+    assert loaded.gerberFolder == str(tmp_path)
+    assert loaded.gerberLayers == layers
 
 
 def test_save_gerber_view_defaults_none(tmp_path):

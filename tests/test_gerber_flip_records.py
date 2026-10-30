@@ -62,6 +62,15 @@ class _FakeProgress:
     def setValue(self, _v):
         pass
 
+    def setLabelText(self, _t):
+        pass
+
+    def show(self):
+        pass
+
+    def raise_(self):
+        pass
+
     def close(self):
         _FakeProgress.closed += 1
 
@@ -75,8 +84,8 @@ def _make_records():
     ]
 
 
-def _viewer(app, monkeypatch=None):
-    v = _NoopGerberViewer(_make_records(), make_layers())
+def _viewer(app, monkeypatch=None, records=None):
+    v = _NoopGerberViewer(records or _make_records(), make_layers())
     v._layer_data = [RenderData(lines=[LineShape(x1=0.0, y1=0.0,
                                                 x2=100.0, y2=100.0)])]
     v._loaded = True
@@ -104,7 +113,9 @@ def test_flip_x_updates_coords_and_rotation(app, monkeypatch):
     v = _viewer(app, monkeypatch)
     _FakeMsgBox.answer = QMessageBox.Yes
     emitted = []
+    batched = []
     v.rotation_edited.connect(emitted.append)
+    v.records_edited.connect(batched.append)
     v._on_flip_records("X")
     rec_top, rec_bot = v._records
     assert rec_top.new_x == pytest.approx(10.0)
@@ -115,7 +126,8 @@ def test_flip_x_updates_coords_and_rotation(app, monkeypatch):
     assert rec_bot.new_x is None and rec_bot.new_y is None
     assert rec_bot.new_rotation is None and rec_bot.status == "Pending"
     assert rec_top.status == "Edited" and rec_top.review_time
-    assert emitted == [v._record_index_in_records(rec_top)]
+    assert batched == [[v._record_index_in_records(rec_top)]]
+    assert emitted == []
     assert "top-side" in _FakeMsgBox.last_text \
         or "flip" in _FakeMsgBox.last_text.lower()
 
@@ -164,13 +176,16 @@ def test_flip_declined_keeps_records(app, monkeypatch):
     v = _viewer(app, monkeypatch)
     _FakeMsgBox.answer = QMessageBox.No
     emitted = []
+    batched = []
     v.rotation_edited.connect(emitted.append)
+    v.records_edited.connect(batched.append)
     v._on_flip_records("X")
     for rec in v._records:
         assert rec.new_x is None and rec.new_y is None
         assert rec.new_rotation is None
         assert rec.status == "Pending"
     assert emitted == []
+    assert batched == []
 
 
 def test_flip_shows_progress_dialog(app, monkeypatch):
@@ -180,3 +195,38 @@ def test_flip_shows_progress_dialog(app, monkeypatch):
     v._on_flip_records("Y")
     assert _FakeProgress.closed == 1
     assert "top-side components across the Y axis" in _FakeMsgBox.last_text
+
+
+def test_flip_emits_one_batch_for_all_changed(app, monkeypatch):
+    records = [
+        ReviewRecord(designator=f"C{i}", layer="Top",
+                     old_x=float(i + 1), old_y=float(i + 2),
+                     old_rotation=0.0)
+        for i in range(5)
+    ]
+    records.append(ReviewRecord(designator="R1", layer="Bottom",
+                                old_x=30.0, old_y=-40.0,
+                                old_rotation=90.0))
+    v = _viewer(app, monkeypatch, records)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    batched = []
+    single = []
+    v.records_edited.connect(batched.append)
+    v.rotation_edited.connect(single.append)
+    v._on_flip_records("X")
+    assert len(batched) == 1
+    assert batched[0] == [0, 1, 2, 3, 4]
+    assert single == []
+
+
+def test_flip_progress_stays_open_until_batch_is_saved(app, monkeypatch):
+    v = _viewer(app, monkeypatch)
+    _FakeMsgBox.answer = QMessageBox.Yes
+    _FakeProgress.closed = 0
+    closed_when_saved = []
+    v.records_edited.connect(
+        lambda _indices: closed_when_saved.append(_FakeProgress.closed)
+    )
+    v._on_flip_records("X")
+    assert closed_when_saved == [0]
+    assert _FakeProgress.closed == 1

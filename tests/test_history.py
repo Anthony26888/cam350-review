@@ -86,3 +86,18 @@ def test_session_history_roundtrip(tmp_path):
     assert loaded.history[0]["designator"] == "R12"
     back = HistoryEntry.from_dict(loaded.history[0])
     assert back.new_x == 11.5
+
+
+def test_history_repo_add_many_single_batch(tmp_path, monkeypatch):
+    db = Database(str(tmp_path / "h.db"))
+    monkeypatch.setattr(Database, "_instance", db)
+    repo = HistoryRepo()
+    repo.add_many([
+        HistoryEntry(designator="C1", action="Edit", new_x=1.0,
+                     created_at="2026-10-03 10:00:00"),
+        HistoryEntry(designator="C2", action="Edit", new_x=2.0,
+                     created_at="2026-10-03 10:00:01"),
+    ])
+    assert [e.designator for e in repo.list_by("C1", 0)] == ["C1"]
+    assert [e.designator for e in repo.list_by("C2", 0)] == ["C2"]
+    repo.add_many([])

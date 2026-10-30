@@ -19,7 +19,7 @@ A Windows desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM
 
 - Built with **Python 3 + PySide6 (Qt)** and **openpyxl**
 - Targets **Windows** (uses `win32gui` / `pyautogui` to drive CAM350)
-- Current version: **2.2.3** (`utils/version.py`)
+- Current version: **2.2.8** (`utils/version.py`)
 - Session format: **v8** (`.cam350review`, backward-compatible load)
 
 ---
@@ -111,7 +111,7 @@ python tools/build_user_guide.py
 
 ### Export
 - **Export Review Report** — full review report as `.xlsx` (old/new/aligned values, status, remark, review time).
-- **Export PickPlace Fixed** — corrected PickPlace file, preserving original columns and skipping deleted records.
+- **Export PickPlace Fixed** — corrected PickPlace file, preserving original columns with MPN always present (inserted after Designator when missing) and skipping deleted records. MPN cells use Excel text formulas (`="..."`) so leading zeros are kept and Excel displays them left-aligned.
 - Both exports run in background threads.
 
 ### BOM compare (BOM tab)

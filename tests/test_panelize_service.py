@@ -197,12 +197,14 @@ def test_export_panelized_keeps_names_and_drops_block(tmp_path):
         rows = list(csv.reader(f))
     assert len(rows) == 8
     assert all(len(row) == 5 for row in rows)  # no block column
-    # block 0, C1: original coords
+    # block 0, C1: original coords, MPN preserved
     assert rows[0][0] == "C1"
+    assert rows[0][1] == '="M1"'
     assert rows[0][2] == "10"
     # block 1 (flipped, origin (200,100)) C1: (190, 80), rotation 180
     row_b1_c1 = rows[2]
     assert row_b1_c1[0] == "C1_2"
+    assert row_b1_c1[1] == '="M1"'
     assert row_b1_c1[2] == "190.0"
     assert row_b1_c1[3] == "80.0"
     assert row_b1_c1[4] == "180.0"

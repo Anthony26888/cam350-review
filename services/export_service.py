@@ -1,6 +1,6 @@
 import csv
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -85,6 +85,58 @@ class ExportService:
         return file_path
 
     @staticmethod
+    def _excel_text(value: str) -> str:
+        """Wrap a value as an Excel text formula so it stays left-aligned."""
+        text = "" if value is None else str(value)
+        if not text:
+            return ""
+        return '="' + text.replace('"', '""') + '"'
+
+    @staticmethod
+    def _pickplace_export_layout(
+        original_data: PickPlaceData,
+    ) -> Tuple[List[str], Dict[str, str]]:
+        """Return export headers plus the resolved field header names.
+
+        The block/instance column (Panel_Instance) is always dropped so the
+        exported file stays clean. Layer is dropped as before. If the source
+        has no MPN column, one is inserted right after Designator.
+        """
+        headers = [
+            h for h in original_data.headers
+            if h.strip().lower() not in ("layer", "panel_instance")
+        ]
+        mapping = original_data.column_mapping or {}
+        fields = ("designator", "mpn", "x", "y", "rotation")
+        resolved: Dict[str, str] = {}
+
+        for field in fields:
+            target = str(mapping.get(field) or "").strip().lower()
+            for header in headers:
+                if target and header.strip().lower() == target:
+                    resolved[field] = header
+                    break
+            if field in resolved:
+                continue
+            for header in headers:
+                if header.strip().lower() == field:
+                    resolved[field] = header
+                    break
+
+        if "mpn" not in resolved:
+            insert_at = 0
+            designator_header = resolved.get("designator")
+            if designator_header is not None:
+                for idx, header in enumerate(headers):
+                    if header == designator_header:
+                        insert_at = idx + 1
+                        break
+            headers.insert(insert_at, "MPN")
+            resolved["mpn"] = "MPN"
+
+        return headers, resolved
+
+    @staticmethod
     def export_pickplace_fixed(
         records: List[ReviewRecord],
         original_data: PickPlaceData,
@@ -97,14 +149,13 @@ class ExportService:
         for r in records:
             by_block.setdefault(getattr(r, "block", 0), []).append(r)
 
-        # The block/instance column (Panel_Instance) is always dropped so the
-        # exported file stays clean. Per-block rows are still written block by
-        # block below; blocks are told apart by renamed designators (C1_2, ...)
-        # when the panelize rename option is on.
-        headers = [
-            h for h in original_data.headers
-            if h.strip().lower() not in ("layer", "panel_instance")
-        ]
+        headers, field_headers = ExportService._pickplace_export_layout(
+            original_data)
+        keys = {
+            field: header.strip().lower()
+            for field, header in field_headers.items()
+        }
+        designator_header = field_headers.get("designator", "Designator")
 
         with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
@@ -119,7 +170,7 @@ class ExportService:
                     if r.designator
                 }
                 for raw_row in original_data.raw_data:
-                    des = str(raw_row.get("Designator", "")).strip()
+                    des = str(raw_row.get(designator_header, "")).strip()
                     record = block_records.get(des)
                     if record is None:
                         continue
@@ -127,16 +178,18 @@ class ExportService:
                     values = []
                     for header in headers:
                         value = raw_row.get(header, "")
-                        hdr_lower = header.lower()
-                        if hdr_lower == "designator":
+                        hdr_lower = header.strip().lower()
+                        if hdr_lower == keys.get("designator"):
                             value = record.designator
-                        elif hdr_lower == "x":
+                        elif hdr_lower == keys.get("mpn"):
+                            value = ExportService._excel_text(record.mpn or "")
+                        elif hdr_lower == keys.get("x"):
                             if block_idx or record.new_x is not None:
                                 value = record.new_x if record.new_x is not None else record.old_x
-                        elif hdr_lower == "y":
+                        elif hdr_lower == keys.get("y"):
                             if block_idx or record.new_y is not None:
                                 value = record.new_y if record.new_y is not None else record.old_y
-                        elif hdr_lower == "rotation":
+                        elif hdr_lower == keys.get("rotation"):
                             if block_idx or record.new_rotation is not None:
                                 value = record.new_rotation if record.new_rotation is not None else record.old_rotation
                         values.append(value)

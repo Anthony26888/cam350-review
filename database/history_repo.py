@@ -8,6 +8,24 @@ class HistoryRepo:
     def __init__(self) -> None:
         self._db = Database.instance()
 
+    @staticmethod
+    def _entry_params(entry: HistoryEntry) -> tuple:
+        return (
+            entry.designator,
+            entry.block,
+            entry.action,
+            entry.old_x,
+            entry.old_y,
+            entry.old_rotation,
+            entry.new_x,
+            entry.new_y,
+            entry.new_rotation,
+            entry.mpn_old,
+            entry.mpn_new,
+            entry.remark,
+            entry.created_at,
+        )
+
     def add(self, entry: HistoryEntry) -> int:
         cursor = self._db.execute(
             """
@@ -16,23 +34,24 @@ class HistoryRepo:
                  new_x, new_y, new_rotation, mpn_old, mpn_new, remark, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                entry.designator,
-                entry.block,
-                entry.action,
-                entry.old_x,
-                entry.old_y,
-                entry.old_rotation,
-                entry.new_x,
-                entry.new_y,
-                entry.new_rotation,
-                entry.mpn_old,
-                entry.mpn_new,
-                entry.remark,
-                entry.created_at,
-            ),
+            self._entry_params(entry),
         )
         return cursor.lastrowid or 0
+
+    def add_many(self, entries) -> None:
+        """Insert many history rows in one transaction/commit."""
+        entries = list(entries)
+        if not entries:
+            return
+        self._db.execute_many(
+            """
+            INSERT INTO component_history
+                (designator, block, action, old_x, old_y, old_rotation,
+                 new_x, new_y, new_rotation, mpn_old, mpn_new, remark, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [self._entry_params(entry) for entry in entries],
+        )
 
     def list_by(self, designator: str, block: int = 0, limit: int = 100) -> List[HistoryEntry]:
         rows = self._db.fetchall(

@@ -78,7 +78,7 @@ def _holder(records):
     h._redo_stack = []
     h._undo_action = None
     h._redo_action = None
-    for name in ["_apply_eco_diff", "_push_undo", "_log_history",
+    for name in ["_apply_eco_diff", "_push_undo", "_history_entry", "_log_history",
                  "_record_snapshot", "_update_undo_actions",
                  "_sync_after_mutation", "_select_and_display",
                  "_refresh_history_panel", "_update_progress",

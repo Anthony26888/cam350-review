@@ -62,6 +62,15 @@ class _FakeProgress:
     def setValue(self, _v):
         pass
 
+    def setLabelText(self, _t):
+        pass
+
+    def show(self):
+        pass
+
+    def raise_(self):
+        pass
+
     def close(self):
         _FakeProgress.closed += 1
 
@@ -100,7 +109,9 @@ def test_rotate_90_updates_coords_and_rotation(app, monkeypatch):
     v = _viewer(app, monkeypatch)
     _FakeMsgBox.answer = QMessageBox.Yes
     emitted = []
+    batched = []
     v.rotation_edited.connect(emitted.append)
+    v.records_edited.connect(batched.append)
     v._on_rotate_records(90)
     rec_top, rec_bot = v._records
     assert rec_top.new_x == pytest.approx(-20.0)
@@ -111,7 +122,8 @@ def test_rotate_90_updates_coords_and_rotation(app, monkeypatch):
     assert rec_bot.new_x is None and rec_bot.new_y is None
     assert rec_bot.new_rotation is None and rec_bot.status == "Pending"
     assert rec_top.status == "Edited" and rec_top.review_time
-    assert emitted == [v._record_index_in_records(rec_top)]
+    assert batched == [[v._record_index_in_records(rec_top)]]
+    assert emitted == []
 
 
 def test_rotate_90_on_bottom_layer_touches_bottom_only(app, monkeypatch):
@@ -158,7 +170,9 @@ def test_rotate_zero_resets_rotation(app, monkeypatch):
     assert rec_bot.status == "Pending"
 
     emitted = []
+    batched = []
     v.rotation_edited.connect(emitted.append)
+    v.records_edited.connect(batched.append)
     v._combo_layer.setCurrentIndex(1)
     v._on_rotate_records(0)
     # Reset on the bottom layer: only its rotation becomes 0, the
@@ -168,7 +182,8 @@ def test_rotate_zero_resets_rotation(app, monkeypatch):
     assert rec_bot.review_time
     assert rec_bot.new_x == pytest.approx(30.0)
     assert rec_bot.new_y == pytest.approx(-40.0)
-    assert emitted == [v._record_index_in_records(rec_bot)]
+    assert batched == [[v._record_index_in_records(rec_bot)]]
+    assert emitted == []
     assert "Reset the rotation" in _FakeMsgBox.last_text
 
 
@@ -199,10 +214,13 @@ def test_rotate_declined_keeps_records(app, monkeypatch):
     v = _viewer(app, monkeypatch)
     _FakeMsgBox.answer = QMessageBox.No
     emitted = []
+    batched = []
     v.rotation_edited.connect(emitted.append)
+    v.records_edited.connect(batched.append)
     v._on_rotate_records(90)
     for rec in v._records:
         assert rec.new_x is None and rec.new_y is None
         assert rec.new_rotation is None
         assert rec.status == "Pending"
     assert emitted == []
+    assert batched == []

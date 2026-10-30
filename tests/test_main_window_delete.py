@@ -55,6 +55,7 @@ class _Table:
         self.checked = set()
         self.cleared_count = 0
         self.row_updated = []
+        self.rows_updated = []
 
     def set_records(self, records):
         self.records_set = list(records)
@@ -71,6 +72,9 @@ class _Table:
 
     def update_record_row(self, index):
         self.row_updated.append(index)
+
+    def update_rows(self, indices):
+        self.rows_updated.append(list(indices))
 
     def update_all_rows(self):
         self.all_rows_updated = True
@@ -173,14 +177,16 @@ def _holder(records, popup=None, viewer=None, current_index=0):
                  "_close_jump_popup", "_close_gerber_viewer", "_close_prescreen_dialog",
                  "_clear_all",
                  "_restore_records", "_select_and_display", "_push_undo",
-                 "_log_history", "_refresh_history_panel",
+                 "_history_entry", "_log_history", "_refresh_history_panel",
                  "_collect_history_dicts", "_restore_history"]:
         try:
             setattr(h, name, getattr(MainWindow, name).__get__(h))
         except AttributeError:
             pass
+    h._history_batches = []
     h._history_repo = types.SimpleNamespace(
         add=lambda e: 0,
+        add_many=lambda entries: h._history_batches.append(list(entries)),
         list_by=lambda *a, **k: [],
         get_all=lambda *a, **k: [],
         clear_all=lambda: None,
@@ -310,8 +316,10 @@ def test_clear_all_swallows_closed_qt_objects():
 
     records = [_record("C1", 1)]
     h = _holder(records, popup=_DeadPopup(), viewer=_DeadViewer())
+    h._gerber_view_settings = {"rotation": 180, "flip": True}
     h._clear_all()
     assert h._gerber_viewer is None
+    assert h._gerber_view_settings == {}
     assert h._jump_popup is None
     assert h._current_index == -1
 
@@ -508,3 +516,22 @@ def test_run_with_busy_dialog_closes_on_error():
             "msg", boom, dialog_factory=factory,
         )
     assert created and created[0].closed is True
+
+
+def test_on_gerber_records_edited_persists_batch():
+    records = [_record("C1", 1), _record("C2", 2), _record("C3", 3)]
+    h = _holder(records, current_index=1)
+    progress_updates = []
+    h._update_progress = lambda: progress_updates.append(True)
+    for rec in records[1:]:
+        rec.new_x = 1.0
+        rec.new_rotation = 90.0
+        rec.status = "Edited"
+    handler = MainWindow._on_gerber_records_edited.__get__(h)
+    handler([1, 2, 2, 99, -1])
+    assert h._repo.bulk_updated == [records[1], records[2]]
+    assert len(h._history_batches) == 1
+    assert [e.designator for e in h._history_batches[0]] == ["C2", "C3"]
+    assert h._table_widget.rows_updated == [[1, 2]]
+    assert progress_updates == [True]
+    assert "2 components" in h._status_label.text
