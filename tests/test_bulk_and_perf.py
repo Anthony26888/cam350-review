@@ -110,3 +110,22 @@ def test_prescreen_stale_generation_ignored(app):
 
     w._on_prescreen_failed("late error", gen=1)
     assert "late error" not in w._prescreen_summary.text()
+
+
+def test_insert_many_assigns_ids_and_persists(tmp_path, monkeypatch):
+    from database.review_repo import ReviewRepo
+
+    db = _make_db(tmp_path)
+    monkeypatch.setattr(Database, "_instance", db)
+    repo = ReviewRepo()
+
+    recs = [
+        ReviewRecord(designator=f"C{i}", layer="Top", old_x=float(i))
+        for i in range(5)
+    ]
+    repo.insert_many(recs)
+
+    assert [r.id for r in recs] == [1, 2, 3, 4, 5]
+    loaded = repo.get_all()
+    assert [r.designator for r in loaded] == ["C0", "C1", "C2", "C3", "C4"]
+    assert repo.total_count() == 5

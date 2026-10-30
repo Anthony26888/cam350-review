@@ -122,8 +122,19 @@ class BomTableWidget(QWidget):
         self._show_placeholder()
 
     # -- data -----------------------------------------------------------
-    def set_bom_rows(self, rows: List[BomRow]) -> None:
+    def set_bom_rows(
+        self, rows: List[BomRow],
+        missing: Optional[Dict[int, List[str]]] = None,
+        bottom_keys: Optional[Set[str]] = None,
+        qty_warn: Optional[Set[int]] = None,
+    ) -> None:
         self._rows = list(rows)
+        if missing is not None:
+            self._missing = dict(missing)
+        if bottom_keys is not None:
+            self._bottom_keys = {k.upper() for k in bottom_keys}
+        if qty_warn is not None:
+            self._qty_warn = set(qty_warn)
         self._refresh()
 
     def set_compare(self, missing: Dict[int, List[str]],

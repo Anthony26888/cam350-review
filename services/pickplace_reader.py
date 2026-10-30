@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 
 import openpyxl
 
@@ -97,6 +97,7 @@ class PickPlaceReader:
         file_path: str,
         mapping: Optional[Dict[str, str]] = None,
         required: Optional[List[str]] = None,
+        progress: Optional[Callable[[int, int], None]] = None,
     ) -> PickPlaceData:
         mapping = mapping or {}
         if required is None:
@@ -115,61 +116,73 @@ class PickPlaceReader:
             if sheet is None:
                 raise ValueError("Excel file has no active sheet")
 
-            rows = list(sheet.iter_rows(values_only=True))
+            row_iter = sheet.iter_rows(values_only=True)
+            try:
+                header_row = next(row_iter)
+            except StopIteration:
+                raise ValueError("Excel file has no data rows")
+
+            headers = [str(h).strip() if h is not None else "" for h in header_row]
+            header_lookup = {h.lower(): i for i, h in enumerate(headers) if h}
+
+            col_map: Dict[str, int] = {}
+            missing: List[str] = []
+            for field in COLUMN_FIELDS:
+                target = mapping.get(field)
+                if not target:
+                    if field in required_set:
+                        missing.append(field)
+                    continue
+                key = str(target).strip().lower()
+                if key in header_lookup:
+                    col_map[field] = header_lookup[key]
+                elif field in required_set:
+                    missing.append(str(target))
+
+            if missing:
+                raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+
+            data = PickPlaceData(headers=headers, file_path=file_path)
+            data.column_mapping = dict(mapping)
+            total = max(int(getattr(sheet, "max_row", 0) or 0) - 1, 0)
+            row_count = 0
+
+            for row_idx, row in enumerate(row_iter, start=1):
+                row_count = row_idx
+                if progress is not None and (row_idx % 200 == 0 or row_idx == total):
+                    progress(row_idx, total)
+
+                if all(cell is None or str(cell).strip() == "" for cell in row):
+                    continue
+
+                try:
+                    component = PickPlaceComponent(
+                        designator=_safe_str(_cell(row, col_map.get("designator"))),
+                        mpn=_safe_str(_cell(row, col_map.get("mpn"))),
+                        layer=_safe_str(_cell(row, col_map.get("layer"))),
+                        x=_safe_float(_cell(row, col_map.get("x"))),
+                        y=_safe_float(_cell(row, col_map.get("y"))),
+                        rotation=_safe_float(_cell(row, col_map.get("rotation"))),
+                        row=row_idx,
+                    )
+                except (IndexError, TypeError):
+                    continue
+
+                raw_row: Dict[str, Any] = {}
+                for i, header in enumerate(headers):
+                    if i < len(row):
+                        raw_row[header] = row[i]
+                data.raw_data.append(raw_row)
+                data.components.append(component)
+
+            if row_count == 0:
+                raise ValueError("Excel file has no data rows")
+            if progress is not None and row_count != total:
+                final = max(total, row_count)
+                progress(final, final)
+            return data
         finally:
             workbook.close()
-
-        if len(rows) < 2:
-            raise ValueError("Excel file has no data rows")
-
-        headers = [str(h).strip() if h is not None else "" for h in rows[0]]
-        header_lookup = {h.lower(): i for i, h in enumerate(headers) if h}
-
-        col_map: Dict[str, int] = {}
-        missing: List[str] = []
-        for field in COLUMN_FIELDS:
-            target = mapping.get(field)
-            if not target:
-                if field in required_set:
-                    missing.append(field)
-                continue
-            key = str(target).strip().lower()
-            if key in header_lookup:
-                col_map[field] = header_lookup[key]
-            elif field in required_set:
-                missing.append(str(target))
-
-        if missing:
-            raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
-
-        data = PickPlaceData(headers=headers, file_path=file_path)
-        data.column_mapping = dict(mapping)
-
-        for row_idx, row in enumerate(rows[1:], start=1):
-            if all(cell is None or str(cell).strip() == "" for cell in row):
-                continue
-
-            try:
-                component = PickPlaceComponent(
-                    designator=_safe_str(_cell(row, col_map.get("designator"))),
-                    mpn=_safe_str(_cell(row, col_map.get("mpn"))),
-                    layer=_safe_str(_cell(row, col_map.get("layer"))),
-                    x=_safe_float(_cell(row, col_map.get("x"))),
-                    y=_safe_float(_cell(row, col_map.get("y"))),
-                    rotation=_safe_float(_cell(row, col_map.get("rotation"))),
-                    row=row_idx,
-                )
-            except (IndexError, TypeError):
-                continue
-
-            raw_row: Dict[str, Any] = {}
-            for i, header in enumerate(headers):
-                if i < len(row):
-                    raw_row[header] = row[i]
-            data.raw_data.append(raw_row)
-            data.components.append(component)
-
-        return data
 
 
 def _cell(row: tuple, col_idx: Optional[int]) -> Any:

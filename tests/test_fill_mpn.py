@@ -20,18 +20,27 @@ def _app():
 class _Repo:
     def __init__(self, records):
         self._records = {id(r): r for r in records}
+        self.updated_many = []
 
     def update(self, record):
         pass
+
+    def update_many(self, records):
+        self.updated_many.extend(records)
 
 
 class _HistoryRepo:
     def __init__(self):
         self.entries = []
+        self.add_many_calls = 0
 
     def add(self, entry):
         self.entries.append(entry)
         return len(self.entries)
+
+    def add_many(self, entries):
+        self.add_many_calls += 1
+        self.entries.extend(entries)
 
     def list_by(self, *args, **kwargs):
         return []
@@ -44,6 +53,9 @@ class _Table:
 
     def update_record_row(self, index):
         self.rows_updated.append(index)
+
+    def update_rows(self, indices):
+        self.rows_updated.extend(indices)
 
     def set_bom_overlay(self, extra, mismatch):
         self.overlay = (set(extra), dict(mismatch))
@@ -76,7 +88,7 @@ def _holder(records):
     for name in ["_auto_fill_mpn", "_refresh_bom_compare",
                  "_update_bom_tab_texts",
                  "_record_snapshot", "_push_undo", "_update_progress",
-                 "_update_undo_actions", "_log_history"]:
+                 "_update_undo_actions", "_history_entry", "_log_history"]:
         setattr(h, name, getattr(MainWindow, name).__get__(h))
     return h
 
@@ -118,6 +130,9 @@ def test_auto_fill_mpn_fills_only_empty():
     assert by_des["C3"].mpn == "M-C"
     # history logged per filled row
     assert len(h._history_repo.entries) == 2
+    assert h._history_repo.add_many_calls == 1
+    assert len(h._repo.updated_many) == 2
+    assert h._table_widget.rows_updated == [0, 2]
     assert all(e.action == "BOM" for e in h._history_repo.entries)
     assert {e.designator for e in h._history_repo.entries} == {"C1", "C3"}
 
@@ -171,3 +186,26 @@ def test_session_legacy_without_bom(tmp_path):
     loaded = SessionService.load(str(path))
     assert loaded.bom_rows == []
     assert loaded.bom_source_file == ""
+
+
+def test_auto_fill_mpn_reports_progress():
+    h = _holder(_records())
+    h._bom_rows = _bom_rows()
+    h._refresh_bom_compare()
+    calls = []
+    assert h._auto_fill_mpn(
+        progress=lambda done, total: calls.append((done, total))) == 2
+    assert calls[-1] == (2, 2)
+
+
+def test_apply_bom_rows_reports_progress():
+    h = _holder(_records())
+    h._sync_action_states = lambda: None
+    h._apply_bom_rows = MainWindow._apply_bom_rows.__get__(h)
+    calls = []
+    h._apply_bom_rows(
+        _bom_rows(), "bom.xlsx",
+        progress=lambda message, pct: calls.append(pct),
+    )
+    assert calls[-1] == 100
+    assert all(0 <= pct <= 100 for pct in calls)

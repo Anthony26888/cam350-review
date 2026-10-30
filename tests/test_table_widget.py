@@ -369,3 +369,11 @@ def test_update_rows_works_with_filters_applied(table):
     records[0].status = "OK"
     table.update_rows([1, 0])
     assert table._table.item(0, 10).text() == "OK"
+
+
+def test_set_records_reports_progress(table):
+    calls = []
+    table.set_records(
+        _records(), progress=lambda done, total: calls.append((done, total)))
+    assert calls[0] == (0, 3)
+    assert calls[-1] == (3, 3)

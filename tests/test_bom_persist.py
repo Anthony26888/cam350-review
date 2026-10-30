@@ -10,10 +10,16 @@ from ui.main_window import MainWindow
 class _Repo:
     def __init__(self):
         self._next_id = 0
+        self.insert_many_calls = 0
 
     def insert(self, record):
         self._next_id += 1
         return self._next_id
+
+    def insert_many(self, records):
+        self.insert_many_calls += 1
+        for record in records:
+            record.id = self.insert(record)
 
     def delete_all(self):
         pass
@@ -23,8 +29,14 @@ class _Repo:
 
 
 class _HistoryRepo:
+    def __init__(self):
+        self.add_many_calls = 0
+
     def add(self, entry):
         return 1
+
+    def add_many(self, entries):
+        self.add_many_calls += 1
 
     def clear_all(self):
         pass
@@ -37,8 +49,9 @@ class _Table:
     def __init__(self):
         self.overlay_calls = []
 
-    def set_records(self, records):
-        pass
+    def set_records(self, records, progress=None):
+        if progress is not None:
+            progress(len(records), len(records))
 
     def select_record(self, index):
         pass
@@ -99,6 +112,8 @@ def _holder():
     h._pre_panel_snapshot = None
     h._jump_popup = None
     h._gerber_viewer = None
+    h._gerber_view_settings = {}
+    h._session_file = "old.cam350review"
     h._config_mgr = _ConfigMgr()
     h._repo = _Repo()
     h._history_repo = _HistoryRepo()
@@ -137,8 +152,9 @@ def _holder():
                  "_update_bom_tab_texts", "_select_and_display",
                  "_refresh_history_panel", "_update_progress",
                  "_update_gerber_view_button", "_sync_action_states",
-                 "_clear_gerber_config", "_pickplace_tuples",
-                 "_auto_fill_mpn", "_push_undo", "_log_history",
+                 "_clear_gerber_config", "_close_gerber_viewer",
+                 "_pickplace_tuples",
+                 "_auto_fill_mpn", "_push_undo", "_history_entry", "_log_history",
                  "_update_undo_actions", "_record_snapshot"]:
         setattr(h, name, getattr(MainWindow, name).__get__(h))
     return h
@@ -175,10 +191,46 @@ def test_bom_survives_pickplace_load():
     assert h._table_widget.overlay_calls
     extra, _mismatch = h._table_widget.overlay_calls[-1]
     assert extra == {"D9"}
-    # 3 records loaded normally
+    # 3 records loaded normally, in one batch
     assert [r.designator for r in h._records] == ["C1", "C2", "D9"]
+    assert h._repo.insert_many_calls == 1
+    # Import history + BOM auto-fill history are each one batch.
+    assert h._history_repo.add_many_calls >= 1
     # empty MPN auto-filled from BOM on PickPlace load (no prompt)
     by_des = {r.designator: r for r in h._records}
     assert by_des["C1"].mpn == "M-A"
     assert by_des["C2"].mpn == "M-A"  # already present, untouched
     assert by_des["D9"].mpn == "M-D"
+
+
+def test_pickplace_load_starts_fresh_gerber_view():
+    class _Viewer:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    h = _holder()
+    viewer = _Viewer()
+    h._gerber_viewer = viewer
+    h._gerber_view_settings = {"rotation": 180, "flip": True}
+
+    h._apply_loaded_pickplace(_pickplace_data(), "pp.xlsx")
+
+    assert viewer.closed is True
+    assert h._gerber_viewer is None
+    assert h._gerber_view_settings == {}
+    assert h._session_file is None
+
+
+def test_pickplace_load_reports_progress():
+    h = _holder()
+    calls = []
+    h._apply_loaded_pickplace(
+        _pickplace_data(), "pp.xlsx",
+        progress=lambda message, pct: calls.append((message, pct)),
+    )
+    assert calls
+    assert calls[-1][1] == 100
+    assert all(0 <= pct <= 100 for _message, pct in calls)

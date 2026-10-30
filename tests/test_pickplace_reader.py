@@ -173,3 +173,22 @@ def test_read_headers(tmp_path):
 def test_read_headers_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         PickPlaceReader.read_headers(str(tmp_path / "nope.xlsx"))
+
+
+def test_read_with_mapping_reports_progress(tmp_path):
+    path = tmp_path / "progress.xlsx"
+    _make_xlsx(
+        path,
+        ["Designator", "MPN", "Layer", "X", "Y", "Rotation"],
+        [["C1", "M1", "Top", 1, 2, 0],
+         ["C2", "M2", "Top", 3, 4, 0],
+         ["C3", "M3", "Top", 5, 6, 0]],
+    )
+    calls = []
+    data = PickPlaceReader.read_with_mapping(
+        str(path), STANDARD_MAPPING,
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert data.count == 3
+    assert calls[-1] == (3, 3)
+    assert all(done <= total for done, total in calls)

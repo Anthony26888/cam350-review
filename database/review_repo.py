@@ -40,6 +40,44 @@ class ReviewRepo:
         )
         return cursor.lastrowid or 0
 
+    def insert_many(self, records) -> None:
+        """Insert many records in one transaction and assign their IDs."""
+        records = list(records)
+        if not records:
+            return
+        with self._db.transaction() as conn:
+            for record in records:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO review (designator, mpn, layer, old_x, old_y, old_rotation,
+                                        new_x, new_y, new_rotation, status, remark, review_time, datasheet, checked, row_index,
+                                        is_ic_rotation, block, block_rotation, base_designator)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.designator,
+                        record.mpn,
+                        record.layer,
+                        record.old_x,
+                        record.old_y,
+                        record.old_rotation,
+                        record.new_x,
+                        record.new_y,
+                        record.new_rotation,
+                        record.status,
+                        record.remark,
+                        record.review_time,
+                        record.datasheet,
+                        1 if record.checked else 0,
+                        record.row_index,
+                        1 if record.is_ic_rotation else 0,
+                        record.block,
+                        record.block_rotation,
+                        record.base_designator,
+                    ),
+                )
+                record.id = cursor.lastrowid or 0
+
     def update(self, record: ReviewRecord) -> None:
         self._db.execute(
             """

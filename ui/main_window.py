@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
 
@@ -143,6 +144,46 @@ class ExportWorker(QThread):
             self.finished_err.emit(str(e))
 
 
+class ImportCancelled(Exception):
+    pass
+
+
+class ImportWorker(QThread):
+    progress = Signal(str, int, int)
+    finished_ok = Signal(object)
+    finished_err = Signal(str)
+    cancelled = Signal()
+
+    def __init__(
+        self, func: Callable[[Callable[[int, int], None]], Any], label: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._func = func
+        self._label = label
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def _report(self, done: int, total: int) -> None:
+        if self._cancel.is_set():
+            raise ImportCancelled()
+        self.progress.emit(self._label, done, total)
+
+    def run(self) -> None:
+        try:
+            result = self._func(self._report)
+            if self._cancel.is_set():
+                self.cancelled.emit()
+                return
+            self.finished_ok.emit(result)
+        except ImportCancelled:
+            self.cancelled.emit()
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -178,6 +219,8 @@ class MainWindow(QMainWindow):
         self._redo_action: Optional[QAction] = None
         self._datasheet_worker: Optional[DatasheetWorker] = None
         self._export_worker: Optional[ExportWorker] = None
+        self._import_worker: Optional[ImportWorker] = None
+        self._import_dialog: Optional[QProgressDialog] = None
         self._panel_config: Optional[PanelConfig] = None
         self._pre_panel_snapshot: Optional[List[Dict[str, Any]]] = None
         self._clear_panelize_action: Optional[QAction] = None
@@ -591,6 +634,7 @@ class MainWindow(QMainWindow):
         self._prescreen_ctx_packed = None
         self._close_prescreen_dialog()
         self._close_gerber_viewer()
+        self._gerber_view_settings = {}
         self._close_jump_popup()
         self._current_index = -1
         self._session_file = None
@@ -1053,14 +1097,17 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        try:
-            headers = self._run_with_busy_dialog(
-                tr("Reading file headers..."),
-                lambda: self._reader.read_headers(file_path))
-        except (ValueError, FileNotFoundError) as e:
-            QMessageBox.critical(self, tr("Error"), str(e))
-            return
+        self._start_import_worker(
+            tr("Reading file headers..."),
+            lambda _report: self._reader.read_headers(file_path),
+            lambda headers: self._continue_pickplace_import(
+                file_path, headers, force),
+            determinate=False,
+        )
 
+    def _continue_pickplace_import(
+        self, file_path: str, headers: List[str], force: bool
+    ) -> None:
         mapping = None
         required = None
         is_standard = all(
@@ -1073,40 +1120,54 @@ class MainWindow(QMainWindow):
             mapping = dialog.column_mapping
             required = dialog.required_fields
 
-        try:
+        def _read(report):
             if mapping:
-                data = self._run_with_busy_dialog(
-                    tr("Opening PickPlace..."),
-                    lambda: self._reader.read_with_mapping(
-                        file_path, mapping, required=required))
-            else:
-                data = self._run_with_busy_dialog(
-                    tr("Opening PickPlace..."),
-                    lambda: self._reader.read(file_path))
-        except (ValueError, FileNotFoundError) as e:
-            QMessageBox.critical(self, tr("Error"), str(e))
-            return
+                return self._reader.read_with_mapping(
+                    file_path, mapping, required=required, progress=report)
+            return self._reader.read_with_mapping(
+                file_path, STANDARD_MAPPING, progress=report)
 
-        self._run_with_busy_dialog(
-            tr("Loading components..."),
-            lambda: self._apply_loaded_pickplace(data, file_path))
+        self._start_import_worker(
+            tr("Opening PickPlace..."),
+            _read,
+            lambda data: self._run_with_progress_dialog(
+                tr("Loading components..."),
+                lambda progress: self._apply_loaded_pickplace(
+                    data, file_path, progress=progress),
+            ),
+            determinate=True,
+            cancelable=True,
+        )
 
-    def _apply_loaded_pickplace(self, data: PickPlaceData, file_path: str) -> None:
+    def _apply_loaded_pickplace(
+        self, data: PickPlaceData, file_path: str,
+        progress: Optional[Callable[[str, int], None]] = None,
+    ) -> None:
+        def report(message: str, pct: int) -> None:
+            if progress is not None:
+                progress(message, pct)
+
         self._pickplace_data = data
         self._config_mgr.update(lastFile=file_path)
         self._clear_gerber_config()
+        self._close_gerber_viewer()
+        self._gerber_view_settings = {}
+        self._session_file = None
         self._panel_config = None
         self._pre_panel_snapshot = None
 
+        report(tr("Preparing components..."), 2)
         self._repo.delete_all()
         try:
             self._history_repo.clear_all()
         except Exception:
             pass
-        self._records = []
+
+        total = len(data.components)
         import_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for comp in data.components:
-            record = ReviewRecord(
+        records: List[ReviewRecord] = []
+        for i, comp in enumerate(data.components, start=1):
+            records.append(ReviewRecord(
                 designator=comp.designator,
                 mpn=comp.mpn,
                 layer=comp.layer,
@@ -1115,23 +1176,50 @@ class MainWindow(QMainWindow):
                 old_rotation=comp.rotation,
                 status="Pending",
                 row_index=comp.row,
-            )
-            record.id = self._repo.insert(record)
-            self._records.append(record)
-            try:
-                from models.history import HistoryEntry
-                self._history_repo.add(HistoryEntry(
+            ))
+            if i % 500 == 0 or i == total:
+                pct = 2 + int((i / total) * 33) if total else 35
+                report(tr("Preparing components..."), pct)
+        self._records = records
+
+        report(tr("Saving components..."), 38)
+        insert_many = getattr(self._repo, "insert_many", None)
+        if insert_many is not None:
+            insert_many(records)
+        else:
+            for record in records:
+                record.id = self._repo.insert(record)
+
+        report(tr("Saving history..."), 43)
+        try:
+            from models.history import HistoryEntry
+            entries = [
+                HistoryEntry(
                     designator=record.designator, block=0, action="Import",
                     old_x=None, old_y=None, old_rotation=None,
                     new_x=record.old_x, new_y=record.old_y,
                     new_rotation=record.old_rotation,
                     remark="", created_at=import_ts,
-                ))
-            except Exception:
-                pass
+                )
+                for record in records
+            ]
+            add_many = getattr(self._history_repo, "add_many", None)
+            if add_many is not None:
+                add_many(entries)
+            else:
+                for entry in entries:
+                    self._history_repo.add(entry)
+        except Exception:
+            pass
 
         self._dirty = True
-        self._table_widget.set_records(self._records)
+        report(tr("Loading table..."), 50)
+
+        def table_progress(done: int, total_rows: int) -> None:
+            pct = 50 + int((done / total_rows) * 30) if total_rows else 80
+            report(tr("Loading table..."), min(pct, 80))
+
+        self._table_widget.set_records(self._records, progress=table_progress)
         self._review_panel.set_record_list(self._records)
         self._btn_export_report.setEnabled(True)
         self._btn_export_fixed.setEnabled(True)
@@ -1157,8 +1245,16 @@ class MainWindow(QMainWindow):
         # BOM is only cleared on New Session, session load without BOM,
         # or opening another BOM file.
         try:
+            report(tr("Comparing BOM..."), 84)
             self._refresh_bom_compare()
-            filled = self._auto_fill_mpn(silent=True)
+            report(tr("Auto-filling MPN..."), 88)
+            filled = self._auto_fill_mpn(
+                silent=True,
+                progress=lambda done, total_rows: report(
+                    tr("Auto-filling MPN..."),
+                    88 + int((done / total_rows) * 10) if total_rows else 98,
+                ),
+            )
             msg = tr("Loaded {count} components from {name}",
                      count=len(data.components),
                      name=os.path.basename(file_path))
@@ -1168,6 +1264,7 @@ class MainWindow(QMainWindow):
             self._status_label.setText(msg)
         except AttributeError:
             pass
+        report(tr("Done"), 100)
 
     # -- BOM ------------------------------------------------------------
     def _open_bom(self) -> None:
@@ -1176,41 +1273,64 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        try:
-            headers = self._run_with_busy_dialog(
-                tr("Reading file headers..."),
-                lambda: BomReader.read_headers(file_path))
-        except (ValueError, FileNotFoundError) as e:
-            QMessageBox.critical(self, tr("Error"), str(e))
-            return
+        self._start_import_worker(
+            tr("Reading file headers..."),
+            lambda _report: BomReader.read_headers(file_path),
+            lambda headers: self._continue_bom_import(file_path, headers),
+            determinate=False,
+        )
+
+    def _continue_bom_import(self, file_path: str, headers: List[str]) -> None:
         dialog = BomMappingDialog(file_path, headers, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            rows = self._run_with_busy_dialog(
-                tr("Opening BOM..."),
-                lambda: BomReader.read_with_mapping(
-                    file_path, dialog.column_mapping))
-        except (ValueError, FileNotFoundError) as e:
-            QMessageBox.critical(self, tr("Error"), str(e))
-            return
-        self._run_with_busy_dialog(
-            tr("Loading BOM..."),
-            lambda: self._apply_bom_rows(rows, file_path))
+        mapping = dialog.column_mapping
 
-    def _apply_bom_rows(self, rows: List[BomRow], source_file: str) -> None:
+        self._start_import_worker(
+            tr("Opening BOM..."),
+            lambda report: BomReader.read_with_mapping(
+                file_path, mapping, progress=report),
+            lambda rows: self._run_with_progress_dialog(
+                tr("Loading BOM..."),
+                lambda progress: self._apply_bom_rows(
+                    rows, file_path, progress=progress),
+            ),
+            determinate=True,
+            cancelable=True,
+        )
+
+    def _apply_bom_rows(
+        self, rows: List[BomRow], source_file: str,
+        progress: Optional[Callable[[str, int], None]] = None,
+    ) -> None:
+        def report(message: str, pct: int) -> None:
+            if progress is not None:
+                progress(message, pct)
+
+        report(tr("Loading BOM..."), 5)
         self._bom_rows = list(rows)
         self._bom_source_file = source_file or ""
         self._dirty = True
+
+        report(tr("Comparing BOM..."), 30)
         self._refresh_bom_compare()
         self._sync_action_states()
-        filled = self._auto_fill_mpn(silent=True)
+
+        report(tr("Auto-filling MPN..."), 55)
+        filled = self._auto_fill_mpn(
+            silent=True,
+            progress=lambda done, total_rows: report(
+                tr("Auto-filling MPN..."),
+                55 + int((done / total_rows) * 40) if total_rows else 95,
+            ),
+        )
         msg = tr(
             "Loaded {count} BOM rows from {name}",
             count=len(rows), name=os.path.basename(source_file))
         if filled:
             msg = f"{msg} — {tr('Auto-filled MPN for {n} records', n=filled)}"
         self._status_label.setText(msg)
+        report(tr("Done"), 100)
 
     def _clear_bom(self) -> None:
         self._bom_rows = []
@@ -1260,14 +1380,13 @@ class MainWindow(QMainWindow):
                 pass
         if bom_table is not None and hasattr(bom_table, "set_bom_rows"):
             try:
-                bom_table.set_bom_rows(bom_rows)
                 bottom = {
                     (r.designator or "").strip().upper() for r in records
                     if is_bottom_layer(r.layer)
                 }
                 missing = {row.stt: miss for row, miss in diff.missing}
                 qty_warn = {row.stt for row, _n in diff.qty_notes}
-                bom_table.set_compare(missing, bottom, qty_warn)
+                bom_table.set_bom_rows(bom_rows, missing, bottom, qty_warn)
             except (AttributeError, RuntimeError):
                 pass
         self._update_bom_tab_texts(len(diff.extra))
@@ -1289,8 +1408,11 @@ class MainWindow(QMainWindow):
         except (AttributeError, RuntimeError):
             pass
 
-    def _auto_fill_mpn(self, fillable: Optional[List[tuple]] = None,
-                       silent: bool = False) -> int:
+    def _auto_fill_mpn(
+        self, fillable: Optional[List[tuple]] = None,
+        silent: bool = False,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> int:
         """Fill empty PickPlace MPN values from the BOM (no prompt)."""
         diff = getattr(self, "_bom_diff", None)
         if fillable is None:
@@ -1309,9 +1431,13 @@ class MainWindow(QMainWindow):
                     break
         if not targets:
             return 0
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._push_undo()
-        for idx in targets:
+        total = len(targets)
+        updated = []
+        entries = []
+        for i, idx in enumerate(targets, start=1):
             record = self._records[idx]
             mpn = ""
             for cand in (record.base_designator, record.designator):
@@ -1321,13 +1447,39 @@ class MainWindow(QMainWindow):
                     break
             record.mpn = mpn
             record.review_time = record.review_time or timestamp
-            self._repo.update(record)
-            self._log_history(record, "BOM", mpn_old="", mpn_new=mpn,
-                              created_at=timestamp)
-            try:
-                self._table_widget.update_record_row(idx)
-            except (AttributeError, RuntimeError):
-                pass
+            updated.append(record)
+            entries.append(self._history_entry(
+                record, "BOM", mpn_old="", mpn_new=mpn, created_at=timestamp))
+            if progress is not None and (i % 500 == 0 or i == total):
+                progress(i, total)
+
+        update_many = getattr(self._repo, "update_many", None)
+        if update_many is not None:
+            update_many(updated)
+        else:
+            for record in updated:
+                self._repo.update(record)
+
+        try:
+            add_many = getattr(self._history_repo, "add_many", None)
+            if add_many is not None:
+                add_many(entries)
+            else:
+                for entry in entries:
+                    self._history_repo.add(entry)
+        except Exception:
+            pass
+
+        try:
+            update_rows = getattr(self._table_widget, "update_rows", None)
+            if update_rows is not None:
+                update_rows(targets)
+            else:
+                for idx in targets:
+                    self._table_widget.update_record_row(idx)
+        except (AttributeError, RuntimeError):
+            pass
+
         self._dirty = True
         self._refresh_bom_compare()
         self._update_progress()
@@ -2369,6 +2521,154 @@ class MainWindow(QMainWindow):
         self._export_worker = worker
         worker.start()
 
+    def _start_import_worker(
+        self, label: str, fn: Callable[[Callable[[int, int], None]], Any],
+        on_success: Callable[[Any], None], *, determinate: bool = True,
+        cancelable: bool = False,
+    ) -> None:
+        if self._import_worker is not None:
+            QMessageBox.information(
+                self, tr("Please wait"),
+                tr("Another import is already running."))
+            return
+
+        dlg = QProgressDialog(
+            label, tr("Cancel") if cancelable else "",
+            0, 100 if determinate else 0, self)
+        dlg.setWindowTitle(tr("Please wait"))
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        if not cancelable:
+            dlg.setCancelButton(None)
+        dlg.setValue(0)
+
+        worker = ImportWorker(fn, label, self)
+        self._import_worker = worker
+        self._import_dialog = dlg
+        worker.progress.connect(self._on_import_progress)
+        worker.finished_ok.connect(
+            lambda result: self._finish_import_ok(result, on_success))
+        worker.finished_err.connect(self._finish_import_err)
+        worker.cancelled.connect(self._finish_import_cancelled)
+        if cancelable:
+            dlg.canceled.connect(self._cancel_import_worker)
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        worker.start()
+
+    def _on_import_progress(self, label: str, done: int, total: int) -> None:
+        dlg = self._import_dialog
+        if dlg is None:
+            return
+        if total > 0:
+            pct = max(0, min(100, int(done * 100 / total)))
+            dlg.setRange(0, 100)
+            if label:
+                dlg.setLabelText(tr(
+                    "{label} {done}/{total} ({pct}%)",
+                    label=label, done=done, total=total, pct=pct))
+            else:
+                dlg.setLabelText(tr(
+                    "{done}/{total} ({pct}%)",
+                    done=done, total=total, pct=pct))
+            dlg.setValue(pct)
+        else:
+            dlg.setRange(0, 0)
+            dlg.setLabelText(label)
+
+    def _finish_import_ok(self, result: Any, on_success: Callable[[Any], None]) -> None:
+        worker = self._import_worker
+        self._import_worker = None
+        self._close_import_dialog()
+        try:
+            on_success(result)
+        except Exception as e:
+            QMessageBox.critical(self, tr("Error"), str(e))
+        finally:
+            if worker is not None:
+                worker.deleteLater()
+
+    def _finish_import_err(self, message: str) -> None:
+        worker = self._import_worker
+        self._import_worker = None
+        self._close_import_dialog()
+        QMessageBox.critical(self, tr("Error"), message)
+        if worker is not None:
+            worker.deleteLater()
+
+    def _finish_import_cancelled(self) -> None:
+        worker = self._import_worker
+        self._import_worker = None
+        self._close_import_dialog()
+        self._status_label.setText(tr("Import cancelled."))
+        if worker is not None:
+            worker.deleteLater()
+
+    def _cancel_import_worker(self) -> None:
+        worker = self._import_worker
+        if worker is None:
+            return
+        worker.cancel()
+        dlg = self._import_dialog
+        if dlg is not None:
+            dlg.setCancelButton(None)
+            dlg.setLabelText(tr("Cancelling..."))
+
+    def _close_import_dialog(self) -> None:
+        dlg = self._import_dialog
+        self._import_dialog = None
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        if dlg is None:
+            return
+        try:
+            dlg.reset()
+            dlg.close()
+            dlg.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _run_with_progress_dialog(
+        self, text: str, fn: Callable[[Callable[[str, int], None]], Any]
+    ) -> Any:
+        dlg = QProgressDialog(text, "", 0, 100, self)
+        dlg.setWindowTitle(tr("Please wait"))
+        dlg.setCancelButton(None)
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+
+        def report(message: str, pct: int) -> None:
+            pct = max(0, min(100, int(pct)))
+            if message:
+                dlg.setLabelText(tr("{message} ({pct}%)", message=message, pct=pct))
+            else:
+                dlg.setLabelText(tr("{pct}%", pct=pct))
+            dlg.setValue(pct)
+            QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            return fn(report)
+        finally:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+            try:
+                dlg.reset()
+                dlg.close()
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
+
     def _run_with_busy_dialog(self, text: str, fn: Callable[[], Any],
                               dialog_factory: Optional[Callable] = None) -> Any:
         """Run `fn` behind a modal busy indicator so the app never looks hung.
@@ -2551,6 +2851,7 @@ class MainWindow(QMainWindow):
         viewer.settings_saved.connect(self._on_gerber_view_settings_saved)
         viewer.checked_changed.connect(self._on_gerber_component_checked)
         viewer.rotation_edited.connect(self._on_gerber_rotation_edited)
+        viewer.records_edited.connect(self._on_gerber_records_edited)
         viewer.status_message.connect(self._status_label.setText)
         frame = self.frameGeometry()
         view_frame = viewer.frameGeometry()
@@ -2581,6 +2882,35 @@ class MainWindow(QMainWindow):
             self._status_label.setText(tr("{des}: Edited", des=rec.designator))
             if record_index == self._current_index:
                 self._refresh_history_panel(rec)
+
+    def _on_gerber_records_edited(self, record_indices) -> None:
+        """Persist a bulk flip/rotate in one transaction and one UI pass."""
+        indices = []
+        seen = set()
+        for value in record_indices:
+            index = int(value)
+            if 0 <= index < len(self._records) and index not in seen:
+                seen.add(index)
+                indices.append(index)
+        if not indices:
+            return
+        records = [self._records[index] for index in indices]
+        self._repo.update_many(records)
+        try:
+            entries = [
+                self._history_entry(rec, "Edit", old_x=None, old_y=None,
+                                    old_rot=None)
+                for rec in records
+            ]
+            self._history_repo.add_many(entries)
+        except Exception:
+            pass
+        self._table_widget.update_rows(indices)
+        self._update_progress()
+        self._status_label.setText(
+            tr("{n} components: Edited", n=len(records)))
+        if self._current_index in seen:
+            self._refresh_history_panel(self._records[self._current_index])
 
     def _current_gerber_view_settings(self) -> Dict[str, Any]:
         viewer = getattr(self, "_gerber_viewer", None)
@@ -2650,23 +2980,33 @@ class MainWindow(QMainWindow):
     def _record_snapshot(self) -> List[Dict[str, Any]]:
         return SessionService.records_to_list(self._records)
 
+    def _history_entry(self, record: ReviewRecord, action: str,
+                       old_x=None, old_y=None, old_rot=None,
+                       remark: str = "", created_at: str = "",
+                       mpn_old: str = "", mpn_new: str = ""):
+        from models.history import HistoryEntry
+        ts = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return HistoryEntry(
+            designator=record.designator,
+            block=int(getattr(record, "block", 0) or 0),
+            action=action,
+            old_x=old_x, old_y=old_y, old_rotation=old_rot,
+            new_x=record.new_x, new_y=record.new_y,
+            new_rotation=record.new_rotation,
+            mpn_old=mpn_old, mpn_new=mpn_new,
+            remark=remark if remark else (record.remark or ""),
+            created_at=ts,
+        )
+
     def _log_history(self, record: ReviewRecord, action: str,
                      old_x=None, old_y=None, old_rot=None,
                      remark: str = "", created_at: str = "",
                      mpn_old: str = "", mpn_new: str = "") -> None:
         try:
-            from models.history import HistoryEntry
-            ts = created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            entry = HistoryEntry(
-                designator=record.designator,
-                block=int(getattr(record, "block", 0) or 0),
-                action=action,
-                old_x=old_x, old_y=old_y, old_rotation=old_rot,
-                new_x=record.new_x, new_y=record.new_y,
-                new_rotation=record.new_rotation,
+            entry = self._history_entry(
+                record, action, old_x=old_x, old_y=old_y, old_rot=old_rot,
+                remark=remark, created_at=created_at,
                 mpn_old=mpn_old, mpn_new=mpn_new,
-                remark=remark if remark else (record.remark or ""),
-                created_at=ts,
             )
             self._history_repo.add(entry)
         except Exception:

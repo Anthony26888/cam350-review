@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 
 import openpyxl
 
@@ -147,6 +147,7 @@ class BomReader:
     def read_with_mapping(
         file_path: str,
         mapping: Optional[Dict[str, str]] = None,
+        progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[BomRow]:
         mapping = mapping or {}
         try:
@@ -159,48 +160,64 @@ class BomReader:
             sheet = workbook.active
             if sheet is None:
                 raise ValueError("Excel file has no active sheet")
-            rows = list(sheet.iter_rows(values_only=True))
+
+            row_iter = sheet.iter_rows(values_only=True)
+            try:
+                header_row = next(row_iter)
+            except StopIteration:
+                raise ValueError("Excel file has no data rows")
+
+            headers = [str(h).strip() if h is not None else "" for h in header_row]
+            header_lookup = {h.lower(): i for i, h in enumerate(headers) if h}
+
+            col_map: Dict[str, int] = {}
+            for field in BOM_FIELDS:
+                target = mapping.get(field)
+                if not target:
+                    continue
+                key = str(target).strip().lower()
+                if key in header_lookup:
+                    col_map[field] = header_lookup[key]
+            if "designator" not in col_map:
+                raise ValueError("BOM mapping needs a Designator column")
+
+            result: List[BomRow] = []
+            stt = 0
+            total = max(int(getattr(sheet, "max_row", 0) or 0) - 1, 0)
+            row_count = 0
+            for row_idx, row in enumerate(row_iter, start=1):
+                row_count = row_idx
+                if progress is not None and (row_idx % 200 == 0 or row_idx == total):
+                    progress(row_idx, total)
+
+                if all(c is None or str(c).strip() == "" for c in row):
+                    continue
+                raw_des = _cell_str(row, col_map.get("designator"))
+                if not raw_des:
+                    continue
+                stt += 1
+                display, expanded = clean_designators(raw_des)
+                qty, qty_raw = _safe_int(_cell_raw(row, col_map.get("quantity")))
+                result.append(BomRow(
+                    stt=stt,
+                    designator_raw=raw_des,
+                    designator_display=display,
+                    designators=expanded,
+                    mpn=_cell_str(row, col_map.get("mpn")),
+                    description=_cell_str(row, col_map.get("description")),
+                    quantity=qty,
+                    quantity_raw=qty_raw,
+                    note=_cell_str(row, col_map.get("note")),
+                ))
+
+            if row_count == 0:
+                raise ValueError("Excel file has no data rows")
+            if progress is not None and row_count != total:
+                final = max(total, row_count)
+                progress(final, final)
+            return result
         finally:
             workbook.close()
-        if len(rows) < 2:
-            raise ValueError("Excel file has no data rows")
-        headers = [str(h).strip() if h is not None else "" for h in rows[0]]
-        header_lookup = {h.lower(): i for i, h in enumerate(headers) if h}
-
-        col_map: Dict[str, int] = {}
-        for field in BOM_FIELDS:
-            target = mapping.get(field)
-            if not target:
-                continue
-            key = str(target).strip().lower()
-            if key in header_lookup:
-                col_map[field] = header_lookup[key]
-        if "designator" not in col_map:
-            raise ValueError("BOM mapping needs a Designator column")
-
-        result: List[BomRow] = []
-        stt = 0
-        for row in rows[1:]:
-            if all(c is None or str(c).strip() == "" for c in row):
-                continue
-            raw_des = _cell_str(row, col_map.get("designator"))
-            if not raw_des:
-                continue
-            stt += 1
-            display, expanded = clean_designators(raw_des)
-            qty, qty_raw = _safe_int(_cell_raw(row, col_map.get("quantity")))
-            result.append(BomRow(
-                stt=stt,
-                designator_raw=raw_des,
-                designator_display=display,
-                designators=expanded,
-                mpn=_cell_str(row, col_map.get("mpn")),
-                description=_cell_str(row, col_map.get("description")),
-                quantity=qty,
-                quantity_raw=qty_raw,
-                note=_cell_str(row, col_map.get("note")),
-            ))
-        return result
 
 
 def _cell_raw(row: tuple, col_idx: Optional[int]) -> Any:

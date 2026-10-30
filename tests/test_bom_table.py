@@ -174,3 +174,14 @@ def test_tab_change_refits_bom_table():
     assert calls == ["refit"]
     MainWindow._on_table_tab_changed.__get__(h)(0)
     assert calls == ["refit"]  # other tabs untouched
+
+
+def test_bom_table_combined_setter_refreshes_once():
+    panel = _panel()
+    calls = []
+    panel._refresh = lambda: calls.append(True)
+    panel.set_bom_rows(_rows(), {2: ["R9"]}, {"R9"}, {2})
+    assert calls == [True]
+    assert panel._missing == {2: ["R9"]}
+    assert panel._bottom_keys == {"R9"}
+    assert panel._qty_warn == {2}

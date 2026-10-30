@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLineEdit, QComboBox,
@@ -188,12 +188,15 @@ class TableWidget(QWidget):
     def refresh_icons(self) -> None:
         self._btn_clear.setIcon(lucide_qicon("funnel-x", size=14))
 
-    def set_records(self, records: List[ReviewRecord]) -> None:
+    def set_records(
+        self, records: List[ReviewRecord],
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> None:
         self._records = records
         self._checked_set.clear()
         self._reload_layer_filter()
         self._reload_block_filter()
-        self._apply_filters()
+        self._apply_filters(progress)
 
     def _reload_layer_filter(self) -> None:
         prev = self._layer_filter.currentData()
@@ -227,7 +230,9 @@ class TableWidget(QWidget):
             if idx >= 0:
                 self._block_filter.setCurrentIndex(idx)
 
-    def _apply_filters(self) -> None:
+    def _apply_filters(
+        self, progress: Optional[Callable[[int, int], None]] = None
+    ) -> None:
         search_text = self._search_input.text().strip().lower()
         layer_filter = self._layer_filter.currentData()
         status_filter = self._status_filter.currentData() or "All"
@@ -272,7 +277,7 @@ class TableWidget(QWidget):
                 continue
             self._filtered.append(i)
 
-        self._refresh_table()
+        self._refresh_table(progress)
         self.filter_changed.emit(len(self._filtered), len(self._records))
 
     @staticmethod
@@ -312,16 +317,23 @@ class TableWidget(QWidget):
         self._table.setUpdatesEnabled(state["updates"])
         state["header"].setSectionResizeMode(state["mode"])
 
-    def _refresh_table(self) -> None:
+    def _refresh_table(
+        self, progress: Optional[Callable[[int, int], None]] = None
+    ) -> None:
         text_colors = self._status_text_colors()
         bg_colors = self._status_bg_colors()
+        total = len(self._filtered)
+        if progress is not None:
+            progress(0, total)
         state = self._bulk_fill_begin()
         try:
-            self._table.setRowCount(len(self._filtered))
+            self._table.setRowCount(total)
             for row, idx in enumerate(self._filtered):
                 self._set_row_values(row, idx,
                                      text_colors=text_colors,
                                      bg_colors=bg_colors)
+                if progress is not None and ((row + 1) % 500 == 0 or row + 1 == total):
+                    progress(row + 1, total)
         finally:
             self._bulk_fill_end(state)
 

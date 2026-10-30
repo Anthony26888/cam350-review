@@ -135,3 +135,22 @@ def test_is_bottom_layer():
     assert not is_bottom_layer("Top")
     assert not is_bottom_layer("")
     assert not is_bottom_layer(None)
+
+
+def test_bom_reader_reports_progress(tmp_path):
+    path = tmp_path / "progress_bom.xlsx"
+    _write_bom(path, [
+        ["C1", "M1", "Cap", 1, ""],
+        ["C2", "M2", "Cap", 1, ""],
+        ["C3", "M3", "Cap", 1, ""],
+    ])
+    mapping = {"designator": "Ref", "mpn": "MPN", "description": "Desc",
+               "quantity": "Qty", "note": "Note"}
+    calls = []
+    rows = BomReader.read_with_mapping(
+        str(path), mapping,
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert len(rows) == 3
+    assert calls[-1] == (3, 3)
+    assert all(done <= total for done, total in calls)
