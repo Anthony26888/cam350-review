@@ -1,10 +1,13 @@
 from typing import List, Optional
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QSpinBox,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QGridLayout, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton,
+    QRadioButton, QScrollArea, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from models.review import ReviewRecord
@@ -16,16 +19,21 @@ from ui.i18n import tr
 
 _ROTATED_BG = "#E11D48"
 _ROTATED_FG = "#FFFFFF"
-_MAX_BLOCKS = 40
+_MAX_BLOCKS = 500
 
 
 class PanelizeDialog(QDialog):
     """Collect explicit per-block origins and 180° flags, return a PanelConfig.
 
-    Block 1 (index 0) is the base board; its origin is locked at (0, 0).
-    Other blocks get absolute origins typed by hand, so no grid pitch or
-    board size is needed. The dialog never mutates records; the caller
-    applies the config through services.panelize_service.panelize_records().
+    Supports two workflows:
+      1. Grid Matrix: user specifies Nx, Ny, dx, dy, and rotation pattern to auto-generate
+         coordinates for up to 500 boards in seconds.
+      2. Manual / Custom: user sets board count manually, pastes from Excel/clipboard,
+         detects from GKO outline, or types origins row by row.
+
+    Layout is structured into two columns:
+      - Left column: Configuration & Input (mode toggle, grid settings, manual count, quick tools)
+      - Right column: Visual Orientation map (scrollable), Coordinates Table, and Output Preview.
     """
 
     def __init__(
@@ -47,17 +55,27 @@ class PanelizeDialog(QDialog):
         self._block_buttons: List[QPushButton] = []
 
         self.setWindowTitle(tr("Panelize - Multiply Board Coordinates"))
-        self.setMinimumWidth(640)
+        self.setMinimumSize(960, 680)
+        self.resize(1000, 720)
+
         self._build_ui()
         self._sync_widgets_from_config()
         self._refresh_block_buttons()
-        self._refresh_preview()
+        self._update_summary()
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._build_boards_group())
-        layout.addWidget(self._build_blocks_group())
-        layout.addWidget(self._build_preview_group())
+        root_layout = QVBoxLayout(self)
+
+        columns_layout = QHBoxLayout()
+        root_layout.addLayout(columns_layout, 1)
+
+        left_widget = self._build_left_column()
+        left_widget.setMinimumWidth(320)
+        left_widget.setMaximumWidth(400)
+        columns_layout.addWidget(left_widget, 0)
+
+        right_widget = self._build_right_column()
+        columns_layout.addWidget(right_widget, 1)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
@@ -66,29 +84,165 @@ class PanelizeDialog(QDialog):
         buttons.button(QDialogButtonBox.Cancel).setText(tr("Cancel"))
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        root_layout.addWidget(buttons)
 
-    def _build_boards_group(self) -> QGroupBox:
-        group = QGroupBox(tr("Boards"))
-        layout = QVBoxLayout(group)
+    # ------------------------------------------------------------------ #
+    # Left Column: Configuration & Input
+    # ------------------------------------------------------------------ #
+    def _build_left_column(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
 
+        # Mode Selector
+        mode_group = QGroupBox(tr("Mode"))
+        mode_layout = QVBoxLayout(mode_group)
+        self._rb_grid = QRadioButton(tr("Grid Matrix (Auto)"))
+        self._rb_manual = QRadioButton(tr("Manual / Custom"))
+        self._rb_grid.setChecked(True)
+
+        self._mode_btn_group = QButtonGroup(self)
+        self._mode_btn_group.addButton(self._rb_grid, 0)
+        self._mode_btn_group.addButton(self._rb_manual, 1)
+        self._mode_btn_group.idToggled.connect(self._on_mode_toggled)
+
+        mode_layout.addWidget(self._rb_grid)
+        mode_layout.addWidget(self._rb_manual)
+        layout.addWidget(mode_group)
+
+        # Grid Settings
+        self._grid_group = QGroupBox(tr("Grid Settings"))
+        grid_vbox = QVBoxLayout(self._grid_group)
+
+        nx_ny_layout = QGridLayout()
+        nx_ny_layout.addWidget(QLabel(tr("Columns (Nx):")), 0, 0)
+        self._spin_nx = QSpinBox()
+        self._spin_nx.setRange(1, 100)
+        self._spin_nx.setValue(max(getattr(self._config, "nx", 2), 1))
+        self._spin_nx.valueChanged.connect(self._update_grid_total_label)
+        nx_ny_layout.addWidget(self._spin_nx, 0, 1)
+
+        nx_ny_layout.addWidget(QLabel(tr("Rows (Ny):")), 1, 0)
+        self._spin_ny = QSpinBox()
+        self._spin_ny.setRange(1, 100)
+        self._spin_ny.setValue(max(getattr(self._config, "ny", 2), 1))
+        self._spin_ny.valueChanged.connect(self._update_grid_total_label)
+        nx_ny_layout.addWidget(self._spin_ny, 1, 1)
+
+        nx_ny_layout.addWidget(QLabel(tr("Pitch X (dx):")), 2, 0)
+        self._spin_dx = QDoubleSpinBox()
+        self._spin_dx.setRange(-9999.0, 9999.0)
+        self._spin_dx.setDecimals(4)
+        self._spin_dx.setSuffix(" mm")
+        self._spin_dx.setValue(getattr(self._config, "dx", 0.0))
+        nx_ny_layout.addWidget(self._spin_dx, 2, 1)
+
+        nx_ny_layout.addWidget(QLabel(tr("Pitch Y (dy):")), 3, 0)
+        self._spin_dy = QDoubleSpinBox()
+        self._spin_dy.setRange(-9999.0, 9999.0)
+        self._spin_dy.setDecimals(4)
+        self._spin_dy.setSuffix(" mm")
+        self._spin_dy.setValue(getattr(self._config, "dy", 0.0))
+        nx_ny_layout.addWidget(self._spin_dy, 3, 1)
+
+        grid_vbox.addLayout(nx_ny_layout)
+
+        rot_layout = QHBoxLayout()
+        rot_layout.addWidget(QLabel(tr("Rotation Pattern:")))
+        self._combo_pattern = QComboBox()
+        self._combo_pattern.addItems([
+            tr("All 0°"),
+            tr("Even rows 180°"),
+            tr("Even columns 180°"),
+            tr("Checkerboard 180°"),
+        ])
+        rot_layout.addWidget(self._combo_pattern)
+        grid_vbox.addLayout(rot_layout)
+
+        self._lbl_grid_total = QLabel()
+        self._update_grid_total_label()
+        grid_vbox.addWidget(self._lbl_grid_total)
+
+        btn_generate = QPushButton(tr("Generate Grid"))
+        btn_generate.setStyleSheet("font-weight: bold; padding: 6px;")
+        btn_generate.clicked.connect(self._generate_from_grid)
+        grid_vbox.addWidget(btn_generate)
+
+        layout.addWidget(self._grid_group)
+
+        # Manual Settings
+        self._manual_group = QGroupBox(tr("Boards"))
+        manual_vbox = QVBoxLayout(self._manual_group)
         count_row = QHBoxLayout()
         count_row.addWidget(QLabel(tr("Number of boards:")))
         self._spin_count = QSpinBox()
         self._spin_count.setRange(1, _MAX_BLOCKS)
         self._spin_count.valueChanged.connect(self._on_count_changed)
         count_row.addWidget(self._spin_count)
-        count_row.addWidget(QLabel(tr("Block 1 is the base board at (0, 0).")))
-        count_row.addStretch(1)
-        layout.addLayout(count_row)
+        manual_vbox.addLayout(count_row)
+        lbl_hint = QLabel(tr("Block 1 is the base board at (0, 0)."))
+        lbl_hint.setStyleSheet("color: gray;")
+        manual_vbox.addWidget(lbl_hint)
+        layout.addWidget(self._manual_group)
+        self._manual_group.setVisible(False)
 
-        detect_row = QHBoxLayout()
-        detect_btn = QPushButton(tr("Detect from GKO"))
-        detect_btn.clicked.connect(self._detect_from_gko)
-        detect_row.addWidget(detect_btn)
-        detect_row.addWidget(QLabel(tr("Fill block origins from the GKO outline.")))
-        detect_row.addStretch(1)
-        layout.addLayout(detect_row)
+        # Quick Tools
+        tools_group = QGroupBox(tr("Quick Tools"))
+        tools_layout = QVBoxLayout(tools_group)
+
+        btn_paste = QPushButton(tr("Paste from Clipboard"))
+        btn_paste.setToolTip(tr("Paste coordinates (X, Y) copied from Excel or text."))
+        btn_paste.clicked.connect(self._paste_from_clipboard)
+        tools_layout.addWidget(btn_paste)
+
+        btn_detect = QPushButton(tr("Detect from GKO"))
+        btn_detect.setToolTip(tr("Fill block origins from the GKO outline."))
+        btn_detect.clicked.connect(self._detect_from_gko)
+        tools_layout.addWidget(btn_detect)
+
+        layout.addWidget(tools_group)
+
+        # Rename Option
+        self._chk_rename = QCheckBox(
+            tr("Rename designators (C1 → C1_2, C1_3, ...)")
+        )
+        self._chk_rename.setChecked(True)
+        self._chk_rename.stateChanged.connect(self._on_rename_toggled)
+        layout.addWidget(self._chk_rename)
+
+        layout.addStretch(1)
+        return container
+
+    # ------------------------------------------------------------------ #
+    # Right Column: Orientation, Table, Preview
+    # ------------------------------------------------------------------ #
+    def _build_right_column(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # 1. Orientation Map
+        orient_group = QGroupBox(tr("Board Orientation"))
+        orient_layout = QVBoxLayout(orient_group)
+        orient_hint = QLabel(tr("Click a board to flip it 180°."))
+        orient_layout.addWidget(orient_hint)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumHeight(280)
+
+        self._blocks_holder = QWidget()
+        self._blocks_layout = QGridLayout(self._blocks_holder)
+        self._blocks_layout.setContentsMargins(6, 6, 6, 6)
+        self._blocks_layout.setSpacing(6)
+        scroll_area.setWidget(self._blocks_holder)
+        orient_layout.addWidget(scroll_area)
+
+        layout.addWidget(orient_group, 3)
+
+        # 2. Coordinates Table
+        table_group = QGroupBox(tr("Boards Table"))
+        table_layout = QVBoxLayout(table_group)
 
         self._origins_table = QTableWidget(0, 3)
         self._origins_table.setHorizontalHeaderLabels([
@@ -96,56 +250,126 @@ class PanelizeDialog(QDialog):
         ])
         self._origins_table.verticalHeader().setVisible(False)
         self._origins_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._origins_table.setMaximumHeight(180)
+        self._origins_table.setMinimumHeight(200)
         self._origins_table.setEditTriggers(QTableWidget.AllEditTriggers)
         self._origins_table.cellChanged.connect(self._on_origin_edited)
+        table_layout.addWidget(self._origins_table)
+
         hint = QLabel(
             tr("Normal block: enter its bottom-left corner. "
                "Flipped (180°) block: enter its top-right corner.")
         )
+        hint.setStyleSheet("color: gray; font-size: 11px;")
         hint.setWordWrap(True)
-        layout.addWidget(self._origins_table)
-        layout.addWidget(hint)
+        table_layout.addWidget(hint)
 
-        self._chk_rename = QCheckBox(
-            tr("Rename designators (C1 \u2192 C1_2, C1_3, ...)")
-        )
-        self._chk_rename.setChecked(True)
-        self._chk_rename.stateChanged.connect(self._on_rename_toggled)
-        layout.addWidget(self._chk_rename)
-        return group
-
-    def _build_blocks_group(self) -> QGroupBox:
-        group = QGroupBox(tr("Board Orientation"))
-        layout = QVBoxLayout(group)
-        hint = QLabel(tr("Click a board to flip it 180°."))
-        layout.addWidget(hint)
-
-        self._blocks_holder = QWidget()
-        self._blocks_layout = QGridLayout(self._blocks_holder)
-        self._blocks_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._blocks_holder)
-        return group
-
-    def _build_preview_group(self) -> QGroupBox:
-        group = QGroupBox(tr("Preview"))
-        layout = QVBoxLayout(group)
         self._label_result = QLabel()
-        layout.addWidget(self._label_result)
+        self._label_result.setStyleSheet("font-weight: bold; color: #0284C7; margin-top: 4px;")
+        table_layout.addWidget(self._label_result)
 
-        self._preview_table = QTableWidget(0, 5)
-        self._preview_table.setHorizontalHeaderLabels([
-            tr("Designator"), tr("Block"), tr("X"), tr("Y"), tr("Rotation"),
-        ])
-        self._preview_table.verticalHeader().setVisible(False)
-        self._preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self._preview_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._preview_table.setMaximumHeight(180)
-        layout.addWidget(self._preview_table)
-        return group
+        layout.addWidget(table_group, 2)
+        return container
 
     # ------------------------------------------------------------------ #
-    # state sync
+    # Mode & Grid generation
+    # ------------------------------------------------------------------ #
+    def _on_mode_toggled(self, btn_id: int, checked: bool) -> None:
+        if not checked:
+            return
+        is_grid = (btn_id == 0)
+        self._grid_group.setVisible(is_grid)
+        self._manual_group.setVisible(not is_grid)
+
+    def _update_grid_total_label(self) -> None:
+        nx = self._spin_nx.value()
+        ny = self._spin_ny.value()
+        total = nx * ny
+        self._lbl_grid_total.setText(tr("Total: {n} boards", n=total))
+
+    def _generate_from_grid(self) -> None:
+        nx = self._spin_nx.value()
+        ny = self._spin_ny.value()
+        dx = self._spin_dx.value()
+        dy = self._spin_dy.value()
+        pattern_idx = self._combo_pattern.currentIndex()
+
+        blocks: List[PanelBlock] = []
+        for ky in range(ny):
+            for kx in range(nx):
+                k = ky * nx + kx
+                rot = 0
+                if k != 0:
+                    if pattern_idx == 1:  # Even rows 180°
+                        rot = 180 if (ky % 2 == 1) else 0
+                    elif pattern_idx == 2:  # Even columns 180°
+                        rot = 180 if (kx % 2 == 1) else 0
+                    elif pattern_idx == 3:  # Checkerboard
+                        rot = 180 if ((kx + ky) % 2 == 1) else 0
+                blocks.append(PanelBlock(
+                    index=k,
+                    origin_x=round(kx * dx, 6),
+                    origin_y=round(ky * dy, 6),
+                    rotation=rot,
+                ))
+
+        self._config.nx = nx
+        self._config.ny = ny
+        self._config.dx = dx
+        self._config.dy = dy
+        self._config.blocks = blocks
+
+        self._sync_widgets_from_config()
+        self._refresh_block_buttons()
+        self._update_summary()
+
+    def _paste_from_clipboard(self) -> None:
+        text = QApplication.clipboard().text()
+        if not text or not text.strip():
+            QMessageBox.information(
+                self, tr("Paste from Clipboard"),
+                tr("No valid coordinates found in clipboard. Format expected: X, Y or X [tab] Y")
+            )
+            return
+
+        lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+        parsed_coords = []
+        for line in lines:
+            parts = re.split(r"[\t,;\s]+", line)
+            if len(parts) >= 2:
+                try:
+                    px = float(parts[0])
+                    py = float(parts[1])
+                    parsed_coords.append((px, py))
+                except ValueError:
+                    continue
+
+        if not parsed_coords:
+            QMessageBox.warning(
+                self, tr("Paste from Clipboard"),
+                tr("No valid coordinates found in clipboard. Format expected: X, Y or X [tab] Y")
+            )
+            return
+
+        if len(parsed_coords) > _MAX_BLOCKS:
+            parsed_coords = parsed_coords[:_MAX_BLOCKS]
+
+        kept_rot = {b.index: b.rotation for b in self._config.blocks}
+        blocks = []
+        for idx, (px, py) in enumerate(parsed_coords):
+            blocks.append(PanelBlock(
+                index=idx,
+                origin_x=0.0 if idx == 0 else px,
+                origin_y=0.0 if idx == 0 else py,
+                rotation=kept_rot.get(idx, 0),
+            ))
+
+        self._config.blocks = blocks
+        self._sync_widgets_from_config()
+        self._refresh_block_buttons()
+        self._update_summary()
+
+    # ------------------------------------------------------------------ #
+    # State synchronization
     # ------------------------------------------------------------------ #
     def _sync_widgets_from_config(self) -> None:
         self._syncing = True
@@ -180,7 +404,7 @@ class PanelizeDialog(QDialog):
             return
         try:
             info = detect_panel(self._gko_path)
-        except Exception as e:  # noqa: BLE001 - show any read/parse error
+        except Exception as e:
             QMessageBox.critical(self, tr("Panelize"), f"Error: {e}")
             return
         if info.kind == "single" or not info.instances:
@@ -202,12 +426,10 @@ class PanelizeDialog(QDialog):
                 designator=inst.sub_name or "",
             ))
         blocks.sort(key=lambda b: b.index)
-        # Keep the base board at (0, 0) so every cloned coordinate stays
-        # non-negative and the block-1 cell in the table matches this.
         self._config.blocks = blocks
         self._sync_widgets_from_config()
         self._refresh_block_buttons()
-        self._refresh_preview()
+        self._update_summary()
 
     def _on_count_changed(self, count: int) -> None:
         if self._syncing:
@@ -228,13 +450,13 @@ class PanelizeDialog(QDialog):
         finally:
             self._syncing = False
         self._refresh_block_buttons()
-        self._refresh_preview()
+        self._update_summary()
 
     def _on_rename_toggled(self, _state=None) -> None:
         if self._syncing:
             return
         self._config.rename_designators = self._chk_rename.isChecked()
-        self._refresh_preview()
+        self._update_summary()
 
     def _on_origin_edited(self, row: int, col: int) -> None:
         if self._syncing or col == 0:
@@ -262,10 +484,10 @@ class PanelizeDialog(QDialog):
         else:
             block.origin_y = value
         self._refresh_block_buttons()
-        self._refresh_preview()
+        self._update_summary()
 
     # ------------------------------------------------------------------ #
-    # block buttons
+    # Orientation Buttons
     # ------------------------------------------------------------------ #
     def _clear_blocks_layout(self) -> None:
         while self._blocks_layout.count():
@@ -277,12 +499,16 @@ class PanelizeDialog(QDialog):
     def _refresh_block_buttons(self) -> None:
         self._clear_blocks_layout()
         self._block_buttons = []
-        per_row = 6
+
+        cfg = self._config
+        per_row = cfg.nx if (cfg.nx > 1 and cfg.nx * cfg.ny == len(cfg.blocks)) else 8
+        per_row = max(min(per_row, 12), 4)
+
         for pos, b in enumerate(sorted(self._config.blocks, key=lambda x: x.index)):
             btn = QPushButton()
-            btn.setMinimumSize(72, 44)
+            btn.setMinimumSize(64, 44)
             btn.setToolTip(
-                tr("Block {b}: origin=({x:.4f}, {y:.4f}), rotation={rot}\u00b0",
+                tr("Block {b}: origin=({x:.4f}, {y:.4f}), rotation={rot}°",
                    b=b.index, x=b.origin_x, y=b.origin_y, rot=b.rotation)
             )
             btn.clicked.connect(lambda _=False, idx=b.index: self._on_block_clicked(idx))
@@ -295,74 +521,34 @@ class PanelizeDialog(QDialog):
         if block.designator:
             text += f"\n{block.designator}"
         if block.rotation:
-            text += "\n\u21bb180\u00b0"
+            text += "\n↻180°"
             btn.setStyleSheet(
-                f"background-color:{_ROTATED_BG}; color:{_ROTATED_FG};"
+                f"background-color:{_ROTATED_BG}; color:{_ROTATED_FG}; font-size:11px; font-weight:bold; border-radius:4px; padding:3px;"
             )
         else:
-            text += "\n0\u00b0"
-            btn.setStyleSheet("")
+            text += "\n0°"
+            btn.setStyleSheet("font-size:11px; border-radius:4px; padding:3px;")
         btn.setText(text)
 
     def _on_block_clicked(self, block_index: int) -> None:
         if block_index == 0:
-            return  # base board stays at 0°
+            return
         block = self._config.block_by_index(block_index)
         if block is None:
             return
         block.rotation = 0 if block.rotation else 180
         self._refresh_block_buttons()
-        self._refresh_preview()
+        self._update_summary()
 
     # ------------------------------------------------------------------ #
-    # preview
+    # Summary & Accept
     # ------------------------------------------------------------------ #
-    def _get_eff(self, rec: ReviewRecord):
-        x = rec.new_x if rec.new_x is not None else rec.old_x
-        y = rec.new_y if rec.new_y is not None else rec.old_y
-        r = rec.new_rotation if rec.new_rotation is not None else rec.old_rotation
-        return x, y, r
-
-    def _display_designator(self, rec: ReviewRecord, block: PanelBlock) -> str:
-        if self._config.rename_designators and block.index != 0:
-            base = rec.base_designator or rec.designator
-            return f"{base}_{block.index + 1}"
-        return rec.designator
-
-    def _preview_rows(self) -> List[tuple]:
-        cfg = self._config
-        sample = self._records[:3]
-        rows: List[tuple] = []
-        for b in cfg.blocks:
-            for rec in sample:
-                x, y, r = self._get_eff(rec)
-                px, py = transform_point(x, y, cfg, b)
-                pr = (r + b.rotation) % 360
-                rows.append((self._display_designator(rec, b), b.index, px, py, pr))
-        return rows
-
-    def _refresh_preview(self) -> None:
-        try:
-            rows = self._preview_rows()
-        except PanelError as e:
-            self._label_result.setText(str(e))
-            self._preview_table.setRowCount(0)
-            self._preview_table.setColumnCount(5)
-            return
+    def _update_summary(self) -> None:
         total = len(self._records) * self._config.count
         self._label_result.setText(
-            tr("Result: {boards} boards \u00d7 {parts} components = {total} records",
+            tr("Result: {boards} boards × {parts} components = {total} records",
                boards=self._config.count, parts=len(self._records), total=total)
         )
-        rows = self._preview_rows()
-        rows = rows[:40]
-        self._preview_table.setRowCount(len(rows))
-        self._preview_table.setColumnCount(5)
-        for row_idx, vals in enumerate(rows):
-            for col_idx, val in enumerate(vals):
-                item = QTableWidgetItem(str(val))
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._preview_table.setItem(row_idx, col_idx, item)
 
     def _on_accept(self) -> None:
         cfg = self._config

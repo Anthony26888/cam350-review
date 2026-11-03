@@ -322,11 +322,8 @@ def test_panelize_dialog_block_click_toggles(qapp):
 def test_panelize_dialog_preview_matches_service(qapp):
     from ui.panelize_dialog import PanelizeDialog
     dlg = PanelizeDialog(_base_records(), config=_cfg_2blocks(flipped=True))
-    dlg._refresh_preview()
-    rows = dlg._preview_rows()
-    assert len(rows) == 2 * 2  # 2 sample records x 2 blocks
-    # block 2 of C1 flipped around its origin (200,100): C1 -> (190, 80), rot 180
-    assert rows[2] == ("C1_2", 1, pytest.approx(190.0), pytest.approx(80.0), 180.0)
+    dlg._update_summary()
+    assert "Result: 2 boards × 2 components = 4 records" in dlg._label_result.text()
     # accept produces the same coords the service would emit
     dlg._on_accept()
     assert dlg.panel_config.to_dict() == dlg._config.to_dict()
@@ -438,3 +435,72 @@ def test_panelize_dialog_detect_single_board_keeps_config(qapp, monkeypatch):
     assert dlg._config.to_dict() == before
     assert warnings
     dlg.close()
+
+
+def test_panelize_dialog_generate_grid_100_blocks(qapp):
+    from ui.panelize_dialog import PanelizeDialog
+    dlg = PanelizeDialog(_base_records())
+    dlg._spin_nx.setValue(10)
+    dlg._spin_ny.setValue(10)
+    dlg._spin_dx.setValue(45.0)
+    dlg._spin_dy.setValue(30.0)
+    dlg._combo_pattern.setCurrentIndex(0)  # All 0°
+    dlg._generate_from_grid()
+
+    assert dlg._config.count == 100
+    assert dlg._origins_table.rowCount() == 100
+    # Block 1 at (0, 0)
+    b0 = dlg._config.block_by_index(0)
+    assert (b0.origin_x, b0.origin_y, b0.rotation) == (0.0, 0.0, 0)
+    # Block 2 at (45, 0)
+    b1 = dlg._config.block_by_index(1)
+    assert (b1.origin_x, b1.origin_y, b1.rotation) == (45.0, 0.0, 0)
+    # Block 100 (row 9, col 9) at (9 * 45 = 405, 9 * 30 = 270)
+    b99 = dlg._config.block_by_index(99)
+    assert (b99.origin_x, b99.origin_y, b99.rotation) == (405.0, 270.0, 0)
+    dlg.close()
+
+
+def test_panelize_dialog_grid_rotation_patterns(qapp):
+    from ui.panelize_dialog import PanelizeDialog
+    dlg = PanelizeDialog(_base_records())
+    dlg._spin_nx.setValue(2)
+    dlg._spin_ny.setValue(2)
+    dlg._spin_dx.setValue(50.0)
+    dlg._spin_dy.setValue(50.0)
+    # Pattern 1: Even rows 180° (row 0 = 0°, row 1 = 180°)
+    dlg._combo_pattern.setCurrentIndex(1)
+    dlg._generate_from_grid()
+    assert dlg._config.block_by_index(0).rotation == 0
+    assert dlg._config.block_by_index(1).rotation == 0
+    assert dlg._config.block_by_index(2).rotation == 180
+    assert dlg._config.block_by_index(3).rotation == 180
+
+    # Pattern 3: Checkerboard 180°
+    dlg._combo_pattern.setCurrentIndex(3)
+    dlg._generate_from_grid()
+    assert dlg._config.block_by_index(0).rotation == 0
+    assert dlg._config.block_by_index(1).rotation == 180
+    assert dlg._config.block_by_index(2).rotation == 180
+    assert dlg._config.block_by_index(3).rotation == 0
+    dlg.close()
+
+
+def test_panelize_dialog_paste_from_clipboard(qapp, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    from ui.panelize_dialog import PanelizeDialog
+
+    clip_text = "0.0\t0.0\n10.5\t20.5\n30.0\t40.0"
+    monkeypatch.setattr(QApplication.clipboard(), "text", lambda: clip_text)
+
+    dlg = PanelizeDialog(_base_records())
+    dlg._paste_from_clipboard()
+
+    assert dlg._config.count == 3
+    assert dlg._config.block_by_index(0).origin_x == 0.0
+    assert dlg._config.block_by_index(1).origin_x == pytest.approx(10.5)
+    assert dlg._config.block_by_index(1).origin_y == pytest.approx(20.5)
+    assert dlg._config.block_by_index(2).origin_x == pytest.approx(30.0)
+    assert dlg._config.block_by_index(2).origin_y == pytest.approx(40.0)
+    dlg.close()
+

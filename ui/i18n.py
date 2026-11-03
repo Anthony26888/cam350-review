@@ -493,6 +493,28 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Detect from GKO": "Dò từ GKO",
         "Fill block origins from the GKO outline.":
             "Điền tọa độ gốc các block từ file GKO outline.",
+        "Paste from Clipboard": "Dán từ Clipboard / Excel",
+        "Paste coordinates (X, Y) copied from Excel or text.":
+            "Dán danh sách tọa độ (X, Y) được copy từ Excel hoặc file text.",
+        "No valid coordinates found in clipboard. Format expected: X, Y or X [tab] Y":
+            "Không tìm thấy tọa độ hợp lệ từ clipboard. Định dạng: X, Y hoặc X [tab] Y",
+        "Mode": "Chế độ",
+        "Grid Matrix (Auto)": "Ma trận Lưới (Tự động)",
+        "Manual / Custom": "Thủ công / Tùy chỉnh",
+        "Grid Settings": "Cấu hình Lưới",
+        "Columns (Nx):": "Số cột (Nx):",
+        "Rows (Ny):": "Số hàng (Ny):",
+        "Pitch X (dx):": "Bước X (dx):",
+        "Pitch Y (dy):": "Bước Y (dy):",
+        "Rotation Pattern:": "Kiểu xoay mặc định:",
+        "All 0°": "Tất cả 0°",
+        "Even rows 180°": "Hàng chẵn lật 180°",
+        "Even columns 180°": "Cột chẵn lật 180°",
+        "Checkerboard 180°": "Bàn cờ caro 180°",
+        "Generate Grid": "Tạo lưới tọa độ",
+        "Quick Tools": "Công cụ nhanh",
+        "Boards Table": "Bảng tọa độ các Board",
+        "Total: {n} boards": "Tổng số: {n} board",
         "No panel detected (single board). Coordinates stay unchanged.":
             "Không phát hiện panel (board đơn). Tọa độ giữ nguyên.",
         "No GKO file loaded. Select one in the gerber file dialog first.":
