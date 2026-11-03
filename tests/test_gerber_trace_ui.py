@@ -231,7 +231,7 @@ def test_the_wires_of_the_net_are_one_bright_chain(app):
     v._on_trace_picked(10.0, 0.0)
     pen = v._trace_line_item.pen()
     assert isinstance(pen, QPen)
-    assert pen.widthF() == pytest.approx(0.6)
+    assert pen.widthF() == pytest.approx(0.3)
     assert not pen.isCosmetic()  # millimetres, so the zoom scales the line
     v._btn_trace.setChecked(False)
 

@@ -128,13 +128,18 @@ CHECKED_COLOR = QColor("#22C55E")
 GRID_COLOR = QColor(100, 116, 139, 160)
 BACKGROUND = QColor("#0B1220")
 MEASURE_COLOR = QColor("#38BDF8")
-#: The colour of the net that is traced: a bright yellow, far from the
-#: blue of the measure tool and the green of the checked marks.
-TRACE_COLOR = QColor(255, 214, 10)
+#: The colour of the net that is traced: Altium-style gold/yellow.
+TRACE_COLOR = QColor(255, 230, 0, 255)
+#: The outer halo/glow around the traced copper, giving it the Altium look.
+TRACE_HALO_COLOR = QColor(255, 215, 0, 80)
+#: Border around highlighted pads for crisp definition.
+TRACE_PAD_BORDER_COLOR = QColor(255, 255, 220, 230)
 #: The width of the lines of a traced net, in millimetres.  The wires
 #: that lead below this width are drawn at this width, so the chain of
 #: the net is seen at any zoom.
-_TRACE_LINE_WIDTH = 0.6
+_TRACE_LINE_WIDTH = 0.3
+#: The width of the outer halo/glow pen in millimetres.
+_TRACE_HALO_WIDTH = 0.55
 
 _CROSS_BOARD_RATIO = 0.01
 _MIN_ARROW_PX = 10.0
@@ -1800,6 +1805,7 @@ class GerberViewer(QWidget):
         self._trace_candidates: Optional[List[Tuple[int, RenderData, int]]] = None
         self._trace_order = 0
         self._trace_last_pick: Optional[Tuple[float, float]] = None
+        self._trace_halo_item: Optional[QGraphicsPathItem] = None
         self._trace_line_item: Optional[QGraphicsPathItem] = None
         self._trace_fill_item: Optional[QGraphicsPathItem] = None
         self._trace_plane_outline_item: Optional[QGraphicsPathItem] = None
@@ -4678,7 +4684,7 @@ class GerberViewer(QWidget):
         self._trace_first = None
         self._trace_candidates = None
         self._trace_last_pick = None
-        for name in ("_trace_line_item", "_trace_fill_item", "_trace_plane_outline_item"):
+        for name in ("_trace_halo_item", "_trace_line_item", "_trace_fill_item", "_trace_plane_outline_item"):
             item = getattr(self, name, None)
             if item is None:
                 continue
@@ -4692,12 +4698,8 @@ class GerberViewer(QWidget):
         self, data: RenderData, component: Any,
         angle: float, mirror: bool, mirror_x: bool,
     ) -> QGraphicsPathItem:
-        """The wires of the net, drawn as one bright chain of lines.
-
-        Every wire keeps the line the way it lies, seen in the scene; the
-        width of the pen is one working value, big enough to be seen at a
-        distance, small enough to keep the nearest wires apart.
-        """
+        """The wires of the net, rendered Altium-style with a vibrant core
+        and an outer translucent halo for maximum visual clarity."""
         path = QPainterPath()
         from services.gerber.trace_net import _arc_chords
         for i in component.strokes:
@@ -4719,6 +4721,16 @@ class GerberViewer(QWidget):
                     path.moveTo(sx1, sy1)
                     first = False
                 path.lineTo(sx2, sy2)
+
+        # 1. Outer Altium glow / halo
+        halo_pen = QPen(TRACE_HALO_COLOR, _TRACE_HALO_WIDTH)
+        halo_pen.setCapStyle(Qt.RoundCap)
+        halo_pen.setJoinStyle(Qt.RoundJoin)
+        halo_pen.setCosmetic(False)
+        self._trace_halo_item = self._scene.addPath(path, halo_pen)
+        self._trace_halo_item.setZValue(Z_TRACE - 0.05)
+
+        # 2. Crisp bright core line
         pen = QPen(TRACE_COLOR, _TRACE_LINE_WIDTH)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
@@ -4732,14 +4744,8 @@ class GerberViewer(QWidget):
         angle: float, mirror: bool, mirror_x: bool,
         off_x: float, off_y: float,
     ) -> QGraphicsPathItem:
-        """The pads of the net, filled in the true shape of the aperture.
-
-        The pads take the colour of the wires, so one net looks like one
-        piece of copper.  Only true copper planes/pours are left unfilled
-        so they do not paint half the board; small polygon pads are filled.
-        For planes, their boundary outline is drawn with a dashed pen so
-        the user can see where the connection reaches.
-        """
+        """The pads of the net, filled in the true shape of the aperture
+        with crisp Altium-style outlines."""
         path = QPainterPath()
         path.setFillRule(Qt.WindingFill)
         outline_path = QPainterPath()
@@ -4752,8 +4758,10 @@ class GerberViewer(QWidget):
                 continue
             _add_flash(path, fl, mirror, angle, off_x, off_y,
                        center_x, center_y, mirror_x)
-        item = self._scene.addPath(path, QPen(Qt.NoPen),
-                                   QBrush(TRACE_COLOR))
+
+        pad_pen = QPen(TRACE_PAD_BORDER_COLOR, 0.03)
+        pad_pen.setCosmetic(False)
+        item = self._scene.addPath(path, pad_pen, QBrush(TRACE_COLOR))
         item.setZValue(Z_TRACE)
         if not outline_path.isEmpty():
             dash_pen = QPen(TRACE_COLOR, 0.4, Qt.DashLine)
