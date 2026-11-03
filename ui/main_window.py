@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import threading
@@ -365,6 +366,7 @@ class MainWindow(QMainWindow):
         pcb_info_action = QAction(tr("PCB Info..."), self)
         pcb_info_action.triggered.connect(self._open_pcb_info)
         pcb_info_action.setEnabled(False)
+        pcb_info_action.setVisible(sys.platform == "win32")
         self._pcb_info_action = pcb_info_action
         tools_menu.addAction(pcb_info_action)
 
@@ -372,6 +374,7 @@ class MainWindow(QMainWindow):
 
         calibrate_action = QAction(tr("Calibration Wizard"), self)
         calibrate_action.triggered.connect(self._open_calibration)
+        calibrate_action.setVisible(sys.platform == "win32")
         tools_menu.addAction(calibrate_action)
 
         settings_action = QAction(tr("Settings"), self)
@@ -475,6 +478,7 @@ class MainWindow(QMainWindow):
         self._btn_pcb_info = _register(_std_button(tr("PCB Info"), tr("PCB"), _chip_icon), _chip_icon)
         self._btn_pcb_info.clicked.connect(self._open_pcb_info)
         self._btn_pcb_info.setEnabled(False)
+        self._btn_pcb_info.setVisible(sys.platform == "win32")
 
         self._btn_ok_checked = _register(
             _std_button(tr("OK Checked"), tr("OK"), _ok_checked_icon),

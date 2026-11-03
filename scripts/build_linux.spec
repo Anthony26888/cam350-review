@@ -1,0 +1,121 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+import os
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_data_files
+
+block_cipher = None
+
+project_dir = Path(os.getcwd())
+icon_path = project_dir / "assets" / "icon.png"
+
+a = Analysis(
+    [str(project_dir / "main.py")],
+    pathex=[str(project_dir)],
+    binaries=[],
+    datas=[
+        (str(project_dir / "config" / "config.json"), "config"),
+        (str(project_dir / "assets" / "icon.png"), "assets"),
+        (str(project_dir / "assets" / "rotation-guide.png"), "assets"),
+    ] + collect_data_files("lucide"),
+    hiddenimports=[
+        "lucide",
+        "openpyxl",
+        "openpyxl.cell._writer",
+        "openpyxl.reader.excel",
+        "pkg_resources",
+        "sqlite3",
+        "ctypes",
+        "json",
+        "numpy",
+        "scipy.spatial",
+        "cryptography",
+        "cryptography.hazmat.primitives.asymmetric.ed25519",
+        "license.fingerprint",
+        "license.verify",
+        "license.state",
+        "license.gate",
+        "license.info",
+        "license.activation_dialog",
+        "gerbonara",
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        "tkinter",
+        "tkinter.*",
+        "matplotlib",
+        "matplotlib.*",
+        "PIL",
+        "PIL.*",
+        "pandas",
+        "pandas.*",
+        "notebook",
+        "notebook.*",
+        "IPython",
+        "IPython.*",
+        "setuptools",
+        "setuptools.*",
+        "pip",
+        "pip.*",
+        "quart",
+        "quart.*",
+        "flask",
+        "flask.*",
+        "hypercorn",
+        "hypercorn.*",
+        "rtree",
+        "rtree.*",
+        "pyautogui",
+        "pyautogui.*",
+        "pyscreeze",
+        "mouseinfo",
+        "pygetwindow",
+        "pymsgbox",
+        "pytweening",
+        "win32api",
+        "win32con",
+        "win32event",
+        "win32gui",
+        "win32clipboard",
+        "pywintypes",
+        "winreg",
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="CAM350_Review",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=str(icon_path) if icon_path.exists() else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="CAM350_Review",
+)

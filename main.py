@@ -17,6 +17,8 @@ from utils.version import APP_MUTEX
 
 
 def _acquire_single_instance() -> bool:
+    if sys.platform != "win32":
+        return _acquire_lock_file()
     try:
         import win32api
         import win32event
@@ -31,6 +33,22 @@ def _acquire_single_instance() -> bool:
 
 
 _app_mutex = None
+_lock_file = None
+
+
+def _acquire_lock_file() -> bool:
+    global _lock_file
+    try:
+        from PySide6.QtCore import QLockFile
+        from utils.path_utils import user_data_dir
+    except ImportError:
+        return True
+    path = os.path.join(user_data_dir(), "cam350_review.lock")
+    lock = QLockFile(path)
+    if not lock.tryLock(100):
+        return False
+    _lock_file = lock
+    return True
 
 
 class TitleBarThemeFilter(QObject):

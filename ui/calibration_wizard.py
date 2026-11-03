@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeyEvent, QColor, QPalette
-import pyautogui
 
 import sys
 if sys.platform == "win32":
@@ -194,6 +193,13 @@ class CalibrationWizard(QWidget):
             self._btn_capture.setText(tr("Capturing in {n}s...", n=self._countdown))
 
     def _capture_position(self) -> None:
+        try:
+            import pyautogui
+        except Exception:
+            QMessageBox.warning(
+                self, tr("Warning"),
+                tr("Cursor capture is only supported on Windows with pyautogui."))
+            return
         x, y = pyautogui.position()
         self._positions[self._step_index] = Point(x=int(x), y=int(y))
         self._step_index += 1

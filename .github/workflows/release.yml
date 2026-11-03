@@ -1,4 +1,4 @@
-name: Build Windows Installer
+name: Build Release (Windows + Linux)
 
 on:
   workflow_dispatch:
@@ -9,8 +9,12 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +22,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -26,6 +31,21 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+      - name: Check tag matches APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          text = pathlib.Path("utils/version.py").read_text(encoding="utf-8")
+          match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.M)
+          if not match:
+              sys.exit("APP_VERSION not found in utils/version.py")
+          expected = "v" + match.group(1)
+          if os.environ["GITHUB_REF_NAME"] != expected:
+              sys.exit(f"Tag {os.environ['GITHUB_REF_NAME']} does not match {expected}")
+          PY
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -47,41 +67,105 @@ jobs:
             Write-Error "Installer not found in dist/installer."
           }
 
-      - name: Check tag matches APP_VERSION
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Stage release assets
         shell: pwsh
         run: |
-          $line = Select-String -Path "utils/version.py" -Pattern '^APP_VERSION\s*=\s*"([^"]+)"'
-          if (-not $line) { Write-Error "APP_VERSION not found in utils/version.py." }
-          $version = $line.Matches[0].Groups[1].Value
-          if ($env:GITHUB_REF_NAME -ne "v$version") {
-            Write-Error "Tag $env:GITHUB_REF_NAME does not match APP_VERSION v$version."
-          }
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "dist/CAM350_Review.exe" release/
+          Copy-Item "dist/installer/*.exe" release/
 
-      - name: Upload standalone exe
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CAM350_Review_exe
-          path: dist/CAM350_Review.exe
+          name: windows
+          path: release/*
           if-no-files-found: error
 
-      - name: Upload installer artifact
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth binutils dpkg \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1 libdbus-1-3 \
+            libfontconfig1 libfreetype6 libharfbuzz0b libpng16-16 zlib1g
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt
+          pip install pyinstaller
+
+      - name: Run tests
+        run: xvfb-run -a python -m pytest tests/ -q
+
+      - name: Check tag matches APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          text = pathlib.Path("utils/version.py").read_text(encoding="utf-8")
+          match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.M)
+          if not match:
+              sys.exit("APP_VERSION not found in utils/version.py")
+          expected = "v" + match.group(1)
+          if os.environ["GITHUB_REF_NAME"] != expected:
+              sys.exit(f"Tag {os.environ['GITHUB_REF_NAME']} does not match {expected}")
+          PY
+
+      - name: Build Linux packages
+        run: bash scripts/build_linux.sh
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release
+          cp dist/linux/*.deb release/
+          cp dist/linux/*.AppImage release/
+          cp dist/linux/*.tar.gz release/
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CAM350_Review_Setup
-          path: dist/installer/*.exe
+          name: linux
+          path: release/*
           if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          for file in *; do
+            if [ "$file" != "SHA256SUMS.txt" ]; then
+              sha256sum "$file"
+            fi
+          done > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $setup = Get-ChildItem -LiteralPath "dist/installer" -Filter "*.exe" | Select-Object -First 1
-          if (-not $setup) { Write-Error "Installer not found." }
-          gh release create $env:GITHUB_REF_NAME `
-            "dist/CAM350_Review.exe" `
-            $setup.FullName `
-            --title "CAM350 Review $env:GITHUB_REF_NAME" `
-            --generate-notes
+          tag="$GITHUB_REF_NAME"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "CAM350 Review $tag" --generate-notes
+          gh release upload "$tag" release-assets/* --clobber

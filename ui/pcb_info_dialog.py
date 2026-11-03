@@ -1,5 +1,5 @@
 import ctypes
-from ctypes import wintypes
+import sys
 from typing import Dict, Optional
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QObject
@@ -21,7 +21,10 @@ MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_NOREPEAT = 0x4000
 
-_user32 = ctypes.windll.user32
+_IS_WINDOWS = sys.platform == "win32"
+_user32 = ctypes.windll.user32 if _IS_WINDOWS else None
+if _IS_WINDOWS:
+    from ctypes import wintypes
 
 
 class _HotkeyFilter(QAbstractNativeEventFilter):
@@ -30,6 +33,8 @@ class _HotkeyFilter(QAbstractNativeEventFilter):
         self.callback = callback
 
     def nativeEventFilter(self, eventType, message):
+        if not _IS_WINDOWS:
+            return False, 0
         try:
             if eventType in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
                 msg = ctypes.cast(
@@ -134,6 +139,10 @@ class PcbInfoDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _register_hotkey(self) -> None:
+        if _user32 is None:
+            self._lbl_status.setText(
+                tr("PCB Info hotkey and CAM350 capture are only supported on Windows."))
+            return
         try:
             ok = _user32.RegisterHotKey(
                 None, HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord("Z")
@@ -153,6 +162,8 @@ class PcbInfoDialog(QDialog):
         if self._hotkey_filter is not None and app is not None:
             app.removeNativeEventFilter(self._hotkey_filter)
             self._hotkey_filter = None
+        if _user32 is None:
+            return
         try:
             _user32.UnregisterHotKey(None, HOTKEY_ID)
         except Exception:

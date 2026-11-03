@@ -3,11 +3,12 @@
   <h1>CAM350 Review Assistant</h1>
   <p>Review and correct PickPlace data for <b>CAM350</b> — verify every component, align origins against Gerber, and export fixed files without leaving your review flow.</p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.2.3-blue" alt="version">
+    <img src="https://img.shields.io/badge/version-2.2.9-blue" alt="version">
     <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white" alt="python">
     <img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="windows">
+    <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="linux">
     <img src="https://img.shields.io/badge/PySide6-Qt-green" alt="pyside6">
-    <img src="https://img.shields.io/badge/pytest-542_passing-brightgreen" alt="tests">
+    <img src="https://img.shields.io/badge/pytest-933_passing-brightgreen" alt="tests">
   </p>
 </div>
 
@@ -15,11 +16,11 @@
 
 ## Overview
 
-A Windows desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM350. Walk through every component, jump the CAD view to each coordinate, mark **OK** / **Edited**, batch-fix offsets, auto-align origins from Gerber files, track per-component edit history, and export corrected data.
+A desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM350. Walk through every component, jump the CAD view to each coordinate, mark **OK** / **Edited**, batch-fix offsets, auto-align origins from Gerber files, track per-component edit history, and export corrected data.
 
 - Built with **Python 3 + PySide6 (Qt)** and **openpyxl**
-- Targets **Windows** (uses `win32gui` / `pyautogui` to drive CAM350)
-- Current version: **2.2.8** (`utils/version.py`)
+- Runs on **Windows** (full CAM350 automation via `win32gui` / `pyautogui`) and **Linux** (review/Gerber workflow; CAM350 automation and the calibration wizard are Windows-only)
+- Current version: **2.2.9** (`utils/version.py`)
 - Session format: **v8** (`.cam350review`, backward-compatible load)
 
 ---
@@ -141,9 +142,30 @@ python tools/build_user_guide.py
 
 ## Installation
 
-### From the installer (recommended)
-Build or download the setup file (`CAM350_Review_Setup_2.2.3.exe`) and run it.
+### Windows (installer, recommended)
+Build or download the setup file (`CAM350_Review_Setup_<version>.exe`) and run it.
 It installs to `%ProgramFiles%\CAM350 Review Assistant` and creates a desktop shortcut.
+
+### Linux (Ubuntu/Debian, `.deb`)
+Download `CAM350_Review_<version>_amd64.deb` from the latest GitHub release and run:
+```bash
+sudo apt install ./CAM350_Review_<version>_amd64.deb
+cam350-review
+```
+The package installs the app under `/usr/lib/cam350-review` and adds a desktop entry.
+
+### Linux (AppImage, no install)
+```bash
+chmod +x CAM350_Review-<version>-x86_64.AppImage
+./CAM350_Review-<version>-x86_64.AppImage
+```
+If FUSE is unavailable, run with `--appimage-extract-and-run`.
+
+### Linux (portable tarball)
+```bash
+tar -xzf CAM350_Review_<version>_linux_x86_64.tar.gz
+./run.sh
+```
 
 ### From source
 ```bash
@@ -231,7 +253,7 @@ cam350-review/
 ├── utils/                      # path helpers, version, theme, perf log
 ├── assets/                     # App logo (icon.ico) & rotation guide images
 │   └── icon.ico
-├── scripts/                    # PyInstaller spec + Inno Setup script
+├── scripts/                    # PyInstaller specs, Inno Setup + Linux build scripts
 ├── tools/                      # Seller-side license tool + user-guide builder
 └── tests/                      # Pytest unit tests (incl. test_history.py, test_bom_*.py)
 ```
@@ -242,7 +264,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-### Building the installer
+### Building the installer (Windows)
 ```bash
 # 1. Build the one-file executable
 python -m PyInstaller scripts/build.spec --noconfirm
@@ -250,7 +272,23 @@ python -m PyInstaller scripts/build.spec --noconfirm
 # 2. Build the setup program (Inno Setup 7)
 "C:\Program Files\Inno Setup 7\ISCC.exe" scripts/installer.iss
 ```
-Output: `dist\installer\CAM350_Review_Setup_2.2.5.exe`
+Output: `dist\installer\CAM350_Review_Setup_<version>.exe`
+
+### Building the packages (Linux)
+On Ubuntu/Debian (requires `dpkg-deb` and `curl`):
+```bash
+bash scripts/build_linux.sh
+```
+Output:
+- `dist/linux/CAM350_Review_<version>_amd64.deb`
+- `dist/linux/CAM350_Review-<version>-x86_64.AppImage`
+- `dist/linux/CAM350_Review_<version>_linux_x86_64.tar.gz`
+- `dist/linux/SHA256SUMS.txt`
+
+### Releasing both platforms
+Push a tag that matches `APP_VERSION` (for example `v2.2.9`). The
+`.github/workflows/release.yml` workflow builds Windows and Linux in parallel and
+publishes a single GitHub Release with every installer and a `SHA256SUMS.txt`.
 
 ---
 
@@ -290,14 +328,18 @@ See `requirements.txt`:
 
 - PySide6
 - openpyxl
-- pyautogui
-- pywin32
+- pyautogui (Windows CAM350 automation; optional on Linux)
+- pywin32 (Windows only, see `requirements-windows.txt`)
 - numpy
 - scipy
 - cryptography
 - gerbonara
 
 Dev-only: `pytest` (see `requirements-dev.txt`).
+
+On Linux the app also needs the Qt/X11 runtime libraries; the `.deb` declares
+them as dependencies (`libxcb-cursor0`, `libxkbcommon-x11-0`, `libegl1`, …).
+When running from source, install them with `apt` first.
 
 ---
 

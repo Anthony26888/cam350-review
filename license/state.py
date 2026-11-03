@@ -1,4 +1,6 @@
 from datetime import date
+import json
+import os
 import sys
 from typing import Optional
 
@@ -6,11 +8,38 @@ if sys.platform == "win32":
     import winreg
 
 from config.config_manager import ConfigManager
+from utils.path_utils import user_data_dir
 
 _REG_ROOT = winreg.HKEY_CURRENT_USER if sys.platform == "win32" else None
 _REG_PATH = r"Software\CAM350Review"
 _VAL_MAX_SEEN = "MaxSeenDate"
 _VAL_HWID = "Hwid"
+_STATE_FILE = "license_state.json"
+
+
+def _state_path() -> str:
+    return os.path.join(user_data_dir(), _STATE_FILE)
+
+
+def _read_state() -> dict:
+    try:
+        with open(_state_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_state(data: dict) -> None:
+    path = _state_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def save_license_key(key: str) -> None:
@@ -31,6 +60,11 @@ def _reg_open():
 
 
 def save_hwid(hwid: str) -> None:
+    if _REG_ROOT is None:
+        state = _read_state()
+        state[_VAL_HWID] = hwid
+        _write_state(state)
+        return
     key = _reg_open()
     if key is None:
         return
@@ -43,6 +77,9 @@ def save_hwid(hwid: str) -> None:
 
 
 def get_max_seen_date() -> Optional[str]:
+    if _REG_ROOT is None:
+        value = _read_state().get(_VAL_MAX_SEEN)
+        return str(value) if value else None
     key = _reg_open()
     if key is None:
         return None
@@ -56,6 +93,11 @@ def get_max_seen_date() -> Optional[str]:
 
 
 def set_max_seen_date(day: str) -> None:
+    if _REG_ROOT is None:
+        state = _read_state()
+        state[_VAL_MAX_SEEN] = day
+        _write_state(state)
+        return
     key = _reg_open()
     if key is None:
         return

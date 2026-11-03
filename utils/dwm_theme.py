@@ -1,12 +1,14 @@
 import ctypes
 import sys
-from ctypes import wintypes
 
 DWMWA_BORDER_COLOR = 34
 DWMWA_CAPTION_COLOR = 35
 DWMWA_TEXT_COLOR = 36
 
 COLORREF_DEFAULT = 0x00000000 | 0xFFFFFFFF
+
+if sys.platform == "win32":
+    from ctypes import wintypes
 
 _dwmapi = ctypes.windll.dwmapi if sys.platform == "win32" else None
 
