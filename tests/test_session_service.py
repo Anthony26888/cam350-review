@@ -74,7 +74,7 @@ def test_records_round_trip_block():
 
 
 def test_save_and_load_panel_config(tmp_path):
-    path = tmp_path / "session_panel.cam350review"
+    path = tmp_path / "session_panel.fdx"
     record = _make_record()
     panel_config = {
         "nx": 2, "ny": 2, "dx": 100.0, "dy": 120.0,
@@ -93,7 +93,7 @@ def test_save_and_load_panel_config(tmp_path):
 
 
 def test_save_panel_config_defaults_none(tmp_path):
-    path = tmp_path / "session_no_panel.cam350review"
+    path = tmp_path / "session_no_panel.fdx"
     record = _make_record()
     SessionService.save(str(path), [record])
     loaded = SessionService.load(str(path))
@@ -101,7 +101,7 @@ def test_save_panel_config_defaults_none(tmp_path):
 
 
 def test_save_and_load(tmp_path):
-    path = tmp_path / "session.cam350review"
+    path = tmp_path / "session.fdx"
     record = _make_record()
     SessionService.save(str(path), [record], source_file="src.xlsx", current_index=2)
     loaded = SessionService.load(str(path))
@@ -114,7 +114,7 @@ def test_save_and_load(tmp_path):
 
 
 def test_save_and_load_gerber_paths(tmp_path):
-    path = tmp_path / "session_gerber.cam350review"
+    path = tmp_path / "session_gerber.fdx"
     record = _make_record()
     SessionService.save(
         str(path), [record], source_file="src.xlsx",
@@ -134,7 +134,7 @@ def test_save_and_load_gerber_paths(tmp_path):
 
 
 def test_save_gerber_defaults_empty(tmp_path):
-    path = tmp_path / "session_default.cam350review"
+    path = tmp_path / "session_default.fdx"
     record = _make_record()
     SessionService.save(str(path), [record])
     loaded = SessionService.load(str(path))
@@ -143,7 +143,7 @@ def test_save_gerber_defaults_empty(tmp_path):
 
 
 def test_save_and_load_with_pcb_info(tmp_path):
-    path = tmp_path / "session_pcb.cam350review"
+    path = tmp_path / "session_pcb.fdx"
     record = _make_record()
     pcb_info = {
         "board_width": 120.5,
@@ -162,7 +162,7 @@ def test_save_and_load_with_pcb_info(tmp_path):
 
 
 def test_save_and_load_gerber_view(tmp_path):
-    path = tmp_path / "session_view.cam350review"
+    path = tmp_path / "session_view.fdx"
     record = _make_record()
     gerber_view = {
         "layer": 1,
@@ -191,7 +191,7 @@ def test_save_and_load_gerber_view(tmp_path):
 
 
 def test_save_and_load_gerber_layers(tmp_path):
-    path = tmp_path / "session_layers.cam350review"
+    path = tmp_path / "session_layers.fdx"
     record = _make_record()
     layers = [{"path": "board.gko", "name": "Board Outline"}]
     SessionService.save(
@@ -206,7 +206,7 @@ def test_save_and_load_gerber_layers(tmp_path):
 
 
 def test_save_gerber_view_defaults_none(tmp_path):
-    path = tmp_path / "session_view_empty.cam350review"
+    path = tmp_path / "session_view_empty.fdx"
     record = _make_record()
     SessionService.save(str(path), [record])
     loaded = SessionService.load(str(path))
@@ -215,7 +215,7 @@ def test_save_gerber_view_defaults_none(tmp_path):
 
 def test_load_legacy_version(tmp_path):
     import json
-    path = tmp_path / "legacy.cam350review"
+    path = tmp_path / "legacy.fdx"
     data = {
         "version": 1,
         "source_file": "old.xlsx",
@@ -230,7 +230,7 @@ def test_load_legacy_version(tmp_path):
 
 
 def test_save_and_load_column_mapping(tmp_path):
-    path = tmp_path / "session_mapping.cam350review"
+    path = tmp_path / "session_mapping.fdx"
     record = _make_record()
     mapping = {
         "designator": "Ref",
@@ -250,7 +250,7 @@ def test_save_and_load_column_mapping(tmp_path):
 
 
 def test_save_column_mapping_defaults_none(tmp_path):
-    path = tmp_path / "session_mapping_empty.cam350review"
+    path = tmp_path / "session_mapping_empty.fdx"
     record = _make_record()
     SessionService.save(str(path), [record])
     loaded = SessionService.load(str(path))
@@ -260,7 +260,7 @@ def test_save_column_mapping_defaults_none(tmp_path):
 def test_load_missing_file(tmp_path):
     import pytest
     with pytest.raises(FileNotFoundError):
-        SessionService.load(str(tmp_path / "missing.cam350review"))
+        SessionService.load(str(tmp_path / "missing.fdx"))
 
 
 def test_compress_round_trip():
@@ -270,7 +270,7 @@ def test_compress_round_trip():
 
 
 def test_save_and_load_gerber_files(tmp_path):
-    path = tmp_path / "session_gerber_files.cam350review"
+    path = tmp_path / "session_gerber_files.fdx"
     record = _make_record()
     gerber_files = {
         "gerberGko": compress_text("GKO-CONTENT\n%MOMM*%\nM02*"),
@@ -289,7 +289,7 @@ def test_save_and_load_gerber_files(tmp_path):
 
 
 def test_save_gerber_files_defaults_none(tmp_path):
-    path = tmp_path / "session_no_gerber_files.cam350review"
+    path = tmp_path / "session_no_gerber_files.fdx"
     record = _make_record()
     SessionService.save(str(path), [record])
     loaded = SessionService.load(str(path))
@@ -298,7 +298,7 @@ def test_save_gerber_files_defaults_none(tmp_path):
 
 def test_load_legacy_v4_gerber_files_none(tmp_path):
     import json
-    path = tmp_path / "legacy_v4.cam350review"
+    path = tmp_path / "legacy_v4.fdx"
     data = {
         "version": 4,
         "source_file": "old.xlsx",

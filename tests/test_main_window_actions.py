@@ -1,5 +1,6 @@
 import types
 
+from models.review import ReviewRecord
 from ui.main_window import MainWindow
 
 
@@ -25,8 +26,20 @@ def _holder() -> types.SimpleNamespace:
     h._save_as_action = _act()
     h._panelize_action = _act()
     h._clear_panelize_action = _act()
+    h._export_juki_top_action = _act()
+    h._export_juki_bottom_action = _act()
+    h._export_juki_menu_action = _act()
+    h._export_juki_popup_action = _act()
+    h._export_yamaha_xml_top_action = _act()
+    h._export_yamaha_xml_bottom_action = _act()
+    h._export_yamaha_ygx_top_action = _act()
+    h._export_yamaha_ygx_bottom_action = _act()
+    h._export_yamaha_menu_action = _act()
+    h._export_yamaha_popup_action = _act()
     h._panel_config = None
     h._pre_panel_snapshot = None
+    h._pcb_info_is_complete = lambda: True
+    h._yamaha_pcb_info_is_complete = lambda: True
     h._btn_export_report = _btn(True)
     h._btn_export_fixed = _btn(True)
     h._btn_pcb_info = _btn(True)
@@ -74,3 +87,48 @@ def test_main_window_has_no_align_or_run_check_toolbar_buttons():
     assert "self._btn_align" not in src
     assert "self._btn_run_check" not in src
     assert "Align PickPlace Origin..." not in src
+
+
+def test_sync_action_states_enables_juki_per_side():
+    h = _holder()
+    h._records = [
+        ReviewRecord(designator="R1", layer="Top"),
+        ReviewRecord(designator="R2", layer="Bottom"),
+    ]
+    h._btn_export_fixed.enabled = True
+    h._sync_action_states()
+    assert h._export_juki_top_action.enabled is True
+    assert h._export_juki_bottom_action.enabled is True
+    assert h._export_juki_menu_action.enabled is True
+    assert h._export_juki_popup_action.enabled is True
+
+    h._records = [ReviewRecord(designator="R1", layer="Top")]
+    h._sync_action_states()
+    assert h._export_juki_top_action.enabled is True
+    assert h._export_juki_bottom_action.enabled is False
+    assert h._export_juki_menu_action.enabled is True
+    assert h._export_juki_popup_action.enabled is True
+
+    h._records = [
+        ReviewRecord(designator="R1", layer="Top", status="Deleted"),
+    ]
+    h._sync_action_states()
+    assert h._export_juki_top_action.enabled is False
+    assert h._export_juki_bottom_action.enabled is False
+    assert h._export_juki_menu_action.enabled is False
+    assert h._export_juki_popup_action.enabled is False
+
+
+def test_sync_action_states_disables_juki_without_pcb_info():
+    h = _holder()
+    h._pcb_info_is_complete = lambda: False
+    h._records = [
+        ReviewRecord(designator="R1", layer="Top"),
+        ReviewRecord(designator="R2", layer="Bottom"),
+    ]
+    h._btn_export_fixed.enabled = True
+    h._sync_action_states()
+    assert h._export_juki_top_action.enabled is False
+    assert h._export_juki_bottom_action.enabled is False
+    assert h._export_juki_menu_action.enabled is False
+    assert h._export_juki_popup_action.enabled is False

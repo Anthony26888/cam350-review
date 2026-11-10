@@ -220,7 +220,7 @@ def _write_svg(layers: Sequence[ExportLayer], path: str, rect: QRectF,
     generator.setSize(QSize(width_px, height_px))
     generator.setViewBox(QRectF(0, 0, width_px, height_px))
     generator.setTitle("Gerber")
-    generator.setDescription("Gerber layers of the CAM350 Review")
+    generator.setDescription("Gerber layers of the FIDUX")
     painter = QPainter(generator)
     try:
         painter.fillRect(QRectF(0, 0, width_px, height_px), QColor(background))

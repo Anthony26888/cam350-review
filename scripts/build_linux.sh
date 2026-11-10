@@ -17,7 +17,7 @@ VERSION="$("$PYTHON" -c 'import utils.version as v; print(v.APP_VERSION)')"
 GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || true)"
 BUILD_TIME="$(date '+%Y-%m-%d %H:%M')"
 
-echo "Building CAM350 Review ${VERSION} (${GIT_HASH:-no-git})"
+echo "Building FIDUX ${VERSION} (${GIT_HASH:-no-git})"
 
 # ---- Stamp build info so the running app can prove which build it is -------
 "$PYTHON" - "$VERSION" "$GIT_HASH" "$BUILD_TIME" <<'PY'
@@ -39,9 +39,9 @@ echo "[1/4] PyInstaller (onedir)"
 "$PYTHON" -m PyInstaller scripts/build_linux.spec --noconfirm --clean \
     --workpath build/build-linux --distpath dist/linux
 
-APP_DIR="dist/linux/CAM350_Review"
-if [ ! -x "$APP_DIR/CAM350_Review" ]; then
-    echo "PyInstaller did not produce $APP_DIR/CAM350_Review" >&2
+APP_DIR="dist/linux/FIDUX"
+if [ ! -x "$APP_DIR/FIDUX" ]; then
+    echo "PyInstaller did not produce $APP_DIR/FIDUX" >&2
     exit 1
 fi
 
@@ -60,7 +60,7 @@ cp assets/icon.png "$DEB_ROOT/usr/share/icons/hicolor/256x256/apps/cam350-review
 
 cat > "$DEB_ROOT/usr/bin/cam350-review" <<'LAUNCHER'
 #!/bin/sh
-exec /usr/lib/cam350-review/CAM350_Review "$@"
+exec /usr/lib/cam350-review/FIDUX "$@"
 LAUNCHER
 chmod 755 "$DEB_ROOT/usr/bin/cam350-review"
 
@@ -70,20 +70,20 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: amd64
-Maintainer: CAM350 Review <support@cam350review.local>
+Maintainer: FIDUX <support@fidux.app>
 Depends: libc6, libstdc++6, libgl1, libegl1, libxkbcommon0, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-xinerama0, libxcb-xkb1, libdbus-1-3, libfontconfig1, libfreetype6, libharfbuzz0b, libpng16-16, zlib1g
-Description: CAM350 Review Assistant
+Description: FIDUX SMT Review
  Review PickPlace data, align component origins and check Gerber layers
  before running the SMT machines.
 CONTROL
 
-DEB_FILE="dist/linux/CAM350_Review_${VERSION}_amd64.deb"
+DEB_FILE="dist/linux/FIDUX_${VERSION}_amd64.deb"
 dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEB_FILE"
 rm -rf "$DEB_ROOT"
 
 # ---- Portable tar.gz -------------------------------------------------------
 echo "[3/4] Portable tarball"
-PORTABLE="dist/linux/portable/CAM350_Review_${VERSION}_linux_x86_64"
+PORTABLE="dist/linux/portable/FIDUX_${VERSION}_linux_x86_64"
 rm -rf "dist/linux/portable"
 mkdir -p "$PORTABLE"
 cp -a "$APP_DIR/." "$PORTABLE/"
@@ -91,10 +91,10 @@ cp assets/icon.png "$PORTABLE/"
 cat > "$PORTABLE/run.sh" <<'LAUNCHER'
 #!/bin/sh
 HERE="$(cd "$(dirname "$0")" && pwd)"
-exec "$HERE/CAM350_Review" "$@"
+exec "$HERE/FIDUX" "$@"
 LAUNCHER
 chmod 755 "$PORTABLE/run.sh"
-TAR_FILE="dist/linux/CAM350_Review_${VERSION}_linux_x86_64.tar.gz"
+TAR_FILE="dist/linux/FIDUX_${VERSION}_linux_x86_64.tar.gz"
 tar -czf "$TAR_FILE" -C "$PORTABLE" .
 rm -rf "dist/linux/portable"
 
@@ -123,11 +123,11 @@ cp assets/icon.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/cam350-review.p
 cat > "$APPDIR/AppRun" <<'LAUNCHER'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/usr/bin/CAM350_Review" "$@"
+exec "$HERE/usr/bin/FIDUX" "$@"
 LAUNCHER
 chmod 755 "$APPDIR/AppRun"
 
-APPIMAGE_FILE="dist/linux/CAM350_Review-${VERSION}-x86_64.AppImage"
+APPIMAGE_FILE="dist/linux/FIDUX-${VERSION}-x86_64.AppImage"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE_TOOL" "$APPDIR" "$APPIMAGE_FILE"
 rm -rf "$APPDIR"
 

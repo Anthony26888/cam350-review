@@ -153,7 +153,7 @@ def test_disabled_or_empty_returns_nothing():
 
 
 def test_session_roundtrip_prescreen_dismissed(tmp_path):
-    path = str(tmp_path / "s.cam350review")
+    path = str(tmp_path / "s.fdx")
     SessionService.save(path, [_rec("A")], prescreen_dismissed=[
         f"{KIND_ROT}:C1:1.000:2.000",
     ])

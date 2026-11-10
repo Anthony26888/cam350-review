@@ -406,7 +406,7 @@ def test_pad_grid_cache_clears_on_a_fresh_load(app, monkeypatch):
 
     for stub in ("_rebuild_layer_list", "_hide_layers_outside_the_board",
                  "_align_drill_layer", "_compute_board_center",
-                 "_board_size", "_show_load_warnings"):
+                 "_board_size"):
         monkeypatch.setattr(v, stub,
                             lambda *a, _s=stub: [] if "outside" in _s else None)
     monkeypatch.setattr(v, "_compute_board_center", lambda: (0.0, 0.0))

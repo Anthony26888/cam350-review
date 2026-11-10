@@ -167,7 +167,7 @@ def test_history_mpn_roundtrip_dict():
 
 
 def test_session_bom_roundtrip(tmp_path):
-    path = str(tmp_path / "s.cam350review")
+    path = str(tmp_path / "s.fdx")
     rows = [BomRow(stt=1, designator_display="C1,C2",
                    designators=["C1", "C2"], mpn="M-A", quantity=2).to_dict()]
     SessionService.save(path, [], bom_rows=rows, bom_source_file="b.xlsx")
@@ -181,7 +181,7 @@ def test_session_bom_roundtrip(tmp_path):
 
 def test_session_legacy_without_bom(tmp_path):
     import json
-    path = tmp_path / "old.cam350review"
+    path = tmp_path / "old.fdx"
     path.write_text(json.dumps({"version": 7, "records": []}), encoding="utf-8")
     loaded = SessionService.load(str(path))
     assert loaded.bom_rows == []

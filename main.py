@@ -91,8 +91,8 @@ def main() -> None:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
     app = QApplication(sys.argv)
-    app.setApplicationName("CAM350 Review Assistant")
-    app.setOrganizationName("CAM350Review")
+    app.setApplicationName("FIDUX")
+    app.setOrganizationName("FIDUX")
     app.setStyle(APP_STYLE)
 
     _install_excepthook()

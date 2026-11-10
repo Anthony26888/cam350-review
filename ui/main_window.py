@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QToolButton, QMessageBox, QFileDialog, QStatusBar,
     QLabel, QSplitter, QMenuBar, QMenu, QToolBar, QTabWidget,
-    QApplication, QDialog, QProgressDialog, QInputDialog,
+    QApplication, QDialog, QProgressDialog, QInputDialog, QSizePolicy,
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
@@ -28,8 +28,23 @@ from services.eco_diff import compare_revisions
 from models.bom import BomRow
 from services.cam350_controller import Cam350Controller
 from services.export_service import ExportService
+from services.juki_e48 import (
+    E48ValidationError,
+    components_from_review_records,
+    export_e48,
+    missing_pcb_info_fields,
+)
+from services.yamaha_xml_export import (
+    YamahaXmlExportError,
+    export_yamaha_xml,
+    missing_pcb_info_fields_yamaha,
+)
+from services.yamaha_ygx_export import (
+    YamahaYgxExportError,
+    export_ygx,
+)
 from services.datasheet_service import DatasheetService
-from services.session_service import SessionService
+from services.session_service import SessionService, SESSION_EXT, LEGACY_SESSION_EXT
 from services.prescreen import dismiss_key_for, pack_prescreen_ctx, summarize, unpack_prescreen_ctx
 from services.panelize_service import (
     PanelConfig, PanelError, is_panelized, panelize_records,
@@ -108,6 +123,14 @@ def _ok_checked_icon() -> QIcon:
 
 def _delete_icon() -> QIcon:
     return _toolbar_icon("trash", "#DC2626")
+
+
+def _info_icon() -> QIcon:
+    return _toolbar_icon("info", "#6366F1")
+
+
+def _panelize_icon() -> QIcon:
+    return _toolbar_icon("copy", "#8B5CF6")
 
 
 class DatasheetWorker(QThread):
@@ -229,9 +252,9 @@ class MainWindow(QMainWindow):
         self._eco_dialog = None
         self._eco_diff = None
 
-        self.setWindowTitle("CAM350 Review Assistant")
+        self.setWindowTitle("FIDUX")
         self.setWindowIcon(QIcon(resource_path("assets/icon.ico")))
-        self.setMinimumSize(1200, 700)
+        self.setMinimumSize(1280, 700)
 
         self._build_menus()
         self._build_ui()
@@ -317,6 +340,49 @@ class MainWindow(QMainWindow):
         self._export_bottom_action = export_bottom_action
         export_menu.addAction(export_bottom_action)
 
+        export_menu.addSeparator()
+        juki_menu = export_menu.addMenu(tr("Export Juki"))
+        self._export_juki_menu_action = juki_menu.menuAction()
+        export_juki_top_action = QAction(tr("Export Juki Top"), self)
+        export_juki_top_action.triggered.connect(self._export_juki_top)
+        export_juki_top_action.setEnabled(False)
+        self._export_juki_top_action = export_juki_top_action
+        juki_menu.addAction(export_juki_top_action)
+
+        export_juki_bottom_action = QAction(tr("Export Juki Bottom"), self)
+        export_juki_bottom_action.triggered.connect(self._export_juki_bottom)
+        export_juki_bottom_action.setEnabled(False)
+        self._export_juki_bottom_action = export_juki_bottom_action
+        juki_menu.addAction(export_juki_bottom_action)
+
+        export_menu.addSeparator()
+        yamaha_menu = export_menu.addMenu(tr("Export Yamaha"))
+        self._export_yamaha_menu_action = yamaha_menu.menuAction()
+
+        yamaha_xml_sub = yamaha_menu.addMenu(tr("Yamaha XML"))
+        export_yamaha_xml_top = QAction(tr("Export Yamaha XML Top"), self)
+        export_yamaha_xml_top.triggered.connect(self._export_yamaha_xml_top)
+        export_yamaha_xml_top.setEnabled(False)
+        self._export_yamaha_xml_top_action = export_yamaha_xml_top
+        yamaha_xml_sub.addAction(export_yamaha_xml_top)
+        export_yamaha_xml_bot = QAction(tr("Export Yamaha XML Bottom"), self)
+        export_yamaha_xml_bot.triggered.connect(self._export_yamaha_xml_bottom)
+        export_yamaha_xml_bot.setEnabled(False)
+        self._export_yamaha_xml_bottom_action = export_yamaha_xml_bot
+        yamaha_xml_sub.addAction(export_yamaha_xml_bot)
+
+        yamaha_ygx_sub = yamaha_menu.addMenu(tr("Yamaha YGX"))
+        export_yamaha_ygx_top = QAction(tr("Export Yamaha YGX Top"), self)
+        export_yamaha_ygx_top.triggered.connect(self._export_yamaha_ygx_top)
+        export_yamaha_ygx_top.setEnabled(False)
+        self._export_yamaha_ygx_top_action = export_yamaha_ygx_top
+        yamaha_ygx_sub.addAction(export_yamaha_ygx_top)
+        export_yamaha_ygx_bot = QAction(tr("Export Yamaha YGX Bottom"), self)
+        export_yamaha_ygx_bot.triggered.connect(self._export_yamaha_ygx_bottom)
+        export_yamaha_ygx_bot.setEnabled(False)
+        self._export_yamaha_ygx_bottom_action = export_yamaha_ygx_bot
+        yamaha_ygx_sub.addAction(export_yamaha_ygx_bot)
+
         file_menu.addSeparator()
         exit_action = QAction(tr("Exit"), self)
         exit_action.setShortcut(QKeySequence.Quit)
@@ -366,7 +432,6 @@ class MainWindow(QMainWindow):
         pcb_info_action = QAction(tr("PCB Info..."), self)
         pcb_info_action.triggered.connect(self._open_pcb_info)
         pcb_info_action.setEnabled(False)
-        pcb_info_action.setVisible(sys.platform == "win32")
         self._pcb_info_action = pcb_info_action
         tools_menu.addAction(pcb_info_action)
 
@@ -443,7 +508,7 @@ class MainWindow(QMainWindow):
         btn_save.setEnabled(False)
         self._btn_save = btn_save
 
-        self._btn_open = _register(_std_button(tr("Open PickPlace Excel (Ctrl+W)"), tr("Excel"), _sheet_icon), _sheet_icon)
+        self._btn_open = _register(_std_button(tr("Open PickPlace Excel (Ctrl+W)"), tr("PnP"), _sheet_icon), _sheet_icon)
         self._btn_open.clicked.connect(self._open_file)
 
         self._btn_bom = _register(_std_button(tr("Open BOM Excel"), tr("BOM"), _grid_icon), _grid_icon)
@@ -466,6 +531,20 @@ class MainWindow(QMainWindow):
         _export_popup.addSeparator()
         _export_popup.addAction(self._export_top_action)
         _export_popup.addAction(self._export_bottom_action)
+        _export_popup.addSeparator()
+        _juki_popup = _export_popup.addMenu(tr("Export Juki"))
+        self._export_juki_popup_action = _juki_popup.menuAction()
+        _juki_popup.addAction(self._export_juki_top_action)
+        _juki_popup.addAction(self._export_juki_bottom_action)
+        _export_popup.addSeparator()
+        _yamaha_popup = _export_popup.addMenu(tr("Export Yamaha"))
+        self._export_yamaha_popup_action = _yamaha_popup.menuAction()
+        _yxml_pop = _yamaha_popup.addMenu(tr("Yamaha XML"))
+        _yxml_pop.addAction(self._export_yamaha_xml_top_action)
+        _yxml_pop.addAction(self._export_yamaha_xml_bottom_action)
+        _yygx_pop = _yamaha_popup.addMenu(tr("Yamaha YGX"))
+        _yygx_pop.addAction(self._export_yamaha_ygx_top_action)
+        _yygx_pop.addAction(self._export_yamaha_ygx_bottom_action)
         self._btn_export_fixed.setMenu(_export_popup)
 
         self._btn_batch_edit = _register(
@@ -478,7 +557,6 @@ class MainWindow(QMainWindow):
         self._btn_pcb_info = _register(_std_button(tr("PCB Info"), tr("PCB"), _chip_icon), _chip_icon)
         self._btn_pcb_info.clicked.connect(self._open_pcb_info)
         self._btn_pcb_info.setEnabled(False)
-        self._btn_pcb_info.setVisible(sys.platform == "win32")
 
         self._btn_ok_checked = _register(
             _std_button(tr("OK Checked"), tr("OK"), _ok_checked_icon),
@@ -517,7 +595,76 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._btn_ok_checked)
         toolbar.addWidget(self._btn_delete)
         toolbar.addSeparator()
+
+        self._btn_panelize = _register(
+            _std_button(tr("Panelize"), tr("Panelize"), _panelize_icon),
+            _panelize_icon,
+        )
+        self._btn_panelize.setEnabled(False)
+        self._btn_panelize.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        _panelize_popup = QMenu(self._btn_panelize)
+        _panelize_popup.addAction(self._panelize_action)
+        _panelize_popup.addAction(self._clear_panelize_action)
+        self._btn_panelize.setMenu(_panelize_popup)
+        toolbar.addWidget(self._btn_panelize)
+
+        toolbar.addSeparator()
         toolbar.addWidget(self._btn_settings)
+
+        self._btn_about = _register(_std_button(tr("About"), tr("About"), _info_icon), _info_icon)
+        self._btn_about.clicked.connect(self._show_about)
+        toolbar.addWidget(self._btn_about)
+
+        _brand_spacer = QWidget()
+        _brand_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(_brand_spacer)
+
+        _brand = QWidget()
+        _brand.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        _brand.setCursor(Qt.PointingHandCursor)
+        _brand.setToolTip(tr("About FIDUX"))
+        _brand.mousePressEvent = lambda _event: self._show_about()
+
+        _brand_row = QHBoxLayout(_brand)
+        _brand_row.setContentsMargins(0, 0, 8, 0)
+        _brand_row.setSpacing(8)
+
+        _brand_logo = QLabel()
+        _brand_pixmap = QPixmap(resource_path("assets/icon.png"))
+        if not _brand_pixmap.isNull():
+            _brand_logo.setPixmap(
+                _brand_pixmap.scaled(
+                    32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
+
+        _brand_col = QVBoxLayout()
+        _brand_col.setContentsMargins(0, 0, 0, 0)
+        _brand_col.setSpacing(0)
+
+        _brand_name = QLabel('FIDU<span style="color:#0EA5E9;">X</span>')
+        _brand_name.setTextFormat(Qt.RichText)
+        _brand_font = _brand_name.font()
+        _brand_font.setPointSize(14)
+        _brand_font.setBold(True)
+        _brand_name.setFont(_brand_font)
+
+        _brand_tagline = QLabel(tr("Precision in every placement"))
+        _brand_tagline.setWordWrap(False)
+        _tagline_font = _brand_tagline.font()
+        _tagline_font.setPointSize(7)
+        _brand_tagline.setFont(_tagline_font)
+        _brand_tagline.setStyleSheet("color:#64748B;")
+
+        _brand_col.addWidget(_brand_name)
+        _brand_col.addWidget(_brand_tagline)
+        _brand_col.addStretch(1)
+        _brand_row.addWidget(_brand_logo)
+        _brand_row.addLayout(_brand_col)
+        toolbar.addWidget(_brand)
+        self._brand_widget = _brand
+        self._brand_name_label = _brand_name
+        self._brand_tagline_label = _brand_tagline
 
         self.addToolBar(toolbar)
 
@@ -660,15 +807,15 @@ class MainWindow(QMainWindow):
         self._clear_gerber_config()
         self._panel_config = None
         self._pre_panel_snapshot = None
-        self._update_gerber_view_button()
-        self._sync_action_states()
-        self._update_progress()
-        self._status_label.setText(tr("Ready"))
         from database.pcb_info_repo import PcbInfoRepo
         try:
             PcbInfoRepo().clear()
         except RuntimeError:
             pass
+        self._update_gerber_view_button()
+        self._sync_action_states()
+        self._update_progress()
+        self._status_label.setText(tr("Ready"))
 
     def _clear_gerber_config(self) -> None:
         self._config_mgr.update(
@@ -686,6 +833,22 @@ class MainWindow(QMainWindow):
             return None
         return pcb.to_dict()
 
+    def _pcb_info_is_complete(self) -> bool:
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            pcb = PcbInfoRepo().load()
+        except RuntimeError:
+            return False
+        return not missing_pcb_info_fields(pcb)
+
+    def _yamaha_pcb_info_is_complete(self) -> bool:
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            pcb = PcbInfoRepo().load()
+        except RuntimeError:
+            return False
+        return not missing_pcb_info_fields_yamaha(pcb)
+
     def _update_gerber_view_button(self) -> None:
         enabled = bool(self._records)
         self._btn_gerber_check.setEnabled(enabled)
@@ -697,6 +860,42 @@ class MainWindow(QMainWindow):
         for _attr in ("_export_top_action", "_export_bottom_action"):
             if getattr(self, _attr, None) is not None:
                 getattr(self, _attr).setEnabled(self._btn_export_fixed.isEnabled())
+        _active = [
+            record for record in getattr(self, "_records", [])
+            if record.status != "Deleted"
+        ]
+        _has_top = any(not is_bottom_layer(record.layer) for record in _active)
+        _has_bottom = any(is_bottom_layer(record.layer) for record in _active)
+        _export_enabled = self._btn_export_fixed.isEnabled()
+        _pcb_info_complete = bool(
+            getattr(self, "_pcb_info_is_complete", lambda: False)()
+        )
+        _juki_enabled = _export_enabled and _pcb_info_complete
+        if getattr(self, "_export_juki_top_action", None) is not None:
+            self._export_juki_top_action.setEnabled(_juki_enabled and _has_top)
+        if getattr(self, "_export_juki_bottom_action", None) is not None:
+            self._export_juki_bottom_action.setEnabled(
+                _juki_enabled and _has_bottom
+            )
+        _juki_menu_enabled = _juki_enabled and (_has_top or _has_bottom)
+        if getattr(self, "_export_juki_menu_action", None) is not None:
+            self._export_juki_menu_action.setEnabled(_juki_menu_enabled)
+        if getattr(self, "_export_juki_popup_action", None) is not None:
+            self._export_juki_popup_action.setEnabled(_juki_menu_enabled)
+        _yamaha_pcb_ok = _export_enabled and self._yamaha_pcb_info_is_complete()
+        _yamaha_top = _yamaha_pcb_ok and _has_top
+        _yamaha_bot = _yamaha_pcb_ok and _has_bottom
+        for attr in ("_export_yamaha_xml_top_action", "_export_yamaha_ygx_top_action"):
+            if getattr(self, attr, None) is not None:
+                getattr(self, attr).setEnabled(_yamaha_top)
+        for attr in ("_export_yamaha_xml_bottom_action", "_export_yamaha_ygx_bottom_action"):
+            if getattr(self, attr, None) is not None:
+                getattr(self, attr).setEnabled(_yamaha_bot)
+        _yamaha_menu_enabled = _yamaha_pcb_ok and (_has_top or _has_bottom)
+        if getattr(self, "_export_yamaha_menu_action", None) is not None:
+            self._export_yamaha_menu_action.setEnabled(_yamaha_menu_enabled)
+        if getattr(self, "_export_yamaha_popup_action", None) is not None:
+            self._export_yamaha_popup_action.setEnabled(_yamaha_menu_enabled)
         self._pcb_info_action.setEnabled(self._btn_pcb_info.isEnabled())
         self._new_action.setEnabled(self._btn_new.isEnabled())
         self._save_action.setEnabled(self._btn_save.isEnabled())
@@ -706,7 +905,10 @@ class MainWindow(QMainWindow):
                 bool(getattr(self, "_bom_rows", None))
             )
         if self._panelize_action is not None:
-            self._panelize_action.setEnabled(self._btn_export_report.isEnabled())
+            _panel_enabled = self._btn_export_report.isEnabled()
+            self._panelize_action.setEnabled(_panel_enabled)
+            if getattr(self, "_btn_panelize", None) is not None:
+                self._btn_panelize.setEnabled(_panel_enabled)
         if self._clear_panelize_action is not None:
             self._clear_panelize_action.setEnabled(
                 bool(self._panel_config) or self._pre_panel_snapshot is not None
@@ -930,7 +1132,7 @@ class MainWindow(QMainWindow):
     def _open_session(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self, tr("Open Session"), "",
-            "CAM350 Review Files (*.cam350review);;All Files (*.*)"
+            f"FIDUX Session Files (*{SESSION_EXT} *{LEGACY_SESSION_EXT});;All Files (*.*)"
         )
         if not file_path:
             return
@@ -1019,13 +1221,13 @@ class MainWindow(QMainWindow):
 
         file_path, _ = QFileDialog.getSaveFileName(
             self, tr("Save Session As"), "",
-            "CAM350 Review Files (*.cam350review);;All Files (*.*)"
+            f"FIDUX Session Files (*{SESSION_EXT});;All Files (*.*)"
         )
         if not file_path:
             return
 
-        if not file_path.endswith(".cam350review"):
-            file_path += ".cam350review"
+        if not file_path.endswith(SESSION_EXT) and not file_path.endswith(LEGACY_SESSION_EXT):
+            file_path += SESSION_EXT
 
         deleted_records = [r for r in self._repo.get_all() if r.status == "Deleted"]
         source_file = self._config_mgr.config.lastFile if self._pickplace_data else ""
@@ -1836,6 +2038,201 @@ class MainWindow(QMainWindow):
         self._export_worker = worker
         worker.start()
 
+    def _export_juki_top(self) -> None:
+        self._export_juki_layer("top")
+
+    def _export_juki_bottom(self) -> None:
+        self._export_juki_layer("bottom")
+
+    def _export_juki_layer(self, layer: str) -> None:
+        if not self._records:
+            QMessageBox.warning(
+                self, tr("Warning"), tr("No data to export. Load a file first.")
+            )
+            return
+        want_bottom = layer == "bottom"
+        if not any(
+            record.status != "Deleted"
+            and is_bottom_layer(record.layer) == want_bottom
+            for record in self._records
+        ):
+            QMessageBox.warning(
+                self, tr("Warning"),
+                tr("No Bottom data to export.") if want_bottom
+                else tr("No Top data to export."),
+            )
+            return
+        try:
+            components = components_from_review_records(
+                self._records, bottom=want_bottom
+            )
+        except E48ValidationError as exc:
+            QMessageBox.critical(self, tr("Export Error"), str(exc))
+            return
+
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            pcb_info = PcbInfoRepo().load()
+        except RuntimeError as exc:
+            QMessageBox.critical(self, tr("Export Error"), str(exc))
+            return
+
+        missing = missing_pcb_info_fields(pcb_info)
+        if missing:
+            self._show_pcb_info_required(missing)
+            return
+
+        template_path = resource_path(
+            os.path.join("assets", "juki_qp100_template.e48")
+        )
+        if not os.path.isfile(template_path):
+            QMessageBox.critical(
+                self, tr("Export Error"),
+                tr("Default Juki template not found: {path}", path=template_path),
+            )
+            return
+
+        suffix = "Bottom" if want_bottom else "Top"
+        default_name = self._juki_default_name(want_bottom)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, tr("Export Juki {suffix}", suffix=suffix), default_name,
+            "Juki .e48 Files (*.e48);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".e48"):
+            file_path += ".e48"
+
+        self._set_exporting(True)
+        worker = ExportWorker(
+            export_e48,
+            (template_path, file_path, pcb_info, components, None),
+            self,
+        )
+        worker.finished_ok.connect(self._on_export_done)
+        worker.finished_err.connect(self._on_export_error)
+        self._export_worker = worker
+        worker.start()
+
+    def _juki_default_name(self, bottom: bool) -> str:
+        base = "PickPlace"
+        if self._pickplace_data is not None:
+            source = getattr(self._pickplace_data, "file_path", "") or ""
+            if source:
+                base = os.path.splitext(os.path.basename(source))[0]
+        suffix = "BOT" if bottom else "TOP"
+        return f"{base}_{suffix}.e48"
+
+    def _select_juki_template(self) -> Optional[str]:
+        default_path = resource_path(
+            os.path.join("assets", "juki_qp100_template.e48")
+        )
+        last_path = getattr(self._config_mgr.config, "lastJukiTemplate", "") or ""
+        initial = last_path if last_path and os.path.isfile(last_path) else default_path
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, tr("Select Juki .e48 Template"), initial,
+            "Juki .e48 Files (*.e48);;All Files (*.*)",
+        )
+        if not file_path:
+            return None
+        if file_path != last_path:
+            self._config_mgr.update(lastJukiTemplate=file_path)
+        return file_path
+
+    def _export_yamaha_xml_top(self) -> None:
+        self._export_yamaha_xml_layer(bottom=False)
+
+    def _export_yamaha_xml_bottom(self) -> None:
+        self._export_yamaha_xml_layer(bottom=True)
+
+    def _export_yamaha_xml_layer(self, bottom: bool) -> None:
+        self._export_yamaha_layer(bottom, fmt="xml")
+
+    def _export_yamaha_ygx_top(self) -> None:
+        self._export_yamaha_ygx_layer(bottom=False)
+
+    def _export_yamaha_ygx_bottom(self) -> None:
+        self._export_yamaha_ygx_layer(bottom=True)
+
+    def _export_yamaha_ygx_layer(self, bottom: bool) -> None:
+        self._export_yamaha_layer(bottom, fmt="ygx")
+
+    def _export_yamaha_layer(self, bottom: bool, fmt: str = "xml") -> None:
+        if not self._records:
+            QMessageBox.warning(
+                self, tr("Warning"), tr("No data to export. Load a file first.")
+            )
+            return
+        from database.pcb_info_repo import PcbInfoRepo
+        try:
+            pcb_info = PcbInfoRepo().load()
+        except RuntimeError as exc:
+            QMessageBox.critical(self, tr("Export Error"), str(exc))
+            return
+        missing = missing_pcb_info_fields_yamaha(pcb_info)
+        if missing:
+            self._show_yamaha_pcb_info_required(missing)
+            return
+        suffix = "Bottom" if bottom else "Top"
+        base = "PickPlace"
+        if self._pickplace_data is not None:
+            source = getattr(self._pickplace_data, "file_path", "") or ""
+            if source:
+                base = os.path.splitext(os.path.basename(source))[0]
+        side_tag = "BOT" if bottom else "TOP"
+        ext = ".ygx" if fmt == "ygx" else ".xml"
+        default_name = f"{base}_{side_tag}{ext}"
+        fmt_label = "YGX" if fmt == "ygx" else "XML"
+        filter_str = f"Yamaha {fmt_label} Files (*{ext});;All Files (*.*)"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, tr("Export Yamaha {suffix}", suffix=suffix), default_name,
+            filter_str,
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(ext):
+            file_path += ext
+        export_fn = export_ygx if fmt == "ygx" else export_yamaha_xml
+        self._set_exporting(True)
+        worker = ExportWorker(
+            export_fn,
+            (list(self._records), pcb_info, file_path, bottom, None),
+            self,
+        )
+        worker.finished_ok.connect(self._on_export_done)
+        worker.finished_err.connect(self._on_export_error)
+        self._export_worker = worker
+        worker.start()
+
+    def _show_yamaha_pcb_info_required(self, missing: List[str]) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("PCB Info Required"))
+        box.setText(tr("Please complete PCB Info before exporting Yamaha XML."))
+        details = "\n".join(f"  • {field}" for field in missing)
+        box.setInformativeText(details)
+        btn_open = box.addButton(tr("Open PCB Info"), QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() == btn_open:
+            self._open_pcb_info()
+
+    def _show_pcb_info_required(self, missing: List[str]) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("PCB Info Required"))
+        box.setText(tr("Please complete PCB Info before exporting Juki .e48."))
+        box.setInformativeText(
+            "\n".join(f"- {tr(field)}" for field in missing)
+        )
+        open_button = box.addButton(
+            tr("Open PCB Info"), QMessageBox.ButtonRole.ActionRole
+        )
+        box.addButton(tr("Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_button:
+            self._open_pcb_info()
+
     def _export_bom(self) -> None:
         bom_rows = getattr(self, "_bom_rows", None) or []
         if not bom_rows:
@@ -2083,18 +2480,22 @@ class MainWindow(QMainWindow):
 
     def _show_about(self) -> None:
         dlg = QDialog(self)
-        dlg.setWindowTitle(tr("About CAM350 Review Assistant"))
-        dlg.setFixedSize(420, 350)
+        dlg.setWindowTitle(tr("About FIDUX"))
+        dlg.setFixedSize(420, 400)
         layout = QVBoxLayout(dlg)
 
         logo = QLabel()
-        pixmap = QPixmap(resource_path("assets/icon.ico"))
+        pixmap = QPixmap(resource_path("assets/icon.png"))
         if not pixmap.isNull():
             logo.setPixmap(pixmap.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             logo.setAlignment(Qt.AlignCenter)
             layout.addWidget(logo)
 
-        title = QLabel("<h2 style='text-align:center;'>CAM350 Review Assistant</h2>")
+        title = QLabel(
+            "<h2 style='text-align:center;margin:0;'>FIDU<span style='color:#0EA5E9;'>X</span></h2>"
+            "<p style='text-align:center;color:#888;margin:2px 0 0 0;'>"
+            "Precision in every placement</p>"
+        )
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
@@ -2111,7 +2512,8 @@ class MainWindow(QMainWindow):
             "<p><b>Version:</b> " + version_label + "</p>"
             "<p><b>License:</b> " + license_summary().replace("|", "<br>") + "</p>"
             "<p><b>Description:</b> A tool for reviewing and editing PickPlace data, "
-            "aligning component origins, and exporting fixed position files for CAM350.</p>"
+            "aligning component origins, checking Gerber layers, and exporting "
+            "machine programs (Juki, Yamaha).</p>"
             "<hr>"
             "<p><b>Created by:</b> Nguyễn Hải Đăng</p>"
             "<p><b>Phone:</b> +84908799042</p>"
@@ -2209,6 +2611,7 @@ class MainWindow(QMainWindow):
         from ui.pcb_info_dialog import PcbInfoDialog
         dialog = PcbInfoDialog(self)
         dialog.exec()
+        self._sync_action_states()
 
     def _open_calibration(self) -> None:
         wizard = CalibrationWizard(self)
@@ -2857,6 +3260,7 @@ class MainWindow(QMainWindow):
         viewer.rotation_edited.connect(self._on_gerber_rotation_edited)
         viewer.records_edited.connect(self._on_gerber_records_edited)
         viewer.status_message.connect(self._status_label.setText)
+        viewer.pcb_info_changed.connect(self._sync_action_states)
         frame = self.frameGeometry()
         view_frame = viewer.frameGeometry()
         view_frame.moveCenter(frame.center())

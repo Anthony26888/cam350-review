@@ -1,16 +1,16 @@
-; CAM350 Review Assistant - Inno Setup Installer
+; FIDUX - Inno Setup Installer
 ; Download Inno Setup: https://jrsoftware.org/isdl.php
 
 #ifndef MyAppVersion
-  #define MyAppVersion "2.1.2"
+  #define MyAppVersion "2.3.0"
 #endif
 
-#define MyAppName "CAM350 Review Assistant"
-#define MyAppPublisher "CAM350 Review"
-#define MyAppExeName "CAM350_Review.exe"
+#define MyAppName "FIDUX"
+#define MyAppPublisher "FIDUX"
+#define MyAppExeName "FIDUX.exe"
 
 [Setup]
-AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+AppId={{9F3B2D7E-5C81-4A6B-9E2D-6A81C4F0B3D5}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -18,7 +18,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist\installer
-OutputBaseFilename=CAM350_Review_Setup_{#MyAppVersion}
+OutputBaseFilename=FIDUX_Setup_{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -35,7 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
-Source: "..\dist\CAM350_Review.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\FIDUX.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\config\config.json"; DestDir: "{app}\config"; Flags: ignoreversion onlyifdoesntexist
 
 [Icons]

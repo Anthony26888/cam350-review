@@ -9,6 +9,8 @@ from models.review import ReviewRecord
 
 
 SESSION_VERSION = 8
+SESSION_EXT = ".fdx"
+LEGACY_SESSION_EXT = ".cam350review"
 
 
 def compress_text(text: str) -> str:

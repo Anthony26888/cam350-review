@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=CAM350 Review Assistant
+Name=FIDUX
 GenericName=PickPlace Review
 Comment=Review PickPlace data, align origins and check Gerber layers
 Exec=cam350-review %F
@@ -8,4 +8,4 @@ Icon=cam350-review
 Terminal=false
 Categories=Engineering;Development;
 Keywords=PCB;SMT;Gerber;PickPlace;
-StartupWMClass=CAM350_Review
+StartupWMClass=FIDUX

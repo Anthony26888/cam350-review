@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<PcbDataFile>
+<LastEditing Date="{date}" Time="{time}"/>
+<Version No="1"/>
+<PatternDatas>
+	<PcbData Comment="">
+		<Board>
+			<Origin X="-4.671" Y="-5.175" R="0.000"/>
+			<Size X="{board_width}" Y="{board_height}" Z="{thickness}"/>
+			<Block Number="0"/>
+		</Board>
+		<Fiducial>
+			<Use Pcb="0" Blk="1" Local="0"/>
+			<Pcb X1="{boc1_x}" Y1="{boc1_y}" Mark1Ref="-0000001" X2="{boc3_x}" Y2="{boc3_y}" Mark2Ref="-0000001"/>
+			<Blk X1="0.000" Y1="0.000" Mark1Ref="-0000001" X2="0.000" Y2="0.000" Mark2Ref="-0000001"/>
+		</Fiducial>
+		<Badmark>
+			<Use Pcb="1" Blk="1" Local="0"/>
+			<Pcb X="0.000" Y="0.000" MarkRef="-0000001"/>
+			<Blk X="0.000" Y="0.000" MarkRef="-0000001"/>
+		</Badmark>
+		<Production>
+			<PcbFix Way="1"/>
+			<Conveyor PreFixTimer="0.5" TransHeight="15" ConvTimer="0.0" YSpeed="3" TransType="0" MotorSpeed="0" PartsHeight="0.0"/>
+			<Mount Exec="0" VacCheck="0" Alignment="0" CoPlanarity="0" PrePick="1" RetrySeq="1" TrayPre="0"/>
+			<Dispense PreDisp="0" DotDisp="0" DotCheck="0" Refresh="0"/>
+			<Exec Bin="00000000000000000000000000002C"/>
+			<Trns Bin="010000010000000000050F03000000"/>
+			<Cond Bin="000000000000000001010100000100"/>
+			<Special Function="0"/>
+		</Production>
+		<Nozzle>
+			<Variation Machine="1424">
+				<Head A1="0" A2="0" A3="0" A4="0" A5="0" A6="0" A7="0" A8="0" A9="0" A10="0" A11="0" A12="0" A13="0" A14="0" A15="0" A16="0" B1="0" B2="0" B3="0" B4="0" B5="0" B6="0" B7="0" B8="0" B9="0" B10="0" B11="0" B12="0" B13="0" B14="0" B15="0" B16="0"/>
+			</Variation>
+		</Nozzle>
+		<Special>
+		</Special>
+	</PcbData>
+	<Mounts>
+{mounts}
+	</Mounts>
+	<BlockRepeats>
+		<Repeat No="1" X="0.000" Y="0.000" R="0.000" Exec="0" ID="00000000" Exist="1" Comment=""/>
+	</BlockRepeats>
+	<LocalFiducials>
+	</LocalFiducials>
+	<LocalBadmarks>
+	</LocalBadmarks>
+	<PreDispenses>
+	</PreDispenses>
+	<DotDispenses>
+	</DotDispenses>
+</PatternDatas>
+<OptimizedVariations>
+	<MountVariation>
+		<Optimized>
+{opt_mounts}
+		</Optimized>
+		<Set>
+{feeders}
+		</Set>
+	</MountVariation>
+	<PreDispensesVariation>
+		<Optimized>
+		</Optimized>
+	</PreDispensesVariation>
+	<DotDispensesVariation>
+		<Optimized>
+		</Optimized>
+	</DotDispensesVariation>
+</OptimizedVariations>
+<Components>
+{components}
+</Components>
+<Marks>
+</Marks>
+</PcbDataFile>

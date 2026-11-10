@@ -324,7 +324,7 @@ def _cmd_stats(registry, args=None) -> None:
 def _menu_loop() -> None:
     registry = _load_registry()
     while True:
-        print("\n" + _bold("=== CAM350 Review License Tool ==="))
+        print("\n" + _bold("=== FIDUX License Tool ==="))
         print(" 1. Cấp license mới")
         print(" 2. Kiểm tra license key")
         print(" 3. Danh sách license đã cấp")
@@ -401,7 +401,7 @@ class _Args:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="license_tool",
-        description="CAM350 Review license seller tool (create, verify, monitor, renew).",
+        description="FIDUX license seller tool (create, verify, monitor, renew).",
     )
     parser.add_argument(
         "--key",

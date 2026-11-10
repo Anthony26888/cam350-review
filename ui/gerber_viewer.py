@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from models.review import ReviewRecord
 from ui.i18n import tr
-from ui.style import err_color, muted_color
+from ui.style import muted_color
 from ui.rotation_edit_dialog import RotationEditDialog
 from services.gerber.gerber_render import (
     RenderData, LineShape, ArcShape, FlashShape, parse_render,
@@ -318,6 +318,10 @@ class PadGrid:
 
 def _target_icon(size: int = 24) -> QIcon:
     return lucide_qicon("crosshair", accent="#60A5FA", size=size)
+
+
+def _pcb_info_icon(size: int = 24) -> QIcon:
+    return lucide_qicon("map-pin", accent="#22C55E", size=size)
 
 
 def _rotate_icon(size: int = 24) -> QIcon:
@@ -1084,6 +1088,8 @@ class GerberView(QGraphicsView):
     align_pad_cancel = Signal()
     trace_pad_picked = Signal(float, float, QPoint)
     trace_pad_cancel = Signal()
+    pcb_pick_clicked = Signal(float, float)
+    pcb_pick_cancel = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1109,6 +1115,7 @@ class GerberView(QGraphicsView):
         self._origin_mode = False
         self._align_pad_mode = False
         self._trace_mode = False
+        self._pcb_pick_mode = False
 
         # The crosshair that covers the whole view is always on: it is
         # how the pointer tells where it stands.
@@ -1279,6 +1286,13 @@ class GerberView(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
         self.viewport().update()
 
+    def set_pcb_pick_mode(self, active: bool) -> None:
+        """Enter/exit PCB Info pick mode: a click returns a board point."""
+        self._pcb_pick_mode = bool(active)
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.setFocusPolicy(Qt.StrongFocus if active else Qt.WheelFocus)
+        self.viewport().update()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._grid_active:
             return
@@ -1314,6 +1328,15 @@ class GerberView(QGraphicsView):
                 event.accept()
             elif event.button() == Qt.RightButton:
                 self.trace_pad_cancel.emit()
+                event.accept()
+            return
+        if self._pcb_pick_mode:
+            if event.button() == Qt.LeftButton:
+                sp = self.mapToScene(event.position().toPoint())
+                self.pcb_pick_clicked.emit(sp.x(), sp.y())
+                event.accept()
+            elif event.button() == Qt.RightButton:
+                self.pcb_pick_cancel.emit()
                 event.accept()
             return
         if event.button() == Qt.MiddleButton:
@@ -1472,6 +1495,10 @@ class GerberView(QGraphicsView):
             return
         if self._trace_mode and key == Qt.Key_Escape:
             self.trace_pad_cancel.emit()
+            event.accept()
+            return
+        if self._pcb_pick_mode and key == Qt.Key_Escape:
+            self.pcb_pick_cancel.emit()
             event.accept()
             return
         modifiers = event.modifiers()
@@ -1731,6 +1758,8 @@ class GerberViewer(QWidget):
 
     status_message = Signal(str)
 
+    pcb_info_changed = Signal()
+
     def __init__(
         self,
         records: List[ReviewRecord],
@@ -1797,6 +1826,10 @@ class GerberViewer(QWidget):
         self._measure_start: Optional[Tuple[float, float]] = None
         self._align_pad_mode = False
         self._align_snap_item: Optional[QGraphicsEllipseItem] = None
+        # PCB Info picking: the field waiting for a click and the points.
+        self._pcb_pick_key: Optional[str] = None
+        self._pcb_pick_points: List[Tuple[float, float]] = []
+        self._pcb_dialog = None
         # The traced net: one overlay that lights the connected copper.
         self._trace_mode = False
         self._trace_indices: Dict[int, Any] = {}
@@ -2185,6 +2218,15 @@ class GerberViewer(QWidget):
         self._btn_trace.toggled.connect(self._on_trace_toggled)
         self._toolbar.addWidget(self._btn_trace)
 
+        self._btn_pcb_info = _stacked_button(
+            tr("PCB Info"),
+            tr("Open PCB Info and pick the board size and BOC positions "
+               "on the Gerber."),
+            _pcb_info_icon)
+        self._btn_pcb_info.setEnabled(False)
+        self._btn_pcb_info.clicked.connect(self._open_pcb_info)
+        self._toolbar.addWidget(self._btn_pcb_info)
+
         # The angle the picture turns with, chosen in a small menu.
         self._btn_rotate = _stacked_button(
             tr("Rotate"), tr("Rotate Gerber"), _rotate_icon)
@@ -2441,12 +2483,6 @@ class GerberViewer(QWidget):
         self._lbl_status.setWordWrap(True)
         comp_layout.addWidget(self._lbl_status)
 
-        self._lbl_load_note = QLabel("")
-        self._lbl_load_note.setWordWrap(True)
-        self._lbl_load_note.setStyleSheet(f"color: {err_color()};")
-        self._lbl_load_note.setVisible(False)
-        comp_layout.addWidget(self._lbl_load_note)
-
         splitter.addWidget(comp_group)
 
         self._mag_group = QGroupBox(tr("Details (Zoom {f:g}x)", f=_MAG_FACTOR))
@@ -2501,6 +2537,8 @@ class GerberViewer(QWidget):
         self._view.align_pad_cancel.connect(self._on_align_pad_cancel)
         self._view.trace_pad_picked.connect(self._on_trace_picked)
         self._view.trace_pad_cancel.connect(self._on_trace_cancel)
+        self._view.pcb_pick_clicked.connect(self._on_pcb_pick_clicked)
+        self._view.pcb_pick_cancel.connect(self._cancel_pcb_pick)
         self._view.cursor_moved.connect(self._on_align_move)
         self._view.measure_cancel.connect(self._on_measure_cancel)
         self._view.cursor_moved.connect(self._on_measure_move)
@@ -3402,10 +3440,10 @@ class GerberViewer(QWidget):
         self._redraw(progress=True)
         self._fit_scene()
         self._lbl_status.setText("")
-        self._show_load_warnings()
         self._btn_measure.setEnabled(True)
         self._btn_align_pad.setEnabled(True)
         self._btn_trace.setEnabled(True)
+        self._btn_pcb_info.setEnabled(True)
         self._btn_snap.setEnabled(True)
         for button in getattr(self, "_btn_check_controls", ()):
             button.setEnabled(True)
@@ -3495,33 +3533,6 @@ class GerberViewer(QWidget):
         if outside:
             self._rebuild_layer_list()
         return outside
-
-    def _show_load_warnings(self) -> None:
-        """Tell the operator when a file was read by a reduced parser.
-
-        The layers that do not lie on the board are told about as well.
-        """
-        notes = []
-        worker = getattr(self, "_worker", None)
-        infos = getattr(worker, "load_info", {}) if worker is not None else {}
-        for key, info in (infos or {}).items():
-            if getattr(info, "degraded", False):
-                notes.append(f"{key}: {getattr(info, 'parser', '?')}")
-        outside = getattr(self, "_outside_layers", []) or []
-        if outside:
-            names = ", ".join(
-                self._layers[index].file_name for index in outside
-                if index < len(self._layers))
-            notes.append(tr("{n} layers of another board (hidden): {files}",
-                            n=len(outside), files=names))
-        if not notes:
-            self._lbl_load_note.setText("")
-            self._lbl_load_note.setVisible(False)
-            return
-        self._lbl_load_note.setText(
-            tr("Gerber layers: {files}", files="; ".join(notes))
-        )
-        self._lbl_load_note.setVisible(True)
 
     def _on_load_failed(self, message: str) -> None:
         self._lbl_status.setText(tr("Error reading Gerber file"))
@@ -4317,6 +4328,83 @@ class GerberViewer(QWidget):
         self._btn_align_pad.blockSignals(False)
         self._view.set_align_pad_mode(False)
         self._remove_align_snap()
+
+    def _open_pcb_info(self) -> None:
+        """Open the PCB Info dialog with picking enabled."""
+        from ui.pcb_info_dialog import PcbInfoDialog
+        if self._pcb_dialog is not None:
+            self._pcb_dialog.raise_()
+            self._pcb_dialog.activateWindow()
+            return
+        dlg = PcbInfoDialog(self, pick_enabled=True)
+        dlg.pick_requested.connect(self._start_pcb_pick)
+        dlg.saved.connect(self.pcb_info_changed)
+        dlg.finished.connect(self._on_pcb_dialog_finished)
+        self._pcb_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+
+    def _on_pcb_dialog_finished(self, _result: int = 0) -> None:
+        self._finish_pcb_pick()
+        self._pcb_dialog = None
+
+    def _start_pcb_pick(self, key: str) -> None:
+        if not self._loaded:
+            return
+        # Picking is exclusive with the other click modes.
+        if self._measure_mode:
+            self._btn_measure.setChecked(False)
+        if self._origin_mode:
+            self._btn_set_origin.setChecked(False)
+        if self._align_pad_mode:
+            self._btn_align_pad.setChecked(False)
+        if self._trace_mode:
+            self._btn_trace.setChecked(False)
+        if self._grid_active:
+            self._chk_grid.setChecked(False)
+        self._pcb_pick_key = key
+        self._pcb_pick_points = []
+        self._view.set_pcb_pick_mode(True)
+        self._view.setFocus(Qt.MouseFocusReason)
+        if key == "board":
+            self._lbl_status.setText(
+                tr("PCB Info: click the first corner of the board."))
+        else:
+            try:
+                index = int(key[3:])
+            except ValueError:
+                index = 0
+            self._lbl_status.setText(
+                tr("PCB Info: click BOC {n} on the board.", n=index))
+
+    def _on_pcb_pick_clicked(self, sx: float, sy: float) -> None:
+        if self._pcb_pick_key is None:
+            return
+        # Board coordinates: the same the component table and the
+        # PickPlace file use.
+        bx = sx - self._origin_x
+        by = -sy - self._origin_y
+        self._pcb_pick_points.append((bx, by))
+        key = self._pcb_pick_key
+        if key == "board" and len(self._pcb_pick_points) < 2:
+            self._lbl_status.setText(
+                tr("PCB Info: click the opposite corner of the board."))
+            return
+        points = list(self._pcb_pick_points)
+        self._finish_pcb_pick()
+        if self._pcb_dialog is not None:
+            self._pcb_dialog.apply_pick(key, points)
+
+    def _finish_pcb_pick(self) -> None:
+        self._pcb_pick_key = None
+        self._pcb_pick_points = []
+        self._view.set_pcb_pick_mode(False)
+
+    def _cancel_pcb_pick(self) -> None:
+        if self._pcb_pick_key is None:
+            return
+        self._finish_pcb_pick()
+        self._lbl_status.setText(tr("PCB Info pick cancelled."))
 
     def _on_align_move(self, sx: float, sy: float) -> None:
         """Live snap preview and offset read-out while hovering."""

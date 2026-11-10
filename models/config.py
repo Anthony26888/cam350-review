@@ -74,6 +74,7 @@ class AppConfig:
     lastFile: str = ""
     lastReviewId: int = 0
     lastSessionFile: str = ""
+    lastJukiTemplate: str = ""
     geometry: str = ""
     licenseKey: str = ""
     gerberGko: str = ""
@@ -106,6 +107,7 @@ class AppConfig:
             "lastFile": self.lastFile,
             "lastReviewId": self.lastReviewId,
             "lastSessionFile": self.lastSessionFile,
+            "lastJukiTemplate": self.lastJukiTemplate,
             "geometry": self.geometry,
             "licenseKey": self.licenseKey,
             "gerberFolder": self.gerberFolder,
@@ -131,6 +133,7 @@ class AppConfig:
             lastFile=data.get("lastFile", ""),
             lastReviewId=data.get("lastReviewId", 0),
             lastSessionFile=data.get("lastSessionFile", ""),
+            lastJukiTemplate=data.get("lastJukiTemplate", ""),
             geometry=data.get("geometry", ""),
             licenseKey=data.get("licenseKey", ""),
             gerberGko=data.get("gerberGko", ""),

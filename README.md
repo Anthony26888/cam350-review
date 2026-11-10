@@ -1,14 +1,14 @@
 <div align="center">
-  <img src="assets/icon.ico" width="128" alt="CAM350 Review Assistant logo">
-  <h1>CAM350 Review Assistant</h1>
-  <p>Review and correct PickPlace data for <b>CAM350</b> — verify every component, align origins against Gerber, and export fixed files without leaving your review flow.</p>
+  <img src="assets/icon.ico" width="128" alt="FIDUX logo">
+  <h1>FIDUX</h1>
+  <p><b>Precision in every placement</b> — review and correct PickPlace data for <b>CAM350</b>, align origins against Gerber, and export machine programs (Juki, Yamaha) without leaving your review flow.</p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.2.9-blue" alt="version">
+    <img src="https://img.shields.io/badge/version-2.3.0-blue" alt="version">
     <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white" alt="python">
     <img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" alt="windows">
     <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="linux">
     <img src="https://img.shields.io/badge/PySide6-Qt-green" alt="pyside6">
-    <img src="https://img.shields.io/badge/pytest-933_passing-brightgreen" alt="tests">
+    <img src="https://img.shields.io/badge/pytest-999_passing-brightgreen" alt="tests">
   </p>
 </div>
 
@@ -20,8 +20,8 @@ A desktop tool for reviewing PickPlace Excel files (`.xlsx`) against CAM350. Wal
 
 - Built with **Python 3 + PySide6 (Qt)** and **openpyxl**
 - Runs on **Windows** (full CAM350 automation via `win32gui` / `pyautogui`) and **Linux** (review/Gerber workflow; CAM350 automation and the calibration wizard are Windows-only)
-- Current version: **2.2.9** (`utils/version.py`)
-- Session format: **v8** (`.cam350review`, backward-compatible load)
+- Current version: **2.3.0** (`utils/version.py`)
+- Session format: **v8** (`.fdx`, backward-compatible load of `.cam350review`)
 
 ---
 
@@ -54,11 +54,15 @@ python tools/build_user_guide.py
 
 ---
 
+## What's new in 2.3.x
+
+- **Export Juki**: export the reviewed Top or Bottom data as a QP100 `.e48` file. Uses the bundled QP100 template (or a template you choose), includes edited coordinates/rotations, skips deleted records, and requires complete PCB Info before writing.
+
 ## What's new in 2.2.x
 
 - **Component History table** (`ui/review_panel.py`): the old `Actions` group was replaced by a `History` table with 3 columns — `Time (HH:MM:SS) | Step (Import/Align/Edit/OK/Batch/Delete/BOM) | Changes (X/Y/Rot/MPN old-&gt;new + remark)`. Newest entry first; unchanged fields are hidden.
 - **Persistent history** (`models/history.py`, `database/history_repo.py`): append-only `component_history` SQLite table keyed by `(designator, block)`, indexed for fast per-component lookup. Survives undo/redo and panelize (new panel blocks start with empty history).
-- **Session v8** (`services/session_service.py`): `history[]` and `bom_rows[]` are saved/loaded with `.cam350review` alongside records, Gerber paths, embedded Gerber files, prescreen state, and panel config.
+- **Session v8** (`services/session_service.py`): `history[]` and `bom_rows[]` are saved/loaded with `.fdx` alongside records, Gerber paths, embedded Gerber files, prescreen state, and panel config.
 - **Compare Revisions (ECO)** (`services/eco_diff.py`): diff the open session against a new PickPlace file (Added/Removed/Moved/MPN), apply in one undo step, export an ECO report.
 - **Actions removed from the side panel**: `Previous/Next` are now `Up/Down`, `OK` is `Space`, `Edit` is `Ctrl+E`; `Jump CAM350` remains available from the table and the always-on-top `JumpPopup`.
 
@@ -113,7 +117,12 @@ python tools/build_user_guide.py
 ### Export
 - **Export Review Report** — full review report as `.xlsx` (old/new/aligned values, status, remark, review time).
 - **Export PickPlace Fixed** — corrected PickPlace file, preserving original columns with MPN always present (inserted after Designator when missing) and skipping deleted records. MPN cells use Excel text formulas (`="..."`) so leading zeros are kept and Excel displays them left-aligned.
-- Both exports run in background threads.
+- **Export Juki** — generate a QP100 `.e48` file per side (Top/Bottom) from the reviewed data and PCB Info. The exporter uses the bundled QP100 template (or a template you select), includes edited values, skips deleted records, and requires complete PCB Info (board size, working area, thickness, and all three BOC marks). Panelized data is not supported in this version.
+- **Export Yamaha** — generate Yamaha SMT program files per side (Top/Bottom) in two formats:
+  - **XML** — legacy format with `<Components>` and `<OptimizedVariations>` sections.
+  - **YGX** — YGOS AMS 2.0 format with `<Parts>` and space-padded fields, matching modern Yamaha machines.
+  Both formats require PCB Info with board size, thickness, and BOC 1 + BOC 3. Board Origin is hardcoded. Single board only (no panelization).
+- All exports run in background threads.
 
 ### BOM compare (BOM tab)
 
@@ -128,9 +137,9 @@ python tools/build_user_guide.py
   persist in session v8.
 
 ### Sessions
-- Save / load / restore the whole review session (`.cam350review` files, v8).
+- Save / load / restore the whole review session (`.fdx` files, v8).
 - The last session path is remembered for the next launch.
-- **Gerber files are embedded** in the session (zlib+base64) so a `.cam350review` opened on another machine renders Gerber View even when the original Gerber files are not present. Existing local Gerber paths are preferred when they still exist.
+- **Gerber files are embedded** in the session (zlib+base64) so a `.fdx` opened on another machine renders Gerber View even when the original Gerber files are not present. Existing local Gerber paths are preferred when they still exist.
 - History, prescreen dismissals, panel config, PCB info, BOM rows, and Gerber view settings are all part of the session.
 
 ### Settings & calibration
@@ -143,27 +152,27 @@ python tools/build_user_guide.py
 ## Installation
 
 ### Windows (installer, recommended)
-Build or download the setup file (`CAM350_Review_Setup_<version>.exe`) and run it.
-It installs to `%ProgramFiles%\CAM350 Review Assistant` and creates a desktop shortcut.
+Build or download the setup file (`FIDUX_Setup_<version>.exe`) and run it.
+It installs to `%ProgramFiles%\FIDUX` and creates a desktop shortcut.
 
 ### Linux (Ubuntu/Debian, `.deb`)
-Download `CAM350_Review_<version>_amd64.deb` from the latest GitHub release and run:
+Download `FIDUX_<version>_amd64.deb` from the latest GitHub release and run:
 ```bash
-sudo apt install ./CAM350_Review_<version>_amd64.deb
+sudo apt install ./FIDUX_<version>_amd64.deb
 cam350-review
 ```
 The package installs the app under `/usr/lib/cam350-review` and adds a desktop entry.
 
 ### Linux (AppImage, no install)
 ```bash
-chmod +x CAM350_Review-<version>-x86_64.AppImage
-./CAM350_Review-<version>-x86_64.AppImage
+chmod +x FIDUX-<version>-x86_64.AppImage
+./FIDUX-<version>-x86_64.AppImage
 ```
 If FUSE is unavailable, run with `--appimage-extract-and-run`.
 
 ### Linux (portable tarball)
 ```bash
-tar -xzf CAM350_Review_<version>_linux_x86_64.tar.gz
+tar -xzf FIDUX_<version>_linux_x86_64.tar.gz
 ./run.sh
 ```
 
@@ -272,7 +281,7 @@ python -m PyInstaller scripts/build.spec --noconfirm
 # 2. Build the setup program (Inno Setup 7)
 "C:\Program Files\Inno Setup 7\ISCC.exe" scripts/installer.iss
 ```
-Output: `dist\installer\CAM350_Review_Setup_<version>.exe`
+Output: `dist\installer\FIDUX_Setup_<version>.exe`
 
 ### Building the packages (Linux)
 On Ubuntu/Debian (requires `dpkg-deb` and `curl`):
@@ -280,13 +289,13 @@ On Ubuntu/Debian (requires `dpkg-deb` and `curl`):
 bash scripts/build_linux.sh
 ```
 Output:
-- `dist/linux/CAM350_Review_<version>_amd64.deb`
-- `dist/linux/CAM350_Review-<version>-x86_64.AppImage`
-- `dist/linux/CAM350_Review_<version>_linux_x86_64.tar.gz`
+- `dist/linux/FIDUX_<version>_amd64.deb`
+- `dist/linux/FIDUX-<version>-x86_64.AppImage`
+- `dist/linux/FIDUX_<version>_linux_x86_64.tar.gz`
 - `dist/linux/SHA256SUMS.txt`
 
 ### Releasing both platforms
-Push a tag that matches `APP_VERSION` (for example `v2.2.9`). The
+Push a tag that matches `APP_VERSION` (for example `v2.3.0`). The
 `.github/workflows/release.yml` workflow builds Windows and Linux in parallel and
 publishes a single GitHub Release with every installer and a `SHA256SUMS.txt`.
 
@@ -299,8 +308,8 @@ Updates are distributed as a new installer built from the same Inno Setup script
 losing config, calibration, history, or license (all stored in `%APPDATA%\CAM350_Review\`).
 
 ### For users (on an installed machine)
-1. Close the CAM350 Review app (or let the installer close it automatically).
-2. Run the new `CAM350_Review_Setup_<version>.exe` **as Administrator**
+1. Close the FIDUX app (or let the installer close it automatically).
+2. Run the new `FIDUX_Setup_<version>.exe` **as Administrator**
    (right-click → *Run as administrator*).
 3. Follow the wizard; it installs over the previous version in the same folder.
 4. Relaunch the app — config/license/history are preserved.
@@ -311,7 +320,7 @@ losing config, calibration, history, or license (all stored in `%APPDATA%\CAM350
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\build_update.ps1
    ```
-   Output: `dist\installer\CAM350_Review_Setup_<version>.exe`
+   Output: `dist\installer\FIDUX_Setup_<version>.exe`
 3. Distribute that file over your LAN / Google Drive / email.
 
 > Notes:

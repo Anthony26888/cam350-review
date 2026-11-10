@@ -2,7 +2,7 @@ import ctypes
 import sys
 from typing import Dict, Optional
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QObject
+from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Signal
 from PySide6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
     QGroupBox, QFormLayout, QLineEdit, QDoubleSpinBox, QMessageBox,
@@ -50,13 +50,18 @@ class _HotkeyFilter(QAbstractNativeEventFilter):
 
 
 class PcbInfoDialog(QDialog):
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    pick_requested = Signal(str)
+    saved = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None,
+                 pick_enabled: bool = False) -> None:
         super().__init__(parent)
         self._repo = PcbInfoRepo()
         self._cam350 = Cam350Controller()
         self._hotkey_filter: Optional[_HotkeyFilter] = None
+        self._pick_enabled = bool(pick_enabled)
         self.setWindowTitle(tr("PCB Info"))
-        self.setModal(True)
+        self.setModal(not self._pick_enabled)
         self.setMinimumWidth(520)
         self._boc_edits: Dict[str, QLineEdit] = {}
         self._build_ui()
@@ -69,15 +74,27 @@ class PcbInfoDialog(QDialog):
         spin.setDecimals(decimals)
         return spin
 
-    def _boc_row(self, label: str) -> QWidget:
+    def _boc_pair_row(self, index: int) -> QWidget:
         row = QHBoxLayout()
-        row.setSpacing(8)
-        edit = QLineEdit()
-        edit.setPlaceholderText(tr(label))
-        edit.setMinimumWidth(150)
-        edit.textChanged.connect(self._update_save_visibility)
-        self._boc_edits[label] = edit
-        row.addWidget(edit, 1)
+        row.setSpacing(6)
+        edit_x = QLineEdit()
+        edit_x.setPlaceholderText(tr("X Boc {n}", n=index))
+        edit_x.setMinimumWidth(120)
+        edit_y = QLineEdit()
+        edit_y.setPlaceholderText(tr("Y Boc {n}", n=index))
+        edit_y.setMinimumWidth(120)
+        self._boc_edits[f"X Boc {index}"] = edit_x
+        self._boc_edits[f"Y Boc {index}"] = edit_y
+        row.addWidget(QLabel("X"))
+        row.addWidget(edit_x, 1)
+        row.addWidget(QLabel("Y"))
+        row.addWidget(edit_y, 1)
+        if self._pick_enabled:
+            btn_pick = QPushButton(tr("Pick"))
+            btn_pick.setToolTip(tr("Click BOC {n} on the Gerber", n=index))
+            btn_pick.clicked.connect(
+                lambda _checked=False, n=index: self.pick_requested.emit(f"boc{n}"))
+            row.addWidget(btn_pick)
         container = QWidget()
         container.setLayout(row)
         return container
@@ -85,16 +102,32 @@ class PcbInfoDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        hint = QLabel(
-            tr("Hotkey {hk}: point the mouse at the desired position in CAM350 "
-               "then press the hotkey to read coordinates.\n"
-               "The macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills "
-               "Boc 2, the 3rd time fills Boc 3. The Save button appears after enough data.",
-               hk=HOTKEY_COMBO)
-        )
+        if _IS_WINDOWS:
+            hint = QLabel(
+                tr("Hotkey {hk}: point the mouse at the desired position in CAM350 "
+                   "then press the hotkey to read coordinates.\n"
+                   "The macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills "
+                   "Boc 2, the 3rd time fills Boc 3.",
+                   hk=HOTKEY_COMBO)
+            )
+        else:
+            hint = QLabel(
+                tr("Enter PCB dimensions and Boc coordinates manually. "
+                   "CAM350 hotkey capture is only available on Windows.")
+            )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #0F766E; font-weight: bold; padding: 4px 0;")
         layout.addWidget(hint)
+
+        if self._pick_enabled:
+            pick_hint = QLabel(
+                tr("Pick on the Gerber: click two opposite corners for the "
+                   "board size, and one point for each BOC. Right-click or "
+                   "Esc cancels a pick.")
+            )
+            pick_hint.setWordWrap(True)
+            pick_hint.setStyleSheet("color: #334155; padding: 0 0 4px 0;")
+            layout.addWidget(pick_hint)
 
         board_group = QGroupBox(tr("Board"))
         board_form = QFormLayout(board_group)
@@ -108,14 +141,30 @@ class PcbInfoDialog(QDialog):
         board_form.addRow(tr("Working Area Width:"), self._spin_work_width)
         board_form.addRow(tr("Position Working:"), self._spin_position)
         board_form.addRow(tr("Thickness:"), self._spin_thickness)
+        if self._pick_enabled:
+            pick_row = QHBoxLayout()
+            btn_pick_board = QPushButton(tr("Pick 2 corners"))
+            btn_pick_board.setToolTip(
+                tr("Click two opposite corners of the board outline"))
+            btn_pick_board.clicked.connect(
+                lambda _checked=False: self.pick_requested.emit("board"))
+            pick_row.addWidget(btn_pick_board)
+            pick_row.addStretch(1)
+            pick_container = QWidget()
+            pick_container.setLayout(pick_row)
+            board_form.addRow("", pick_container)
         layout.addWidget(board_group)
 
         self._spin_board_width.valueChanged.connect(self._on_board_width_changed)
 
-        boc_group = QGroupBox(tr("Boc Coordinates (auto-filled by hotkey)"))
+        boc_title = (
+            "Boc Coordinates (auto-filled by hotkey)" if _IS_WINDOWS
+            else "Boc Coordinates"
+        )
+        boc_group = QGroupBox(tr(boc_title))
         boc_form = QFormLayout(boc_group)
-        for label in ("X Boc 1", "Y Boc 1", "X Boc 2", "Y Boc 2", "X Boc 3", "Y Boc 3"):
-            boc_form.addRow(tr(label), self._boc_row(label))
+        for index in (1, 2, 3):
+            boc_form.addRow(tr("BOC {n}:", n=index), self._boc_pair_row(index))
         layout.addWidget(boc_group)
 
         self._lbl_status = QLabel("")
@@ -129,13 +178,12 @@ class PcbInfoDialog(QDialog):
         self._btn_save = QPushButton(tr("Save"))
         self._btn_save.setObjectName("primary")
         self._btn_save.clicked.connect(self._save)
-        self._btn_save.setVisible(False)
         btn_close = QPushButton(tr("Cancel"))
         btn_close.clicked.connect(self.close)
         btn_layout.addWidget(self._btn_reset)
-        btn_layout.addWidget(self._btn_save)
         btn_layout.addStretch(1)
         btn_layout.addWidget(btn_close)
+        btn_layout.addWidget(self._btn_save)
         layout.addLayout(btn_layout)
 
     def _register_hotkey(self) -> None:
@@ -183,9 +231,6 @@ class PcbInfoDialog(QDialog):
                 return index
         return None
 
-    def _all_filled(self) -> bool:
-        return self._next_boc_index() is None
-
     def _trigger_macro(self) -> None:
         index = self._next_boc_index()
         if index is None:
@@ -201,10 +246,38 @@ class PcbInfoDialog(QDialog):
         self._boc_edits[f"Y Boc {index}"].setText(self._format_float(y))
         self._lbl_status.setText(tr("Filled Boc {index} (X={x}, Y={y}).",
                                     index=index, x=self._format_float(x), y=self._format_float(y)))
-        self._update_save_visibility()
 
-    def _update_save_visibility(self) -> None:
-        self._btn_save.setVisible(self._all_filled())
+    def apply_pick(self, key: str, points) -> None:
+        """Fill the fields from points picked on the Gerber.
+
+        The points are in board coordinates (the same the component table
+        and the PickPlace file use).
+        """
+        if not points:
+            return
+        if key == "board":
+            if len(points) < 2:
+                return
+            (x1, y1), (x2, y2) = points[0], points[1]
+            width = abs(x2 - x1)
+            height = abs(y2 - y1)
+            self._spin_board_width.setValue(width)
+            self._spin_board_height.setValue(height)
+            self._lbl_status.setText(tr(
+                "Board size picked: {w:.3f} x {h:.3f} mm",
+                w=width, h=height))
+            return
+        if key.startswith("boc"):
+            try:
+                index = int(key[3:])
+            except ValueError:
+                return
+            x, y = points[0]
+            self._boc_edits[f"X Boc {index}"].setText(self._format_float(x))
+            self._boc_edits[f"Y Boc {index}"].setText(self._format_float(y))
+            self._lbl_status.setText(tr(
+                "BOC {n} picked: X={x:.4f}  Y={y:.4f}",
+                n=index, x=x, y=y))
 
     @staticmethod
     def _format_float(value: float) -> str:
@@ -236,7 +309,6 @@ class PcbInfoDialog(QDialog):
         self._boc_edits["Y Boc 2"].setText(self._format_float(pcb.y_boc2))
         self._boc_edits["X Boc 3"].setText(self._format_float(pcb.x_boc3))
         self._boc_edits["Y Boc 3"].setText(self._format_float(pcb.y_boc3))
-        self._update_save_visibility()
 
     def _reset(self) -> None:
         reply = QMessageBox.question(
@@ -273,5 +345,6 @@ class PcbInfoDialog(QDialog):
         except RuntimeError as e:
             QMessageBox.critical(self, tr("Save Failed"), str(e))
             return
+        self.saved.emit()
         QMessageBox.information(self, tr("Success"), tr("PCB info saved."))
         self.accept()

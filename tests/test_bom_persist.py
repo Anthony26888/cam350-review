@@ -113,7 +113,7 @@ def _holder():
     h._jump_popup = None
     h._gerber_viewer = None
     h._gerber_view_settings = {}
-    h._session_file = "old.cam350review"
+    h._session_file = "old.fdx"
     h._config_mgr = _ConfigMgr()
     h._repo = _Repo()
     h._history_repo = _HistoryRepo()
@@ -157,6 +157,7 @@ def _holder():
                  "_auto_fill_mpn", "_push_undo", "_history_entry", "_log_history",
                  "_update_undo_actions", "_record_snapshot"]:
         setattr(h, name, getattr(MainWindow, name).__get__(h))
+    h._yamaha_pcb_info_is_complete = lambda: True
     return h
 
 

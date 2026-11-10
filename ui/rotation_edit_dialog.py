@@ -126,7 +126,7 @@ class RotaryKnob(QWidget):
         ring_w = 8.0
         r_body = ring_r - 24.0
 
-        p.setFont(QFont("Segoe UI", 8))
+        p.setFont(QFont(["Segoe UI", "Helvetica Neue", "Arial"], 8))
         fm_tick = p.fontMetrics()
 
         p.setPen(Qt.NoPen)
@@ -207,7 +207,7 @@ class RotaryKnob(QWidget):
         p.drawEllipse(QPointF(ox, oy), 3.6, 3.6)
 
         if self._center_text:
-            tf = QFont("Segoe UI", 12)
+            tf = QFont(["Segoe UI", "Helvetica Neue", "Arial"], 12)
             tf.setBold(True)
             p.setFont(tf)
             cfm = p.fontMetrics()

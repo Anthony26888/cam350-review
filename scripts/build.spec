@@ -18,6 +18,8 @@ a = Analysis(
         (str(project_dir / "config" / "config.json"), "config"),
         (str(project_dir / "assets" / "icon.ico"), "assets"),
         (str(project_dir / "assets" / "rotation-guide.png"), "assets"),
+        (str(project_dir / "assets" / "juki_qp100_template.e48"), "assets"),
+        (str(project_dir / "assets" / "yamaha_template.xml"), "assets"),
     ] + collect_data_files("lucide"),
     hiddenimports=[
         "lucide",
@@ -87,7 +89,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="CAM350_Review",
+    name="FIDUX",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

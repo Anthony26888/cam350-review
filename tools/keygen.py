@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate an Ed25519 keypair for the CAM350 Review license system."
+        description="Generate an Ed25519 keypair for the FIDUX license system."
     )
     parser.add_argument(
         "--out",

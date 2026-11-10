@@ -156,7 +156,7 @@ def _holder(records, popup=None, viewer=None, current_index=0):
     h = types.SimpleNamespace()
     h._records = records
     h._current_index = current_index
-    h._session_file = "s.cam350review"
+    h._session_file = "s.fdx"
     h._dirty = True
     h._pickplace_data = object()
     h._repo = _Repo(records)

@@ -1,8 +1,8 @@
-# CAM350 Review Assistant — User Guide
+# FIDUX — User Guide
 
-![CAM350 Review Assistant logo](../assets/icon.ico)
+![FIDUX logo](../assets/icon.ico)
 
-**Version 2.2.3 · Windows · Python 3.12 + PySide6 · Session format v7**
+**Version 2.3.0 · Windows · Python 3.12 + PySide6 · Session format v8**
 
 This guide covers the complete application: installation, license activation,
 calibration, PickPlace review, batch editing, per-component history, Gerber
@@ -43,7 +43,7 @@ troubleshooting. It is laid out for **A4 portrait printing** (see
 
 ## 1. Overview
 
-CAM350 Review Assistant is a Windows desktop tool for reviewing and correcting
+FIDUX (Precision in every placement) is a Windows desktop tool for reviewing and correcting
 PickPlace data used with **CAM350**. Instead of checking coordinates manually
 in CAD, you walk through every component in a table, jump the CAD view to each
 coordinate, correct values, and export a fixed file.
@@ -62,7 +62,7 @@ Calibrate → Open PickPlace (.xlsx) → Review each row (OK / Edit)
 | OS | Windows 10/11 64-bit |
 | CAD | CAM350 running, display units set to **mm** for accurate jumps |
 | Python (source run) | 3.12 (PySide6, openpyxl, numpy, scipy, cryptography, gerbonara, pyautogui, pywin32) |
-| Installer run | No Python needed, run `CAM350_Review_Setup_2.2.3.exe` as Administrator |
+| Installer run | No Python needed, run `FIDUX_Setup_2.3.0.exe` as Administrator |
 | Display | 1280×720 minimum, 1920×1080 recommended |
 
 ## 3. Installation
@@ -71,8 +71,8 @@ Calibrate → Open PickPlace (.xlsx) → Review each row (OK / Edit)
 
 1. Close the app if it is running (the installer can also close it automatically
    via the `CAM350ReviewMutex` single-instance mutex).
-2. Right-click `CAM350_Review_Setup_2.2.3.exe` → **Run as administrator**.
-3. Follow the wizard. It installs to `%ProgramFiles%\CAM350 Review Assistant`
+2. Right-click `FIDUX_Setup_2.3.0.exe` → **Run as administrator**.
+3. Follow the wizard. It installs to `%ProgramFiles%\FIDUX`
    and creates a desktop shortcut.
 4. Launch the app. Config, calibration, history, and license are stored under
    `%APPDATA%\CAM350_Review\` and survive upgrades. Never uninstall before
@@ -178,7 +178,7 @@ mapping dialog (aliases like RefDes, Part Number, Q'ty are auto-guessed).
   (`Top 60% · Bottom 20% · Missing 20%`). Clicking any PickPlace row swaps
   back to Component Information. The History panel merges the matched records' timelines
   (newest 20).
-- BOM rows and the source filename persist inside `.cam350review` sessions
+- BOM rows and the source filename persist inside `.fdx` sessions
   (v8); older sessions open with an empty BOM tab.
 
 *Fig 2 — BOM tab (`docs/screenshots/bom.png`, placeholder).*
@@ -259,7 +259,7 @@ The right-bottom panel is a 3-column table:
   `No history`.
 - Storage: SQLite `component_history` table keyed by `(designator, block)` with
   an index for fast lookup; the UI queries the latest 100 rows. History is
-  saved inside `.cam350review` (session v8) and restored on load.
+  saved inside `.fdx` (session v8) and restored on load.
 
 *Fig 2 — History table (`docs/screenshots/history.png`, placeholder).*
 
@@ -418,7 +418,7 @@ Language and theme apply immediately without losing records.
 ## 19. Sessions
 
 - **File → New / Open / Save / Save As** (`Ctrl+N / Ctrl+O / Ctrl+S /
-  Ctrl+Shift+S`). Files use the `.cam350review` JSON format (v8).
+  Ctrl+Shift+S`). Files use the `.fdx` JSON format (v8). Legacy `.cam350review` files can still be opened.
 - A session stores records (+ deleted audit rows), current index, PCB info,
   Gerber paths + embedded Gerber contents, Gerber view settings, column
   mapping, prescreen dismissals, panel config, the full history log, and the
@@ -482,7 +482,7 @@ the status bar and a message box.
 | BOM tab empty after opening an old session | Sessions saved before BOM support carry no `bom_rows` → re-open the BOM file |
 | Fill MPN finds nothing | PickPlace MPN cells already filled, or no BOM designator matches (check cleaning/prefix) |
 | History shows only one edit | You are on an old build → upgrade; current log is append-only per `(designator, block)` |
-| `Session file is empty` | Corrupt/empty `.cam350review` → re-open the source `.xlsx` |
+| `Session file is empty` | Corrupt/empty `.fdx` → re-open the source `.xlsx` |
 | App already running blocks installer | Single-instance mutex → close the app or let the installer close it |
 
 ## 23. Appendix (File Formats and Data Locations)
@@ -496,8 +496,8 @@ the status bar and a message box.
   gerberGko/Gtp/Gbp/Gto/Gbo, gerber_view, column_mapping, gerber_files,
   prescreen_dismissed, prescreen_ctx, panel_config, history, bom_rows,
   bom_source_file`.
-- Installer: `%ProgramFiles%\CAM350 Review Assistant`, AppId-shared upgrades,
-  `CAM350ReviewMutex` for close-during-install.
+- Installer: `%ProgramFiles%\FIDUX`, own AppId (installs alongside
+  legacy CAM350 Review builds), `CAM350ReviewMutex` for close-during-install.
 - Print: this guide targets **A4 portrait, 20 mm margins, 11 pt** (see
   `exports/USER_GUIDE_A4.pdf` / `.docx`).
 
@@ -505,4 +505,4 @@ the status bar and a message box.
 
 Created by Nguyễn Hải Đăng — Email: haidang34821@gmail.com — Phone:
 +84908799042. Include your `error.log` tail and the failing
-`.cam350review`/`.xlsx` sample (redacted) when reporting issues.
+`.fdx`/`.xlsx` sample (redacted) when reporting issues.

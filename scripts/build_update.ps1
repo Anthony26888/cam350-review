@@ -1,9 +1,9 @@
-# CAM350 Review Assistant - Build update installer
+# FIDUX - Build update installer
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\build_update.ps1
 #
 # Requires: PyInstaller (python -m PyInstaller) and Inno Setup 7 (ISCC.exe).
-# Output: dist\installer\CAM350_Review_Setup_{version}.exe
+# Output: dist\installer\FIDUX_Setup_{version}.exe
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -49,16 +49,16 @@ Write-Host "[0/2] Cleaning stale build artifacts..."
 if (Test-Path -LiteralPath "build\build") {
     Remove-Item -LiteralPath "build\build" -Recurse -Force
 }
-if (Test-Path -LiteralPath "dist\CAM350_Review.exe") {
-    Remove-Item -LiteralPath "dist\CAM350_Review.exe" -Force
+if (Test-Path -LiteralPath "dist\FIDUX.exe") {
+    Remove-Item -LiteralPath "dist\FIDUX.exe" -Force
 }
 
-Write-Host "[1/2] PyInstaller: CAM350_Review.exe"
+Write-Host "[1/2] PyInstaller: FIDUX.exe"
 python -m PyInstaller scripts\build.spec --noconfirm --clean `
     --workpath "build\build" --distpath "dist"
 if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed (exit $LASTEXITCODE)." }
 
-$exe = "dist\CAM350_Review.exe"
+$exe = "dist\FIDUX.exe"
 if (-not (Test-Path -LiteralPath $exe)) {
     Write-Error "PyInstaller did not produce $exe."
 }
@@ -67,11 +67,11 @@ if ($exeTime -lt $startedAt) {
     Write-Error "Stale artifact detected: $exe was not rebuilt (timestamp $exeTime)."
 }
 
-Write-Host "[2/2] Inno Setup: CAM350_Review_Setup_${version}.exe"
+Write-Host "[2/2] Inno Setup: FIDUX_Setup_${version}.exe"
 & $ISCC "/DMyAppVersion=$version" "scripts\installer.iss"
 if ($LASTEXITCODE -ne 0) { Write-Error "ISCC failed (exit $LASTEXITCODE)." }
 
-$setup = "dist\installer\CAM350_Review_Setup_${version}.exe"
+$setup = "dist\installer\FIDUX_Setup_${version}.exe"
 if (-not (Test-Path -LiteralPath $setup)) {
     Write-Error "Installer not found at $setup."
 }

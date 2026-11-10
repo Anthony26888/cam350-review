@@ -14,7 +14,7 @@ import sys
 SRC = os.path.join("docs", "USER_GUIDE.md")
 OUT_DOCX = os.path.join("exports", "USER_GUIDE_A4.docx")
 OUT_PDF = os.path.join("exports", "USER_GUIDE_A4.pdf")
-FOOTER_TEXT = "CAM350 Review Assistant v2.2.3 \u2014 User Guide"
+FOOTER_TEXT = "FIDUX v2.3.0 \u2014 User Guide"
 
 
 # ---------------------------------------------------------------- parsing
@@ -249,8 +249,8 @@ def build_pdf(blocks):
         OUT_PDF, pagesize=A4,
         topMargin=20 * mm, bottomMargin=20 * mm,
         leftMargin=25 * mm, rightMargin=20 * mm,
-        title="CAM350 Review Assistant — User Guide",
-        author="CAM350 Review",
+        title="FIDUX — User Guide",
+        author="FIDUX",
     )
     styles = {
         "title": ParagraphStyle("title", fontName="Times-Bold", fontSize=22,

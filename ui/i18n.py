@@ -27,6 +27,34 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Export PickPlace Fixed Top": "Xuất PickPlace Fixed Top",
         "Export PickPlace Fixed Bottom": "Xuất PickPlace Fixed Bottom",
         "Export PickPlace Fixed {suffix}": "Xuất PickPlace Fixed {suffix}",
+        "Export Juki": "Xuất Juki",
+        "Export Juki Top": "Xuất Juki Top",
+        "Export Juki Bottom": "Xuất Juki Bottom",
+        "Export Juki {suffix}": "Xuất Juki {suffix}",
+        "Select Juki .e48 Template": "Chọn template Juki .e48",
+        "Export Yamaha": "Xuất Yamaha",
+        "Yamaha XML": "Yamaha XML",
+        "Yamaha YGX": "Yamaha YGX",
+        "Export Yamaha XML Top": "Xuất Yamaha XML Top",
+        "Export Yamaha XML Bottom": "Xuất Yamaha XML Bottom",
+        "Export Yamaha YGX Top": "Xuất Yamaha YGX Top",
+        "Export Yamaha YGX Bottom": "Xuất Yamaha YGX Bottom",
+        "Export Yamaha Top": "Xuất Yamaha Top",
+        "Export Yamaha Bottom": "Xuất Yamaha Bottom",
+        "Export Yamaha {suffix}": "Xuất Yamaha {suffix}",
+        "Please complete PCB Info before exporting Yamaha XML.":
+            "Vui lòng nhập đầy đủ thông tin PCB trước khi xuất Yamaha XML.",
+        "PCB Info Required": "Cần thông tin PCB",
+        "Please complete PCB Info before exporting Juki .e48.":
+            "Vui lòng nhập đầy đủ thông tin PCB trước khi xuất Juki .e48.",
+        "Open PCB Info": "Mở thông tin PCB",
+        "Board Width": "Chiều rộng Board",
+        "Board Height": "Chiều cao Board",
+        "Working Area Width": "Chiều rộng vùng làm việc",
+        "Thickness": "Độ dày",
+        "BOC 1": "Boc 1",
+        "BOC 2": "Boc 2",
+        "BOC 3": "Boc 3",
         "No Top data to export.": "Không có dữ liệu Top để xuất.",
         "No Bottom data to export.": "Không có dữ liệu Bottom để xuất.",
         "No BOM data to export.": "Không có dữ liệu BOM để xuất.",
@@ -49,6 +77,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Open PickPlace Excel": "Mở file PickPlace Excel",
         "Open PickPlace Excel (Ctrl+W)": "Mở file PickPlace Excel (Ctrl+W)",
         "Excel": "Excel",
+        "PnP": "PnP",
         "Open BOM Excel": "Mở file BOM Excel",
         "Open BOM Excel...": "Mở file BOM Excel...",
         "Align PickPlace Origin": "Canh gốc PickPlace",
@@ -144,7 +173,8 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Select GBO file (Bottom Silkscreen - optional)": "Chọn file GBO (Bottom Silkscreen - tùy chọn)",
         "All Files (*.*)": "Tất cả tệp (*.*)",
         # About dialog
-        "About CAM350 Review Assistant": "Giới thiệu CAM350 Review Assistant",
+        "About FIDUX": "Giới thiệu FIDUX",
+        "Precision in every placement": "Precision in every placement",
         "Close": "Đóng",
         # Table widget
         "Search...": "Tìm kiếm...",
@@ -679,10 +709,6 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "Board: {w:.2f} x {h:.2f} mm\nMỗi ô: {cw:.2f} x {ch:.2f} mm",
         "Flip Gerber (Mirror Y)": "Lật Gerber (Mirror Y)",
         "Flip Gerber (Mirror X)": "Lật mặt Gerber (Mirror X)",
-        "Read with a reduced parser: {files}": "Đọc bằng parser giảm: {files}",
-        "Gerber layers: {files}": "Cac lop Gerber: {files}",
-        "{n} layers of another board (hidden): {files}":
-            "{n} lop cua board khac (da an): {files}",
         " | {note}": " | {note}",
         "Drill: offset {x:+.3f} / {y:+.3f} mm, {m}/{t} holes matched, residual {r:.3f} mm": "Đện khoan: dịch {x:+.3f} / {y:+.3f} mm, khớp {m}/{t} lỗ, sai số {r:.3f} mm",
         "Show NC Drill": "Điện lõ khoan (NC Drill)",
@@ -761,8 +787,12 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "Bật/tắt bám tâm pad khi đo. Giữ Ctrl khi click để tạm thời không bám cho lần click đó.",
         "Distance: {d:.3f} mm (snap off)": "Khoảng cách: {d:.3f} mm (không bám)",
         # PCB Info dialog
-        "Hotkey {hk}: point the mouse at the desired position in CAM350 then press the hotkey to read coordinates.\nThe macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills Boc 2, the 3rd time fills Boc 3. The Save button appears after enough data.":
-            "Hotkey {hk}: di chuyển chuột đến vị trí mong muốn trong CAM350 rồi nhấn hotkey để đọc toạ độ.\nMacro tự điền X Boc 1 & Y Boc 1, lần thứ 2 điền Boc 2, lần thứ 3 điền Boc 3. Nút Save hiện ra khi đủ dữ liệu.",
+        "Hotkey {hk}: point the mouse at the desired position in CAM350 then press the hotkey to read coordinates.\nThe macro auto-fills X Boc 1 & Y Boc 1, the 2nd time fills Boc 2, the 3rd time fills Boc 3.":
+            "Hotkey {hk}: di chuyển chuột đến vị trí mong muốn trong CAM350 rồi nhấn hotkey để đọc toạ độ.\nMacro tự điền X Boc 1 & Y Boc 1, lần thứ 2 điền Boc 2, lần thứ 3 điền Boc 3.",
+        "Enter PCB dimensions and Boc coordinates manually. CAM350 hotkey capture is only available on Windows.":
+            "Nhập kích thước PCB và toạ độ Boc bằng tay. Chức năng đọc toạ độ bằng hotkey từ CAM350 chỉ có trên Windows.",
+        "PCB Info hotkey and CAM350 capture are only supported on Windows.":
+            "Hotkey PCB Info và chức năng đọc toạ độ CAM350 chỉ hỗ trợ trên Windows.",
         "Board": "Board",
         "Board Width:": "Chiều rộng Board:",
         "Board Height:": "Chiều cao Board:",
@@ -770,6 +800,7 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Position Working:": "Vị trí làm việc:",
         "Thickness:": "Độ dày:",
         "Boc Coordinates (auto-filled by hotkey)": "Toạ độ Boc (tự điền bằng hotkey)",
+        "Boc Coordinates": "Toạ độ Boc",
         "Reset": "Đặt lại",
         "Cannot register hotkey {hk}: {e}": "Không đăng ký được hotkey {hk}: {e}",
         "All 3 Boc positions filled. Press Save to save.": "Đã đủ 3 vị trí Boc. Nhấn Save để lưu.",
@@ -781,6 +812,30 @@ _TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "Reset to default data.": "Đã đặt lại về dữ liệu mặc định.",
         "Save Failed": "Lưu thất bại",
         "PCB info saved.": "Đã lưu thông tin PCB.",
+        # PCB Info pick on Gerber
+        "Pick": "Chọn",
+        "Pick 2 corners": "Chọn 2 góc",
+        "Click two opposite corners of the board outline":
+            "Click 2 góc đối diện của outline board",
+        "Click BOC {n} on the Gerber": "Click BOC {n} trên Gerber",
+        "BOC {n}:": "BOC {n}:",
+        "X Boc {n}": "X Boc {n}",
+        "Y Boc {n}": "Y Boc {n}",
+        "Pick on the Gerber: click two opposite corners for the board size, and one point for each BOC. Right-click or Esc cancels a pick.":
+            "Chọn trên Gerber: click 2 góc đối diện để lấy kích thước board, và 1 điểm cho mỗi BOC. Chuột phải hoặc Esc để huỷ.",
+        "Board size picked: {w:.3f} x {h:.3f} mm":
+            "Đã chọn kích thước board: {w:.3f} x {h:.3f} mm",
+        "BOC {n} picked: X={x:.4f}  Y={y:.4f}":
+            "Đã chọn BOC {n}: X={x:.4f}  Y={y:.4f}",
+        "Open PCB Info and pick the board size and BOC positions on the Gerber.":
+            "Mở PCB Info và chọn kích thước board cùng vị trí BOC trên Gerber.",
+        "PCB Info: click the first corner of the board.":
+            "PCB Info: click góc thứ nhất của board.",
+        "PCB Info: click BOC {n} on the board.":
+            "PCB Info: click BOC {n} trên board.",
+        "PCB Info: click the opposite corner of the board.":
+            "PCB Info: click góc đối diện của board.",
+        "PCB Info pick cancelled.": "Đã huỷ chọn PCB Info.",
         # Jump popup
         "Component Info": "Thông tin linh kiện",
         "◀ Prev": "◀ Trước",

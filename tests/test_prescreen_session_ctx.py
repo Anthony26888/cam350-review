@@ -106,7 +106,7 @@ def test_pack_unpack_none_and_empty():
 
 
 def test_session_roundtrip_with_prescreen_ctx(tmp_path):
-    path = str(tmp_path / "s.cam350review")
+    path = str(tmp_path / "s.fdx")
     packed = pack_prescreen_ctx(_live_ctx())
     SessionService.save(path, [], prescreen_dismissed=[f"{KIND_ROT}:C1:1.000:2.000"],
                         prescreen_ctx=packed)
@@ -118,7 +118,7 @@ def test_session_roundtrip_with_prescreen_ctx(tmp_path):
 
 
 def test_session_old_file_without_ctx_loads(tmp_path):
-    path = str(tmp_path / "old.cam350review")
+    path = str(tmp_path / "old.fdx")
     SessionService.save(path, [])
     data = SessionService.load(path)
     assert data.prescreen_ctx is None

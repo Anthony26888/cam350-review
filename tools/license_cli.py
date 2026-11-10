@@ -106,7 +106,7 @@ def _cmd_verify(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="license_cli",
-        description="CAM350 Review license seller tool (creates license keys).",
+        description="FIDUX license seller tool (creates license keys).",
     )
     parser.add_argument(
         "--key",

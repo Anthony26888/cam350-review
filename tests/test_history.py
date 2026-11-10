@@ -77,7 +77,7 @@ def test_review_panel_reload_history():
 
 
 def test_session_history_roundtrip(tmp_path):
-    path = str(tmp_path / "s.cam350review")
+    path = str(tmp_path / "s.fdx")
     hist = [HistoryEntry(designator="R12", block=0, action="Edit",
                          old_x=10.0, new_x=11.5,
                          created_at="2026-10-03 10:15:30").to_dict()]
